@@ -337,7 +337,15 @@ impl KeysPresence {
     /// dispatch, so its press can never be counted as an idle click, and the
     /// release of an approved press lands outside the click window).
     pub fn poll_pressed(&mut self) -> bool {
-        self.button.pressed()
+        #[cfg(not(feature = "no-touch"))]
+        {
+            self.button.pressed()
+        }
+        #[cfg(feature = "no-touch")]
+        {
+            // No-touch test image: nothing may wait on the button.
+            false
+        }
     }
 }
 
