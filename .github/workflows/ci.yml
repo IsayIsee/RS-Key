@@ -44,7 +44,7 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, my_dev]
   pull_request:
 
 permissions:
