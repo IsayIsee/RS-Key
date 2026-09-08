@@ -413,7 +413,11 @@ run "rustdoc (host private)"   env RUSTDOCFLAGS="-D warnings" cargo doc --worksp
 # turns on `display`, whose compile_error guard demands it. rsk-wipe declares no
 # features, so only the firmware needs the second permutation.
 run "rustdoc (embedded)"       env BOARD=waveshare-one RUSTDOCFLAGS="-D warnings" cargo doc -p firmware -p rsk-wipe --no-deps
-run "rustdoc (firmware all-feat)" env BOARD=waveshare-one LED_KIND=none RUSTDOCFLAGS="-D warnings" cargo doc -p firmware --no-deps --all-features
+run "rustdoc (firmware all-feat)" env BOARD=waveshare-one LED_KIND=none RUSTDOCFLAGS="-D warnings" cargo doc -p firmware --no-deps --features display,no-touch,advertise-pqc,fips-profile,strong-pin,keygen-bench,core1-stats,bench,fido-conformance,ea-conformance-rpid,strict-up,always-uv,largeblob-ext,strict-config
+# `display-keys` (screen + button) is mutually exclusive with `display` (screen +
+# touch): both claim the same panel/PIO on a real board, so all-features cannot
+# cover both. Document the touchless build on its own permutation instead.
+run "rustdoc (firmware keys)"   env BOARD=waveshare-geek LED_KIND=none RUSTDOCFLAGS="-D warnings" cargo doc -p firmware --no-deps --features display-keys
 run "rustdoc (tui)"            env RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path tools/tui/Cargo.toml --no-deps --target "$HOST"
 run "rustdoc (emu)"            env RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path tools/emu/Cargo.toml --no-deps --target "$HOST"
 # `--bins` is load-bearing: cargo-fuzz writes `doc = false` on all 53 targets, so

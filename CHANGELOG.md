@@ -38,7 +38,34 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
 
 ## [Unreleased]
 
+### Added
+
+- **Touchless display build (`display-keys`) for screen + button boards.** The
+  Waveshare RP2350-GEEK is the first target: a 240×135 ST7789 landscape panel
+  driven over the same PIO link as the touch build, with the physical button
+  (BOOTSEL) as the presence source. The screen shows the ambient status (Ready
+  breathing, Working, Starting), a trusted one-key confirm page naming the
+  pending operation, and an approve/decline outcome page. Gestures: short press
+  approves, a hold past 800 ms declines (a genuine `OPERATION_DENIED`). No
+  on-device PIN entry or browse UI — `uv` stays unadvertised, exactly like the
+  button-only build. RSA keygen drives the busy page from its own progress
+  hook. Build with `BOARD=waveshare-geek LED_KIND=none --features display-keys`.
+
 ### Changed
+
+- **`display-keys`: idle clicks type OTP slots again.** `poll_pressed` returns
+  the real button level (as on the button build), so N idle clicks type slot N's
+  ticket; confirm presses are unaffected (they only happen on request screens).
+  Also rustdoc/clippy fixes across the touchless build. (bcdDevice 0x098B.)
+
+- **Panel init now uses the full Waveshare register set with a pre-display-on
+  GRAM blank.** The ST7789 init runs the porch / gate / VCOM / gamma defaults
+  (which place a *partial* 240×135 glass on the controller's GRAM — previously
+  the frame came up shifted and clipped on the GEEK) and clears GRAM to black
+  while the display is still off, so a fresh plug never shows the uninitialised
+  random pattern. The touch board's 240×320 panel is unaffected functionally.
+  Backlight/graphics knobs gained the `madctl_scan` and `win_x`/`win_y` board
+  keys (0 and no-offset for the touch build).
 
 - **Trusted-display page changes now use a retained, framebuffer-less DMA
   compositor.** One scene build records the laid-out frame. Per-boot keyed

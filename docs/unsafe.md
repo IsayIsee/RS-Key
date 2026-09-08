@@ -122,6 +122,30 @@ hard-wired PIO serial output (PIN_10/11) or I2C1 (PIN_6/7) lines, an enabled `WA
 or `LED_PIN`/`LED_POWER_PIN` when their LED driver is built** — a collision
 silently drives one pad from two owners at runtime, so it is checked at build time.
 
+## Firmware touchless display (`firmware/src/display_keys.rs`)
+
+### The keygen screen handle
+
+```rust
+static SCREEN_PTR: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+// …
+let ptr = SCREEN_PTR.load(Ordering::Acquire);
+Some(unsafe { &*(ptr as *const SharedPanel) })
+```
+
+The touchless build's ambient status task and a confirm wait share the panel
+through `&'static RefCell` passed by value, but the RSA-keygen busy page is
+driven from `handler.rs`'s `rsa_search` hook, which has no panel reference —
+and a `&'static RefCell` cannot itself live in a `Sync` static (the cell is
+deliberately `!Sync`), so the reference travels as a raw pointer instead.
+`main` stores it once during single-threaded boot (`register_screen`, the
+`KEY_UI.init` value outlives `main`); the worker thread's keygen tick reads it
+back while the thread executor is held — the same thread-exclusivity every
+`RefCell` in this firmware relies on, so the pointer never crosses executors.
+*Safe alternative:* none that avoids a `Sync` cell for the `!Sync` `RefCell`
+(or a trait-object hook carrying the reference into `rsa_search`).
+*Containment:* one pointer, one reader thread, one write during boot.
+
 ## Firmware dual-core keygen (`firmware/src/core1.rs`)
 
 ### 13–14. The per-core prime sieves

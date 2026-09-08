@@ -135,6 +135,17 @@ Any RP2350 board with USB. Developed and tested on the **Waveshare RP2350-One**
 size, LED pin, or presence-button GPIO is a one-line build knob. Details:
 [docs/hardware.md](docs/hardware.md).
 
+**Touchless display boards (screen + button, experimental).** The Waveshare
+**RP2350-GEEK** (1.14" 240×135 ST7789, no touch, BOOTSEL button) runs the
+`display-keys` build: the panel shows the ambient status (Ready / Working /
+Starting) and a trusted one-key confirm page naming each pending operation —
+a short press approves, a hold past ~0.8 s declines. There is no on-device PIN
+pad or browse UI, so PINs stay host-side like a button-only key. This form is
+built from source (`BOARD=waveshare-geek LED_KIND=none cargo build --release
+-p firmware --features display-keys`) and is **not** part of the released
+image set yet. The touchscreen display build (`Waveshare RP2350-Touch-LCD-2.8`,
+"display" image) is the supported screen form.
+
 <p align="center">
   <img src="assets/hero-boards.jpg" width="330" alt="Three RS-Key boards on a blueprint background: a bare RP2350 USB stick, the trusted-display variant showing its Home &quot;Ready&quot; screen (USB connected, Device PIN set, 2 passkeys), and a Waveshare RP2350-One"><br>
   <sub>Three boards, one firmware: stick · trusted display · RP2350-One</sub>
