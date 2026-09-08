@@ -640,6 +640,10 @@ async fn main(spawner: Spawner) {
     // Boot is the one place the firmware needs the MKEK's value rather than a way
     // to read it, and this block is that place: the read dies at its closing brace,
     // and everything past it carries only `mkek_source`.
+    // The screen builds defer the hardening lap past the MKEK window (see below),
+    // so they record only its gate here.
+    #[cfg(feature = "display-keys")]
+    let lap_needed;
     {
         let mkek = read_fused(mkek_source);
         let dev = Device {
@@ -655,18 +659,20 @@ async fn main(spawner: Spawner) {
         rsk_fido::credential::migrate_rp_seal(&dev, &mut fs);
         let _ = rsk_fido::seed::ensure_seed(&dev, &mut fs, &mut rng);
         let _ = rsk_openpgp::scan_files(&dev, &mut fs, &mut rng);
-        // One-shot at-rest hardening. The seal migrations above re-key every secret
-        // from the chip-serial root to the OTP root, but the log-structured store
-        // keeps the superseded chip-serial-sealed copies (notably the pre-OTP seed)
-        // recoverable from a flash dump until the page is reclaimed. Scrub them with
-        // a full GC lap the first time we boot with the OTP key present. Gated on a
-        // flash marker so it runs once and crash-safely: an interrupted lap leaves
-        // `EF_HARDENED` unset and re-runs next boot (the lap is idempotent), and a
-        // device provisioned OTP-first pays it once with nothing to scrub. It is a
-        // multi-second stall — deliberately before USB attach, at an attended
-        // provisioning boot. See `flash_storage::FlashStorage::compact`.
+        // One-shot at-rest hardening: the seal migrations above re-key every secret
+        // off the chip-serial root, whose superseded copies a flash dump could still
+        // read until a full GC lap reclaims their pages (`FlashStorage::compact`).
+        // Gated on `EF_HARDENED` so it runs once and crash-safely (absent ⇒ re-run;
+        // the lap is idempotent). Runs here, before USB attach — except the screen
+        // builds, which defer it to the panel (below) so the ~30 s stall shows a
+        // working page instead of a black panel. See `flash_storage::compact` docs.
+        #[cfg(not(feature = "display-keys"))]
         if mkek.is_some() && !fs.has_data(rsk_fido::consts::EF_HARDENED) && fs.compact().is_ok() {
             let _ = fs.put(rsk_fido::consts::EF_HARDENED, &[1u8]);
+        }
+        #[cfg(feature = "display-keys")]
+        {
+            lap_needed = mkek.is_some() && !fs.has_data(rsk_fido::consts::EF_HARDENED);
         }
     }
     // PHY carries the boot-default LED brightness + steady (PicoForge's global LED
@@ -740,7 +746,7 @@ async fn main(spawner: Spawner) {
     // 0x098A: the panel init moved to the full register set (porch/gate/gamma)
     // with a pre-display-on GRAM blank, and the touchless `display-keys` build
     // landed (screen+button presence, status/confirm pages, 1-key gestures).
-    let device_release: u16 = 0x098B;
+    let device_release: u16 = 0x098C;
     config.device_release = device_release;
 
     let mut builder = Builder::new(
@@ -1246,6 +1252,28 @@ async fn main(spawner: Spawner) {
         display_keys::register_screen(ui);
         ui
     };
+    // The hardening lap is a ~30 s stall that a screen build must not hide behind
+    // a black panel: a changed OpenPGP PIN re-arms it (`request_rescrub`), so
+    // users meet it mid-life, not only at provisioning. Paint the boot-check
+    // page (the bare-word layout every status page speaks), run the lap, then
+    // hand the panel back: `status_task` repaints the live status on its first
+    // tick once main yields. The interrupt executor answers USB throughout, so
+    // enumeration is unaffected; applet commands wait behind the lap, as they
+    // would behind any long worker dispatch.
+    #[cfg(feature = "display-keys")]
+    if lap_needed {
+        if let Ok(mut board) = display_ui.try_borrow_mut() {
+            use crate::display_panel::Panel;
+            let panel: &mut Panel = &mut board;
+            let _ = rsk_ui::render_keys_checking(panel);
+        }
+        let mut fsb = fs_ref.borrow_mut();
+        if fsb.compact().is_ok() {
+            let _ = fsb.put(rsk_fido::consts::EF_HARDENED, &[1u8]);
+        }
+        drop(fsb);
+        display_keys::request_repaint();
+    }
     core1::spawn(p.CORE1);
 
     // Standard key: BOOTSEL by default, or a dedicated `PRESENCE_PIN` GPIO button.

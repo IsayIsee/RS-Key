@@ -1060,6 +1060,7 @@ const PARTIAL_RENDERERS: &[&str] = &[
     "render_home_change",
     // The touchless `keys` pages paint straight onto the (smaller) panel — no
     // Scene of their own, covered by render/keys_tests.rs.
+    "render_keys_checking",
     "render_keys_confirm",
     "render_keys_decision",
     "render_keys_status",

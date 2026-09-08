@@ -115,6 +115,25 @@ fn status_pages_paint_one_centred_row_in_their_status_colour() {
 }
 
 #[test]
+fn checking_page_is_one_bare_word_in_accent() {
+    // The boot-check page paints the bare word (no leading glyph, like the
+    // Working/Ready pages) in the working ink, centred on the dark surface.
+    let mut d = Rec::new();
+    render_keys_checking(&mut d).unwrap();
+    assert!(!d.oob, "checking page painted outside the keys panel");
+    assert_eq!(d.at(0, 0), BG, "checking surface is not the panel BG");
+    assert_eq!(d.at(KEYS_W - 1, KEYS_H - 1), BG);
+    assert!(
+        d.any_ink_in(Rect::new(0, KEYS_H / 2 - 20, KEYS_W, 40)),
+        "checking word missing from the middle band"
+    );
+    assert!(
+        (0..KEYS_H).any(|y| (0..KEYS_W).any(|x| d.at(x, y) == theme::ACCENT)),
+        "checking word not painted in accent"
+    );
+}
+
+#[test]
 fn animated_phases_change_the_frame() {
     // Working's arc steps every phase; Ready/Starting breathe. Awaiting-touch
     // is deliberately static (a ceremony paints over it anyway).

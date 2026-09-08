@@ -131,9 +131,11 @@ pub(crate) fn breathe_color(base: Rgb565, phase: u32) -> Rgb565 {
 }
 
 /// The animated status page — the touchless build's stand-in for the status
-/// LED. Working spins a 270° arc ring; Ready and Starting breathe their glyph
-/// and word; Awaiting-touch is a static shield. Phase 0 equals the static
-/// layout, so callers that never animate get a fixed frame.
+/// LED. Working and Ready breathe their bare word — no leading icon, so the
+/// breathed colour is all the aliveness there is (and a tick on Ready could
+/// read as "just approved something"); Starting breathes its glyph and word;
+/// Awaiting-touch is a static shield. Phase 0 equals the static layout, so
+/// callers that never animate get a fixed frame.
 pub fn render_keys_status_phase<D>(t: &mut D, kind: StatusKind, phase: u32) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
@@ -143,11 +145,11 @@ where
     let (base, glyph, label) = status_face(kind);
     let (x0, word_x) = row_slots(label);
     match kind {
-        // Working is the bare word breathing (no leading icon): a breathed
-        // colour reads as alive even while a single RSA candidate occupies the
-        // core for seconds with no hook firing — and with no icon there is
-        // nothing that could look stuck mid-gesture.
-        StatusKind::Processing => {
+        // Working/Ready are the bare word breathing (no leading icon): a
+        // breathed colour reads as alive even while a single RSA candidate
+        // occupies the core for seconds with no hook firing — and nothing
+        // could look stuck mid-gesture.
+        StatusKind::Processing | StatusKind::Idle => {
             let c = breathe_color(base, phase);
             font::centered(
                 t,
@@ -158,7 +160,7 @@ where
                 BG,
             )?;
         }
-        StatusKind::Idle | StatusKind::Boot => {
+        StatusKind::Boot => {
             let c = breathe_color(base, phase);
             paint_slot_glyph(t, x0, glyph, c)?;
             font::left(
@@ -205,16 +207,38 @@ where
     render_keys_status_phase(t, kind, 0)
 }
 
+/// The boot-time storage-check page: the one-shot hardening lap (a full GC
+/// scrub after a re-keyed OpenPGP PIN) takes ~30 s on a cold boot, and the
+/// screen build shows this instead of a black panel. A static face in the
+/// working-page's ink — the caller holds the thread executor for the whole
+/// lap, so nothing animates it — and, like Working/Ready, the bare word with
+/// no leading icon: every status word speaks one layout.
+pub fn render_keys_checking<D>(t: &mut D) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let area = Rectangle::new(EgPoint::zero(), Size::new(KEYS_W.into(), KEYS_H.into()));
+    t.fill_solid(&area, BG)?;
+    font::centered(
+        t,
+        "CHECKING",
+        EgPoint::new(KEYS_W as i32 / 2, KEYS_MID_Y),
+        Role::Ready,
+        theme::ACCENT,
+        BG,
+    )
+}
+
 /// Animation steps repaint only their own region, never the whole panel — a
 /// full-frame rewrite mid-scan tears visibly on the small panel, while an
 /// in-place recolour of a bounded area does not (the touch build's spinner and
 /// breathe work the same way). The glyph/word paints carry the background
 /// colour, so a same-spot repaint fully overwrites its own ink; no clear needed.
 /// The caller paints the full frame first ([`render_keys_status`]), then steps
-/// these on the timer. Step one animated state in place at breathe `phase`: recolour the status
-/// word (Working is the bare breathing word) or the leading glyph and word
-/// (Ready/Starting breathe their glyph too). Awaiting-touch never animates (a
-/// ceremony paints over it), so it needs no step.
+/// these on the timer. Step one animated state in place at breathe `phase`:
+/// recolour the bare breathing word (Working/Ready) or the leading glyph and
+/// word (Starting). Awaiting-touch never animates (a ceremony paints over it),
+/// so it needs no step.
 pub fn render_keys_status_step<D>(t: &mut D, kind: StatusKind, phase: u32) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
@@ -223,7 +247,7 @@ where
     let c = breathe_color(base, phase);
     let (x0, word_x) = row_slots(label);
     match kind {
-        StatusKind::Processing => font::centered(
+        StatusKind::Processing | StatusKind::Idle => font::centered(
             t,
             label,
             EgPoint::new(KEYS_W as i32 / 2, KEYS_MID_Y),
@@ -231,7 +255,7 @@ where
             c,
             BG,
         ),
-        StatusKind::Idle | StatusKind::Boot => {
+        StatusKind::Boot => {
             paint_slot_glyph(t, x0, glyph, c)?;
             font::left(
                 t,

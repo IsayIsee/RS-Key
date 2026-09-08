@@ -58,6 +58,14 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
   ticket; confirm presses are unaffected (they only happen on request screens).
   Also rustdoc/clippy fixes across the touchless build. (bcdDevice 0x098B.)
 
+- **`display-keys`: the boot-time hardening lap shows a CHECKING page instead
+  of a black panel.** The one-shot at-rest scrub re-arms whenever an OpenPGP
+  PIN change supersedes a chip-serial-rooted copy (SEC-BOOT-001), so the ~30 s
+  full-GC lap can hit any cold boot after a PIN change — the panel previously
+  stayed dark the whole time and the key looked dead. The screen build defers
+  the lap until the panel is up and paints the check page in the status-word
+  style. (bcdDevice 0x098C.)
+
 - **Panel init now uses the full Waveshare register set with a pre-display-on
   GRAM blank.** The ST7789 init runs the porch / gate / VCOM / gamma defaults
   (which place a *partial* 240×135 glass on the controller's GRAM — previously

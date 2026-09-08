@@ -65,8 +65,8 @@ pub use boot::render_locked_breathe;
 pub use ceremony::render_add_passkey;
 pub use home::{STATUS_ARC_START, render_home_change, render_status_arc};
 pub use keys::{
-    render_keys_confirm, render_keys_decision, render_keys_status, render_keys_status_phase,
-    render_keys_status_step,
+    render_keys_checking, render_keys_confirm, render_keys_decision, render_keys_status,
+    render_keys_status_phase, render_keys_status_step,
 };
 pub use passkeys::{
     render_confirm_delete, render_passkeys_list, render_passkeys_page, render_rename,
