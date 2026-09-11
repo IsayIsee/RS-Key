@@ -484,6 +484,37 @@ fn text_left_ellipsized_on<D: DrawTarget<Color = Rgb565>>(
     font::left(&mut t.clipped(&eg_rect(clip)), out, at, role, color, bg)
 }
 
+/// The primary subject line on a consent surface — the relying-party id, or a
+/// PIV slot label. Left-aligned, and when it must clip the registrable *suffix*
+/// stays on screen (see [`text_right_ellipsized`]); the marker is forced when
+/// the upstream clamp already cut the label, so a padded look-alike cannot hide
+/// the real domain behind the cut. Every screen build draws this line through
+/// here — the touch prompt's service header and the touchless confirm page — so
+/// a rule change lands on both in one place.
+fn consent_primary<D: DrawTarget<Color = Rgb565>>(
+    t: &mut D,
+    label: &Label,
+    at: EgPoint,
+    role: Role,
+    color: Rgb565,
+    clip: Rect,
+) -> Result<(), D::Error> {
+    text_right_ellipsized(t, label.as_str(), at, role, color, clip, label.truncated)
+}
+
+/// The secondary line under [`consent_primary`] — the account name: left-aligned
+/// with the tail ellipsized, the marker forced when the clamp already cut it.
+fn consent_secondary<D: DrawTarget<Color = Rgb565>>(
+    t: &mut D,
+    label: &Label,
+    at: EgPoint,
+    role: Role,
+    color: Rgb565,
+    clip: Rect,
+) -> Result<(), D::Error> {
+    text_left_ellipsized(t, label.as_str(), at, role, color, clip, label.truncated)
+}
+
 /// Like [`text_left_ellipsized`] but keeps the **suffix** and prepends the marker:
 /// `"...registrable.domain"`. Used for relying-party / domain labels, where the
 /// security-relevant part is the rightmost registrable domain — head-truncation
