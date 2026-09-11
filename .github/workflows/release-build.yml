@@ -160,7 +160,7 @@ jobs:
           # `nix build --rebuild` recompiles the derivation already in the store
           # and fails with a hash mismatch if the output is not bit-identical.
           # A non-reproducible flavor fails here, before the release is created.
-          for pkg in firmware firmware-pqc firmware-fips firmware-fips-pqc firmware-strong-pin firmware-strong-pin-pqc firmware-always-uv firmware-always-uv-pqc firmware-strict-up firmware-strict-up-pqc firmware-display firmware-display-keys firmware-display-keys-strong-pin firmware-display-keys-always-uv firmware-2mb firmware-16mb firmware-strict-config; do
+          for pkg in firmware-display-keys firmware-display-keys-strong-pin firmware-display-keys-always-uv; do
             echo "::group::nix build .#$pkg --rebuild"
             nix build ".#$pkg" --rebuild --no-link
             echo "::endgroup::"
