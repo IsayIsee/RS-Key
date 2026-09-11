@@ -479,6 +479,9 @@ run "clippy (display firmware)" env LED_KIND=none cargo clippy -p firmware --fea
 # The trusted-display PIN pad's trivial-PIN reject is display+strong-pin-gated, so the
 # plain display clippy above never compiles it — lint the combination explicitly.
 run "clippy (display strong-pin)" env LED_KIND=none cargo clippy -p firmware --features display,strong-pin -- -D warnings
+# The touchless screen + button form (the fork-adapted GEEK board): its own
+# feature and board file, mutually exclusive with `display`.
+run "clippy (display keys)" env BOARD=waveshare-geek LED_KIND=none cargo clippy -p firmware --features display-keys -- -D warnings
 # The `display` feature of the WIRING adds the CCID secure-PIN gate
 # (`pin_ref_ready`) and the chaining reset the on-pad VERIFY needs. Neither is
 # compiled by any run above, and the gate is the one that decides whether the
@@ -506,6 +509,11 @@ run "partition table fences the store (16M)" partition_table_fences_the_store
 # the no-touch test image (see docs/build.md).
 run "build firmware (display)" env LED_KIND=none cargo build --release -p firmware --features display
 run "firmware stack floor (display)" firmware_stack_floor
+# The touchless screen + button form must keep building from the same tree too
+# (the fork's adapted board). Kept after the `display` checks — which own the
+# `firmware_stack_floor` reading — and before the no-touch build, which stays
+# the last `-p firmware` build so target/ keeps the no-touch test image.
+run "build firmware (display keys)" env BOARD=waveshare-geek LED_KIND=none cargo build --release -p firmware --features display-keys
 # Machine-checked "no size cost for keys without a screen": the display UI crate
 # and its driver stack must be absent from the DEFAULT firmware dependency tree, so
 # a standard key can not pull any of the screen code in.
