@@ -54,6 +54,7 @@ Which file to take:
 | 2 MB flash (Seeed XIAO RP2350, Waveshare RP2350-Zero-CM) | `2mb` |
 | 16 MB flash (TenStar RP2350-USB) | `16mb` |
 | Waveshare RP2350-Touch-LCD-2.8 | `display` |
+| Waveshare RP2350-GEEK (screen + one button) | `display-keys` |
 
 The other ten images are behaviour variants (post-quantum algorithms, the FIPS
 profile, `alwaysUv`, PIN hardening). Full table, plus how to verify the cosign
@@ -149,11 +150,11 @@ entry delay and the screen direction (the USB-C plug is reversible). Taps
 step next, a double steps back, a hold opens a level; the only flash the menu
 writes is its own settings record, and plugging into a host leaves it
 immediately. There is no on-device PIN pad, so PINs stay host-side like a
-button-only key. This form is built from source (`BOARD=waveshare-geek
-LED_KIND=none cargo build --release -p firmware --features display-keys`) and
-is **not** part of the released image set yet. The touchscreen display build
-(`Waveshare RP2350-Touch-LCD-2.8`, "display" image) is the supported screen
-form.
+button-only key. It ships as the **`display-keys`** image in every release
+(next to the `display` image); to build it yourself: `BOARD=waveshare-geek
+LED_KIND=none cargo build --release -p firmware --features display-keys`. The
+touchscreen display build (`Waveshare RP2350-Touch-LCD-2.8`, "display" image)
+is the supported screen form.
 
 <p align="center">
   <img src="docs/images/rp2350-geek.jpg" width="330" alt="The Waveshare RP2350-GEEK: a small RP2350 board with a 1.14-inch 240x135 colour LCD, a USB-C plug, and a single BOOTSEL button"><br>

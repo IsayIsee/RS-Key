@@ -40,6 +40,15 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
 
 ### Added
 
+- **`display-keys` joins the released image set.** The touchless screen +
+  button build (Waveshare RP2350-GEEK) is one of the signed release flavors
+  now — `rs-key-<tag>-display-keys.uf2`, next to `display` — so the board is
+  usable without a Rust/nix build environment. Reproducible via
+  `nix build .#firmware-display-keys`; from source: `BOARD=waveshare-geek
+  LED_KIND=none cargo build --release -p firmware --features display-keys`.
+  Every newly adapted board gets its own package and release-matrix line the
+  same way. No firmware behaviour change; no `bcdDevice` bump.
+
 - **`display-keys`: a no-host idle menu.** When no USB host has configured the
   device for a while (a charger, a bench supply, a dead plug), the STARTING
   wash gives way to a single-button browse of the device's own metadata: an
