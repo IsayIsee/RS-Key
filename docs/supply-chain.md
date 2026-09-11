@@ -59,7 +59,7 @@ workflow's identity (`job_workflow_ref`).
 ### 3. Build provenance (GitHub attestation)
 
 ```sh
-gh attestation verify rs-key-<tag>-default.uf2 \
+gh attestation verify rs-key-<tag>-display-keys.uf2 \
   --repo IsayIsee/RS-Key \
   --signer-workflow IsayIsee/RS-Key/.github/workflows/release-build.yml
 ```

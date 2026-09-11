@@ -89,8 +89,8 @@ rebuild them yourself and compare (no need to trust the published binary):
 
 ```sh
 git checkout <tag>
-nix build .#firmware              # the default flavor (others: .#firmware-fips, …)
-sha256sum result/firmware.uf2     # compare against SHA256SUMS for rs-key-<tag>-default.uf2
+nix build .#firmware-display-keys             # this fork's flavor (also: -strong-pin, -always-uv)
+sha256sum result/firmware-display-keys.uf2    # compare against SHA256SUMS for rs-key-<tag>-display-keys.uf2
 ```
 
 A match on Linux reproduces the CI-built artifact exactly. (Cross-platform

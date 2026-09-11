@@ -8,7 +8,7 @@ From zero to a working security key in about ten minutes.
 
 ```mermaid
 flowchart TD
-    a["download rs-key-&lt;version&gt;-default.uf2<br/>(or build it yourself)"] --> c["hold BOOT, plug in"]
+    a["download rs-key-&lt;version&gt;-display-keys.uf2<br/>(or build it yourself)"] --> c["hold BOOT, plug in"]
     c --> d["flash: drag-and-drop or picotool load"]
     d --> e["board reboots, enumerates over USB"]
     e --> f["set PIN, enroll a passkey / ssh key"]
@@ -36,11 +36,12 @@ such as Google Chrome or Microsoft Edge.
 
 ## 1. Get the firmware
 
-Download the newest `rs-key-<version>-default.uf2` from the
-[releases page](https://github.com/TheMaxMur/RS-Key/releases/latest). Take
-`2mb`, `16mb` or `display` instead if that is your board;
-[releases.md](releases.md) has the table of all fourteen images, the cosign
-signature check, and the reproducibility check.
+Download the newest `rs-key-<version>-display-keys.uf2` from this fork's
+[releases page](https://github.com/IsayIsee/RS-Key/releases/latest) — the
+Waveshare RP2350-GEEK image. For any other board, take the matching image from
+the [upstream releases](https://github.com/TheMaxMur/RS-Key/releases/latest)
+(`default`, `2mb`, `16mb`, `display`, …); [releases.md](releases.md) has the
+full image table, the cosign signature check, and the reproducibility check.
 
 Every published image is a **touch build**: FIDO operations (registering,
 logging in) require a press of the presence button, BOOTSEL by default.
