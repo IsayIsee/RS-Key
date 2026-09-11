@@ -121,6 +121,10 @@ pub(crate) struct Panel {
     // from the GRAM origin, so every CASET/RASET window is shifted by it (the
     // Waveshare GEEK demo uses 40/53 in landscape). 0 for a full-glass panel.
     win_off: (u16, u16),
+    // The MADCTL byte the panel was brought up with (scan direction | BGR), so
+    // the display-keys build's runtime 180° flip toggles the axis bits without
+    // re-encoding the colour-order bit.
+    madctl: u8,
     damage_key: rsk_ui::scene::DamageKey,
     tile_tags: [rsk_ui::scene::DamageTag; rsk_ui::scene::DAMAGE_TILES],
     tags_valid: bool,
@@ -152,14 +156,38 @@ impl Panel {
             dc,
             _rst: rst,
             win_off,
+            madctl: madctl_scan
+                | if matches!(color_order, ColorOrder::Bgr) {
+                    0x08
+                } else {
+                    0
+                },
             damage_key,
             tile_tags: [0; rsk_ui::scene::DAMAGE_TILES],
             tags_valid: false,
         };
         // GRAM is blanked inside `reset_and_init`, before display-on — see
         // that function's note.
-        panel.reset_and_init(invert, color_order, madctl_scan);
+        panel.reset_and_init(invert);
         panel
+    }
+
+    /// Flip the panel 180° (the USB-C port is reversible, so a plug one way
+    /// round presents the glass upside-down to its user). Toggles the MADCTL
+    /// mirror bits (MX|MY) around the byte the panel was initialised with —
+    /// the exact mirror pair is board-agnostic; a driver that encodes the
+    /// scan differently only needs this mask revisited. The caller repaints
+    /// the next frame after flipping, which rewrites every pixel the right
+    /// way up. Only the display-keys build flips at runtime (its SETTINGS
+    /// option); the touch build never does.
+    #[cfg(feature = "display-keys")]
+    pub(crate) fn set_scan_flip(&mut self, flip: bool) {
+        let madctl = if flip {
+            self.madctl ^ 0xC0
+        } else {
+            self.madctl
+        };
+        self.command(0x36, &[madctl]);
     }
 
     fn command(&mut self, command: u8, params: &[u8]) {
@@ -173,23 +201,16 @@ impl Panel {
         self.cs.set_high();
     }
 
-    fn reset_and_init(&mut self, invert: ColorInversion, color_order: ColorOrder, madctl_scan: u8) {
+    fn reset_and_init(&mut self, invert: ColorInversion) {
         self._rst.set_low();
         block_for(Duration::from_micros(10));
         self._rst.set_high();
         block_for(Duration::from_millis(150));
         // MADCTL = the board's scan-direction bits (MY|MX|MV — 0 for the touch
         // build's portrait panel, 0x70 for the GEEK's landscape 1.14") plus the
-        // BGR bit from the colour order.
-        self.command(
-            0x36,
-            &[madctl_scan
-                | if matches!(color_order, ColorOrder::Bgr) {
-                    0x08
-                } else {
-                    0
-                }],
-        );
+        // BGR bit from the colour order; the composed byte is kept on the panel
+        // for the runtime 180° flip.
+        self.command(0x36, &[self.madctl]);
         // The remainder is the Waveshare ST7789V2 init register set: the porch /
         // gate / VCOM / gamma defaults that place a *partial* glass (240×135,
         // 135×240, …) on this controller's larger GRAM. Omitting them leaves the

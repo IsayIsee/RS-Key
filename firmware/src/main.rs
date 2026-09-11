@@ -56,6 +56,9 @@ mod display_keys;
 mod display_panel;
 mod flash_storage;
 mod handler;
+#[cfg(feature = "display-keys")]
+#[cfg_attr(feature = "no-touch", allow(dead_code))]
+mod keys_menu;
 mod led;
 mod otp_kbd;
 mod otp_keys;
@@ -746,7 +749,10 @@ async fn main(spawner: Spawner) {
     // 0x098A: the panel init moved to the full register set (porch/gate/gamma)
     // with a pre-display-on GRAM blank, and the touchless `display-keys` build
     // landed (screen+button presence, status/confirm pages, 1-key gestures).
-    let device_release: u16 = 0x098C;
+    // 0x098D: the touchless build's no-host idle menu — after 30 s without a
+    // host configuring the device, the STARTING wash becomes a read-only,
+    // single-button browse of the device's own metadata.
+    let device_release: u16 = 0x098D;
     config.device_release = device_release;
 
     let mut builder = Builder::new(
@@ -1182,6 +1188,10 @@ async fn main(spawner: Spawner) {
     // Touchless (`display-keys`) build: the same PIO panel transport, but the
     // presence source is the BOOTSEL button and the screen shows the status wash
     // + one-key confirm pages (see `display_keys`). The backlight is driven high
+    // The menu's persisted config (entry delay + screen direction) loads before
+    // the panel below is assembled, so the screen can come up already flipped.
+    #[cfg(feature = "display-keys")]
+    keys_menu::load_menu_conf(&mut fs_ref.borrow_mut());
     // as a plain GPIO — this build has no brightness menu, so no PWM is wired.
     #[cfg(feature = "display-keys")]
     let display_ui: &'static display_keys::SharedPanel = {
@@ -1234,7 +1244,7 @@ async fn main(spawner: Spawner) {
             1 => mipidsi::options::ColorOrder::Bgr,
             _ => mipidsi::options::ColorOrder::Rgb,
         };
-        let panel = display_panel::Panel::new(
+        let mut panel = display_panel::Panel::new(
             spi,
             cs,
             dc,
@@ -1245,10 +1255,16 @@ async fn main(spawner: Spawner) {
             BUILD_DISPLAY_MADCTL_SCAN,
             BUILD_DISPLAY_WIN_OFF,
         );
+        // A persisted 180° screen-direction choice is applied right after the
+        // panel init (the setting's editor applies it live too); the first
+        // painted frame is then already the right way up.
+        if keys_menu::screen_flip() {
+            panel.set_scan_flip(true);
+        }
         let ui = KEY_UI.init(RefCell::new(display_keys::KeysBoard::new(panel, bl)));
-        spawner.spawn(display_keys::status_task(ui).unwrap());
         // Long-running worker work (RSA keygen) draws the busy spinner through
-        // this handle while it holds the thread executor.
+        // this handle while it holds the thread executor. `status_task` is
+        // spawned below, once the presence backend it drives exists.
         display_keys::register_screen(ui);
         ui
     };
@@ -1295,6 +1311,20 @@ async fn main(spawner: Spawner) {
         display_ui,
         presence::Button::Bootsel(p.BOOTSEL),
     )));
+    // The ambient task now has everything it needs: the panel, the presence
+    // backend (its button), the shared flash, and the device identity the
+    // no-host menu reads. Spawned after the presence init — the hardening lap
+    // above may still be running, but no task polls until main yields.
+    #[cfg(feature = "display-keys")]
+    {
+        let dev = keys_menu::DeviceKeys {
+            serial_id,
+            serial_hash,
+            mkek_source,
+            release: device_release,
+        };
+        spawner.spawn(display_keys::status_task(display_ui, dev, fs_ref, presence_ref).unwrap());
+    }
     let platform_ref = RESCUE_PLATFORM.init(RefCell::new(rescue_platform::RescuePlatform));
     let hooks_ref = DEVICE_HOOKS.init(RefCell::new(handler::DeviceHooks));
     let (kvm, kvc) = (kvmain_range(), kvcnt_range());

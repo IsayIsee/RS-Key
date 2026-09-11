@@ -40,6 +40,37 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
 
 ### Added
 
+- **`display-keys`: a no-host idle menu.** When no USB host has configured the
+  device for a while (a charger, a bench supply, a dead plug), the STARTING
+  wash gives way to a single-button browse of the device's own metadata: an
+  OVERVIEW of per-applet counts, PIV primary-slot states plus retry /
+  certificate / occupied retired-F9 rows (a hold on a populated slot opens its
+  policy page — PIN/touch policy, origin, certificate), OpenPGP slots with
+  signature fingerprint, cardholder, PW1/PW3 retries and signature count, OATH
+  credential names and types (never codes), the passkey counters alone on the
+  first screen and then one row per relying party (a hold opens that party's
+  credential list — user name / display name, a `UV` mark on protected
+  credentials), backup state, the four
+  Yubico-OTP slots' kinds (empty / Yubico-OTP / static / challenge-response /
+  OATH-HOTP, never their secrets), and firmware identity (version / chip id /
+  secure boot). The data is captured once on entry from the applets' public
+  info readers — nothing writes flash, no PIN or session is needed, and page
+  turns never re-read it (a picked detail page reads its own rows on demand,
+  the one fused-key window staying inside that read). Three gestures on the
+  single button: tap = next page, double-tap = back (the page ring wraps both
+  ways), hold past 800 ms = enter — the SETTINGS overview, or the row pick on
+  a PIV / PASSKEYS directory page. SETTINGS is an overview page (one row per
+  option + its current value); a hold enters a select mode (taps walk the
+  rows, the selected row reads green), a hold on the selected row opens its
+  option editor, where a hold confirms. The two options: menu entry delay
+  (3 / 5 / 10 / 30 s) and screen direction (0° / 180° — the reversible USB-C
+  plug; applied live on confirm and at boot). A hold fires the moment it
+  reaches its threshold, without waiting for the release. There is no gesture
+  back to the STARTING wash — under a charger the menu is the useful screen,
+  and only a host configuring the device leaves it. The settings record lives
+  in the display-config flash area, so a factory reset clears it to the
+  defaults (30 s delay, 0°). (bcdDevice 0x098D.)
+
 - **Touchless display build (`display-keys`) for screen + button boards.** The
   Waveshare RP2350-GEEK is the first target: a 240×135 ST7789 landscape panel
   driven over the same PIO link as the touch build, with the physical button
@@ -47,11 +78,18 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
   breathing, Working, Starting), a trusted one-key confirm page naming the
   pending operation, and an approve/decline outcome page. Gestures: short press
   approves, a hold past 800 ms declines (a genuine `OPERATION_DENIED`). No
-  on-device PIN entry or browse UI — `uv` stays unadvertised, exactly like the
+  on-device PIN entry — `uv` stays unadvertised, exactly like the
   button-only build. RSA keygen drives the busy page from its own progress
   hook. Build with `BOARD=waveshare-geek LED_KIND=none --features display-keys`.
 
 ### Changed
+
+- **PIV touch prompts name the slot.** When a slot's touch policy makes the
+  device ask (`Use PIV key?`), the prompt now says which key is meant — `9A
+  Auth`, `9D Key Mgmt`, `Retired #1`, `F9 Attestation` — on both screen builds
+  (the trusted-display ceremony page and the GEEK confirm page). The slot label
+  rides the `primary` field the FIDO rp prompt already uses; the title stays a
+  fixed literal, and one mapping (`rsk_piv::info::slot_label`) feeds it.
 
 - **`display-keys`: idle clicks type OTP slots again.** `poll_pressed` returns
   the real button level (as on the button build), so N idle clicks type slot N's

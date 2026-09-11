@@ -139,12 +139,26 @@ size, LED pin, or presence-button GPIO is a one-line build knob. Details:
 **RP2350-GEEK** (1.14" 240×135 ST7789, no touch, BOOTSEL button) runs the
 `display-keys` build: the panel shows the ambient status (Ready / Working /
 Starting) and a trusted one-key confirm page naming each pending operation —
-a short press approves, a hold past ~0.8 s declines. There is no on-device PIN
-pad or browse UI, so PINs stay host-side like a button-only key. This form is
-built from source (`BOARD=waveshare-geek LED_KIND=none cargo build --release
--p firmware --features display-keys`) and is **not** part of the released
-image set yet. The touchscreen display build (`Waveshare RP2350-Touch-LCD-2.8`,
-"display" image) is the supported screen form.
+a short press approves, a hold past ~0.8 s declines. When no host has
+configured it for a while (a charger, a bench supply, a dead plug) it opens a
+**no-host idle menu** instead: a one-button browse of the device's own
+metadata — per-applet counts and slot states, PIV slot policies, OpenPGP and
+OATH listings, one row per passkey relying party (a hold opens its account
+list), backup state and firmware identity — plus a SETTINGS page for the menu
+entry delay and the screen direction (the USB-C plug is reversible). Taps
+step next, a double steps back, a hold opens a level; the only flash the menu
+writes is its own settings record, and plugging into a host leaves it
+immediately. There is no on-device PIN pad, so PINs stay host-side like a
+button-only key. This form is built from source (`BOARD=waveshare-geek
+LED_KIND=none cargo build --release -p firmware --features display-keys`) and
+is **not** part of the released image set yet. The touchscreen display build
+(`Waveshare RP2350-Touch-LCD-2.8`, "display" image) is the supported screen
+form.
+
+<p align="center">
+  <img src="docs/images/rp2350-geek.jpg" width="330" alt="The Waveshare RP2350-GEEK: a small RP2350 board with a 1.14-inch 240x135 colour LCD, a USB-C plug, and a single BOOTSEL button"><br>
+  <sub>Waveshare RP2350-GEEK: 240×135 screen, one button, no touch — the <code>display-keys</code> target (photo: Waveshare)</sub>
+</p>
 
 <p align="center">
   <img src="assets/hero-boards.jpg" width="330" alt="Three RS-Key boards on a blueprint background: a bare RP2350 USB stick, the trusted-display variant showing its Home &quot;Ready&quot; screen (USB connected, Device PIN set, 2 passkeys), and a Waveshare RP2350-One"><br>

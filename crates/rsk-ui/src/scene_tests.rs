@@ -1063,6 +1063,7 @@ const PARTIAL_RENDERERS: &[&str] = &[
     "render_keys_checking",
     "render_keys_confirm",
     "render_keys_decision",
+    "render_keys_menu_page",
     "render_keys_status",
     "render_keys_status_phase",
     "render_keys_status_step",

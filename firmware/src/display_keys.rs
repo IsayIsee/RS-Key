@@ -9,8 +9,15 @@
 //! presence, a confirm page naming the pending operation. The button gestures
 //! are mapped by [`rsk_device::presence::GestureWait`]: a short press approves,
 //! a hold past 800 ms declines (the one-button decline gesture, taught by the
-//! confirm page's hint lines). No on-device PIN pad, no browse UI — `uv` stays
-//! unadvertised and the host types PINs, exactly like the button-only build.
+//! confirm page's hint lines). No on-device PIN pad — `uv` stays unadvertised
+//! and the host types PINs, exactly like the button-only build.
+//!
+//! The one browse surface this build has is the no-host idle menu
+//! ([`crate::keys_menu`]): when no host has configured the device for 30 s the
+//! STARTING wash gives way to a read-only, single-button paged listing of the
+//! device's own metadata (see that module). [`status_task`] owns the entry
+//! timer; the menu loop itself is synchronous and holds the panel, exactly like
+//! a confirm wait below.
 //!
 //! Everything here is the board half; the layout and the anti-phishing text
 //! rules live in `rsk_ui`'s `keys` renderer (host-tested). `status_task` and a
@@ -31,6 +38,8 @@ use rsk_device::presence::{Board, Gesture, GestureWait};
 use rsk_ui::{ConfirmPrompt, StatusKind};
 
 use crate::display_panel::Panel;
+use crate::handler::Store;
+use crate::keys_menu;
 use crate::led;
 use crate::presence::{self, Button};
 
@@ -148,11 +157,11 @@ pub(crate) fn keygen_enter() {
     // draws for a Processing status, so the keygen busy page and the
     // post-ceremony busy page are one and the same. The worker is between
     // dispatches here, so the panel borrow always succeeds.
-    if let Some(ui) = screen() {
-        if let Ok(mut board) = ui.try_borrow_mut() {
-            let panel: &mut Panel = &mut board;
-            let _ = rsk_ui::render_keys_status(panel, StatusKind::Processing);
-        }
+    if let Some(ui) = screen()
+        && let Ok(mut board) = ui.try_borrow_mut()
+    {
+        let panel: &mut Panel = &mut board;
+        let _ = rsk_ui::render_keys_status(panel, StatusKind::Processing);
     }
 }
 
@@ -186,7 +195,12 @@ pub(crate) fn keygen_leave() {
 /// executor synchronously, so the animation simply freezes while a command is
 /// dispatched — it never delays one.
 #[embassy_executor::task]
-pub(crate) async fn status_task(ui: &'static SharedPanel) {
+pub(crate) async fn status_task(
+    ui: &'static SharedPanel,
+    dev: keys_menu::DeviceKeys,
+    fs: &'static RefCell<Store>,
+    presence: &'static RefCell<presence::Presence>,
+) {
     // The panel was just initialised (and blanked to black): show the Starting
     // page at once — the touch build lets its splash linger the same way — so
     // a fresh plug never stares at an empty frame.
@@ -198,8 +212,51 @@ pub(crate) async fn status_task(ui: &'static SharedPanel) {
     let mut shown = Some(StatusKind::Boot);
     let mut phase: u32 = 0;
     let mut breathe_ticks: u32 = 0;
+    #[cfg(not(feature = "no-touch"))]
+    let mut boot_since: Option<Instant> = None;
     loop {
         let kind = status_to_kind(led::status());
+        #[cfg(not(feature = "no-touch"))]
+        // The no-host idle menu: once the STARTING wash has held
+        // `keys_menu::MENU_ENTRY_MS` without a host configuring the device,
+        // hand the panel to the synchronous browse loop (see `keys_menu`). The
+        // timer counts from the *first* Boot tick, so the pre-USB hardening
+        // lap — up to ~30 s, during which this task cannot poll — is not part
+        // of the wait; a configure at any point resets it.
+        if kind == StatusKind::Boot {
+            let now = Instant::now();
+            match boot_since {
+                None => boot_since = Some(now),
+                Some(t0)
+                    if now.saturating_duration_since(t0)
+                        >= Duration::from_millis(keys_menu::entry_delay_ms()) =>
+                {
+                    // The menu paints non-status frames: clear the shown cache
+                    // so the wash is repainted the tick after it returns.
+                    shown = None;
+                    // A confirm wait or the worker can own the panel/presence
+                    // mid-tick on the same executor — impossible in practice
+                    // while Boot (a confirm only runs inside a dispatch), but
+                    // a failed borrow must not wedge the task: keep the elapsed
+                    // timestamp and retry next tick.
+                    let Ok(mut board) = ui.try_borrow_mut() else {
+                        continue;
+                    };
+                    let panel: &mut Panel = &mut board;
+                    let mut guard = presence.borrow_mut();
+                    // The browse loop owns the panel and key until a host
+                    // configures the device; the next tick then paints the
+                    // live status (the timer is reset below either way).
+                    keys_menu::browse(panel, &mut guard.button, fs, &dev);
+                    drop(guard);
+                    boot_since = None;
+                    continue;
+                }
+                _ => {}
+            }
+        } else {
+            boot_since = None;
+        }
         if shown != Some(kind) {
             phase = 0;
             breathe_ticks = 0;
@@ -209,7 +266,7 @@ pub(crate) async fn status_task(ui: &'static SharedPanel) {
             // Working breathes a little faster than Ready/Starting.
             StatusKind::Processing => {
                 breathe_ticks = breathe_ticks.wrapping_add(1);
-                if breathe_ticks % 2 == 0 {
+                if breathe_ticks.is_multiple_of(2) {
                     phase = phase.wrapping_add(1);
                     true
                 } else {
@@ -220,7 +277,7 @@ pub(crate) async fn status_task(ui: &'static SharedPanel) {
                 breathe_ticks = breathe_ticks.wrapping_add(1);
                 // One ramp step every three ticks (≈300 ms): the 16-phase ramp
                 // then completes a breath in ≈4.8 s — slow enough to feel calm.
-                if breathe_ticks % 3 == 0 {
+                if breathe_ticks.is_multiple_of(3) {
                     phase = phase.wrapping_add(1);
                     true
                 } else {

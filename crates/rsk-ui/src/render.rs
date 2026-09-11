@@ -21,15 +21,16 @@ use embedded_graphics::{
 use crate::{
     ADJ_MINUS_RECT, ADJ_PLUS_RECT, ALLOW_RECT, AccountRow, AuditKind, AuditRow, BACKUP_REVEAL_RECT,
     BACKUP_SEAL_RECT, BRIGHTNESS_LEVELS, BackupView, CONTENT_TOP, ConfirmPrompt, DEL_HOLD_RECT,
-    DENY_RECT, FMT_PHRASE_RECT, FMT_SHARES_RECT, Glyph, HomeView, Label, NAV_H, NAV_TABS, NAV_TOP,
-    NavTab, ONBOARD_SET_RECT, ONBOARD_SKIP_RECT, OPENPGP_ROWS, PAGER_NEXT_RECT, PAGER_PREV_RECT,
-    PANEL_H, PANEL_W, PICK_CONTINUE_RECT, PICK_N_MINUS_RECT, PICK_N_PLUS_RECT, PICK_T_MINUS_RECT,
-    PICK_T_PLUS_RECT, PIN_CANCEL_RECT, PIN_COLS, PIN_EYE_RECT, PIN_ROWS, PIV_KEYGEN_PICK_ROWS,
-    PIV_KEYGEN_PICK_TOP, PIV_PIN_MENU_ROWS, PIV_ROWS, PIV_RSA_PICK_ROWS, PK_BACK_RECT, PK_LIST_TOP,
-    PinCaption, PinKey, PinPad, Point, RN_FIELD_RECT, Rect, RevealKind, RpRow, STATUS_BAR_H,
-    Screen, SettingsPage, SettingsView, StatusKind, SuccessKind, T9_KEY_LABELS, TITLE_BACK_RECT,
-    TITLE_BAR_H, TITLE_EDIT_RECT, font, font::Role, glyph, hex_u16, hex_u64, nav_tab_rect,
-    page_count, pin_grid_key, pin_key_rect, settings_row_rect, t9_key_rect, theme,
+    DENY_RECT, FMT_PHRASE_RECT, FMT_SHARES_RECT, Glyph, HomeView, KeysMenuRow, Label, NAV_H,
+    NAV_TABS, NAV_TOP, NavTab, ONBOARD_SET_RECT, ONBOARD_SKIP_RECT, OPENPGP_ROWS, PAGER_NEXT_RECT,
+    PAGER_PREV_RECT, PANEL_H, PANEL_W, PICK_CONTINUE_RECT, PICK_N_MINUS_RECT, PICK_N_PLUS_RECT,
+    PICK_T_MINUS_RECT, PICK_T_PLUS_RECT, PIN_CANCEL_RECT, PIN_COLS, PIN_EYE_RECT, PIN_ROWS,
+    PIV_KEYGEN_PICK_ROWS, PIV_KEYGEN_PICK_TOP, PIV_PIN_MENU_ROWS, PIV_ROWS, PIV_RSA_PICK_ROWS,
+    PK_BACK_RECT, PK_LIST_TOP, PinCaption, PinKey, PinPad, Point, RN_FIELD_RECT, Rect, RevealKind,
+    RpRow, STATUS_BAR_H, Screen, SettingsPage, SettingsView, StatusKind, SuccessKind,
+    T9_KEY_LABELS, TITLE_BACK_RECT, TITLE_BAR_H, TITLE_EDIT_RECT, Tone, font, font::Role, glyph,
+    hex_u16, hex_u64, nav_tab_rect, page_count, pin_grid_key, pin_key_rect, settings_row_rect,
+    t9_key_rect, theme,
 };
 use crate::{
     AppsView, CardholderView, OathDetailView, OathRow, OpenpgpView, PgpKeyView, PivExtraRow,
@@ -44,6 +45,7 @@ mod ceremony;
 mod components;
 mod home;
 mod keys;
+mod keys_menu;
 mod passkeys;
 mod pin;
 mod reset;
@@ -68,6 +70,7 @@ pub use keys::{
     render_keys_checking, render_keys_confirm, render_keys_decision, render_keys_status,
     render_keys_status_phase, render_keys_status_step,
 };
+pub use keys_menu::{KEYS_MENU_ROWS_PER_PAGE, keys_menu_page_slice, render_keys_menu_page};
 pub use passkeys::{
     render_confirm_delete, render_passkeys_list, render_passkeys_page, render_rename,
     render_rename_field, render_rename_keys, render_service, render_service_page,
