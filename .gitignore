@@ -29,6 +29,13 @@ secure_boot_*.pem
 !/formal/out/MATRIX.txt
 /formal/states/
 
+# Local working documents: the maintainer's packaging/device SOP and the
+# board follow-up notes. They record bench and infrastructure details and
+# stay on the working machine; kept here so a `git add -A` cannot pick
+# them back up (they were purged from history for the same reason).
+/PACKAGING-NIX.md
+/GEEK-FOLLOWUPS.md
+
 # Documentation site: build output and the mermaid assets that
 # `mdbook-mermaid install` generates next to book.toml (not committed).
 /book/
