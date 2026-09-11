@@ -184,9 +184,9 @@ formal/README.md	crates/rsk-openpgp/src/pin.rs	793-793	if data.len() <= rc_len {
 formal/README.md	crates/rsk-openpgp/src/pso.rs	80-92	(0x9E, 0x9A) => {	if !sess.has_pw2 {
 formal/README.md	crates/rsk-openpgp/src/putdata.rs	59-65	pub fn write_authorized(sess: &Session, fid: u16) -> bool {	}
 formal/README.md	crates/rsk-openpgp/src/putdata.rs	181-183	if matches!(fid, EF_UIF_SIG | EF_UIF_DEC | EF_UIF_AUT) {	if let Some(n) = fs.read(target, &mut cur)
-formal/README.md	crates/rsk-piv/src/auth.rs	57-65	/// skips the PIN; listing known gated values made unknown bytes ungated.	}
-formal/README.md	crates/rsk-piv/src/auth.rs	63-63	PINPOLICY_ALWAYS => sess.has_pin && sess.pin_fresh,	PINPOLICY_ALWAYS => sess.has_pin && sess.pin_fresh,
-formal/README.md	crates/rsk-piv/src/auth.rs	113-117	/// nothing clears the PIN's own status — 9B included, hence `is_key`.	self.sess.pin_fresh = false;
+formal/README.md	crates/rsk-piv/src/auth.rs	61-69	/// skips the PIN; listing known gated values made unknown bytes ungated.	}
+formal/README.md	crates/rsk-piv/src/auth.rs	63-63	match pinpol {	match pinpol {
+formal/README.md	crates/rsk-piv/src/auth.rs	117-121	/// nothing clears the PIN's own status — 9B included, hence `is_key`.	self.sess.pin_fresh = false;
 formal/README.md	crates/rsk-piv/src/lib.rs	183-186	fn set_pin(&mut self, verified: bool) {	}
 formal/README.md	crates/rsk-piv/src/lib.rs	199-203	self.clear_challenge();	pub struct PivApplet<'a> {
 formal/README.md	crates/rsk-piv/src/lib.rs	365-368	if !reselect {	// The default PIN/PUK/retry/mgmt/attestation files are provisioned once
@@ -201,7 +201,7 @@ formal/README.md	crates/rsk-sdk/src/applet.rs	208-210	fn selectable(&self, i: us
 formal/README.md	crates/rsk-sdk/src/applet.rs	374-390	// answered to the AID SP 800-85A-4 C.1.1.2 names as invalid. A YubiKey	{
 formal/README.md	crates/rsk-sdk/src/applet.rs	379-387	// A disabled applet is skipped, so its AID matches nothing	let reselect = self.current == Some(i);
 formal/README.md	crates/rsk-sdk/src/applet.rs	387-387	let reselect = self.current == Some(i);	let reselect = self.current == Some(i);
-formal/README.md	crates/rsk-ui/src/lib.rs	253-261	/// Refines `RSKeyTrustedDisplay!OnlyAllowConfirms` — SEC-DISP-003.	}
+formal/README.md	crates/rsk-ui/src/lib.rs	253-261	/// matches.	None
 formal/README.md	crates/rsk-usb/src/ctaphid.rs	386-456	/// Drop an in-progress reassembly (e.g. on a receive timeout).	if seq != self.seq {
 formal/README.md	crates/rsk-usb/src/ctaphid.rs	417-419	// Mid-transaction, an init-type frame that is not CTAPHID_INIT is a	// meaningless in such a frame. A continuation frame whose seq byte has
 formal/README.md	crates/rsk-usb/src/ctaphid.rs	420-420	// the INIT bit set lands here (FIDO conformance HID-1 F-4 corrupts the	// the INIT bit set lands here (FIDO conformance HID-1 F-4 corrupts the
@@ -209,8 +209,8 @@ formal/README.md	crates/rsk-usb/src/ctaphid.rs	431-431	// expected is out of seq
 formal/README.md	crates/rsk-usb/src/ctaphid.rs	433-435	return Outcome::Error(cid, ERR_INVALID_SEQ);	let bcnt = ((f[5] as usize) << 8) | f[6] as usize;
 formal/README.md	crates/rsk-usb/src/ctaphid.rs	437-440	return Outcome::Error(cid, ERR_INVALID_LEN);	self.cmd = cmd;
 formal/README.md	crates/rsk-usb/src/ctaphid.rs	565-565	request_cancel: fn(),	request_cancel: fn(),
-formal/README.md	firmware/src/main.rs	656-656	let _ = rsk_fido::seed::ensure_seed(&dev, &mut fs, &mut rng);	let _ = rsk_fido::seed::ensure_seed(&dev, &mut fs, &mut rng);
-formal/README.md	firmware/src/main.rs	658-669	// One-shot at-rest hardening. The seal migrations above re-key every secret	let _ = fs.put(rsk_fido::consts::EF_HARDENED, &[1u8]);
+formal/README.md	firmware/src/main.rs	656-656	};	};
+formal/README.md	firmware/src/main.rs	658-669	rsk_rescue::keydev::migrate_kbase(&dev, &mut fs, &mut rng);	// the lap is idempotent). Runs here, before USB attach — except the screen
 formal/README.md	firmware/src/pin_lock.rs	18-21	//! a real power cycle clears it. The *whole* lock moves: carrying the engaged flag	//!
 formal/README.md	firmware/src/presence.rs	39-40	#[cfg(not(any(feature = "display", feature = "display-keys")))]	use rsk_device::presence::ButtonWait;
 formal/README.md	firmware/src/worker.rs	434-434	crate::presence::set_wait_scope(match ex.kind {	crate::presence::set_wait_scope(match ex.kind {
@@ -233,8 +233,8 @@ formal/RSKeyAppletPolicies.tla	crates/rsk-oath/src/lib.rs	555-587	// gated here,
 formal/RSKeyAppletPolicies.tla	crates/rsk-openpgp/src/keypairgen.rs	79-117	let priv_fid = slot_algo_fid(fid);	// sibling reader `info::slot_algo` has the same `attr.len() >= 3` gate.
 formal/RSKeyAppletPolicies.tla	crates/rsk-otp/src/lib.rs	438-450	/// P1 = 0x04/0x05: update the flag bytes of an existing config, keeping its	let fid = base + apdu.p2 as u16;
 formal/RSKeyAppletPolicies.tla	crates/rsk-otp/src/lib.rs	538-545	// The access code gates a swap's move/delete just as it gates	}
-formal/RSKeyAppletPolicies.tla	crates/rsk-piv/src/auth.rs	58-66	fn pin_satisfied(sess: &Session, pinpol: u8) -> bool {	}
-formal/RSKeyAppletPolicies.tla	crates/rsk-piv/src/auth.rs	114-118	/// Refines `RSKeyAppletPolicies!PivAlwaysSpendsFreshness` — SEC-POL-002.	}
+formal/RSKeyAppletPolicies.tla	crates/rsk-piv/src/auth.rs	58-66	/// Refines `RSKeyAppletPolicies!PivOperationNeedsSlotPolicy` — SEC-POL-001.	// the VERIFY must also be unspent — see [`GenAuth::spend_pin`].
+formal/RSKeyAppletPolicies.tla	crates/rsk-piv/src/auth.rs	114-118	impl<S: Storage> GenAuth<'_, S> {	/// Refines `RSKeyAppletPolicies!PivAlwaysSpendsFreshness` — SEC-POL-002.
 formal/RSKeyAppletSeams.tla	crates/rsk-device/src/ccid.rs	91-109	pub struct CcidApplets<'a, S: Storage, R: rsk_sdk::Rng + 'static, VP: rsk_vendor::Platform> {	enabled_caps: u16,
 formal/RSKeyAppletSeams.tla	crates/rsk-device/src/ccid.rs	304-313	#[cfg(not(feature = "strict-config"))]	.is_ok()
 formal/RSKeyAppletSeams.tla	crates/rsk-device/src/ccid.rs	348-363	/// Drop the selected applet's security status on an ICC power transition, so a	self.disp.reset_card(&mut applets, &mut *fsb);
@@ -260,8 +260,8 @@ formal/RSKeyAppletSeams.tla	crates/rsk-openpgp/src/pin.rs	67-80	pub fn reset(&mu
 formal/RSKeyAppletSeams.tla	crates/rsk-openpgp/src/pin.rs	176-188	/// Refines `RSKeyAppletSeams!NoStatusAfterARefusedAuth` — SEC-SEAM-002.	}
 formal/RSKeyAppletSeams.tla	crates/rsk-openpgp/src/pin.rs	253-255	// comparison, but a YubiKey 5.7.4 clears exactly the addressed	// stops PSO:CDS and the admin surface instead of leaving them open.
 formal/RSKeyAppletSeams.tla	crates/rsk-openpgp/src/putdata.rs	59-65	pub fn write_authorized(sess: &Session, fid: u16) -> bool {	}
-formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/auth.rs	57-65	/// skips the PIN; listing known gated values made unknown bytes ungated.	}
-formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/auth.rs	113-117	/// nothing clears the PIN's own status — 9B included, hence `is_key`.	self.sess.pin_fresh = false;
+formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/auth.rs	61-69	/// skips the PIN; listing known gated values made unknown bytes ungated.	}
+formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/auth.rs	117-121	/// nothing clears the PIN's own status — 9B included, hence `is_key`.	self.sess.pin_fresh = false;
 formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	165-179	/// A private-key operation at any PIN-gated slot spends this one alone	impl Session {
 formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	183-186	fn set_pin(&mut self, verified: bool) {	}
 formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	199-203	self.clear_challenge();	pub struct PivApplet<'a> {
@@ -277,8 +277,8 @@ formal/RSKeyBootHardening.tla	crates/rsk-fs/src/lib.rs	26-46	/// Set (`[1]`) onc
 formal/RSKeyBootHardening.tla	crates/rsk-oath/src/lib.rs	1156-1156	// (rsk-fs `EF_HARDENED` invariant; audit run-35).	// (rsk-fs `EF_HARDENED` invariant; audit run-35).
 formal/RSKeyBootHardening.tla	crates/rsk-openpgp/src/pin.rs	340-340	// both are rooted in the *public* chip serial (so the verifier is brute-forceable	// both are rooted in the *public* chip serial (so the verifier is brute-forceable
 formal/RSKeyBootHardening.tla	crates/rsk-piv/src/lib.rs	1281-1284	return Sw::MEMORY_FAILURE;	// the pre-OTP arm, which the public chip serial alone derives (rsk-fs
-formal/RSKeyBootHardening.tla	firmware/src/main.rs	658-669	// One-shot at-rest hardening. The seal migrations above re-key every secret	let _ = fs.put(rsk_fido::consts::EF_HARDENED, &[1u8]);
-formal/RSKeyBootHardening.tla	firmware/src/main.rs	668-668	if mkek.is_some() && !fs.has_data(rsk_fido::consts::EF_HARDENED) && fs.compact().is_ok() {	if mkek.is_some() && !fs.has_data(rsk_fido::consts::EF_HARDENED) && fs.compact().is_ok() {
+formal/RSKeyBootHardening.tla	firmware/src/main.rs	658-669	rsk_rescue::keydev::migrate_kbase(&dev, &mut fs, &mut rng);	// the lap is idempotent). Runs here, before USB attach — except the screen
+formal/RSKeyBootHardening.tla	firmware/src/main.rs	668-668	// Gated on `EF_HARDENED` so it runs once and crash-safely (absent ⇒ re-run;	// Gated on `EF_HARDENED` so it runs once and crash-safely (absent ⇒ re-run;
 formal/RSKeyBootHardening.tla	firmware/src/pin_lock.rs	18-21	//! a real power cycle clears it. The *whole* lock moves: carrying the engaged flag	//!
 formal/RSKeyBootHardening.tla	firmware/src/pin_lock.rs	36-37	const TAG: u32 = 0x5253_4B00;	const TAG_MASK: u32 = 0xFFFF_FF00;
 formal/RSKeyBootHardening.tla	firmware/src/pin_lock.rs	52-54	/// Refines `RSKeyBootHardening!TheWholeLockRides` — SEC-BOOT-002.	rp_pac::WATCHDOG.scratch2().write_value(encode(lock));
@@ -413,7 +413,7 @@ formal/RSKeySecurityState.tla	crates/rsk-fido/src/vendor.rs	900-907	// no MSE ha
 formal/RSKeySecurityState.tla	crates/rsk-fido/src/vendor.rs	968-974	/// `EF_BACKUP_SEALED` marker so the seed can no longer be exported **or** shown as	fs.put(EF_BACKUP_SEALED, &[1]).is_ok()
 formal/RSKeySecurityState.tla	crates/rsk-fs/src/fs.rs	258-261	/// A FID can be yielded MORE THAN ONCE — the log-structured backend walks	/// below does).
 formal/RSKeySecurityState.tla	crates/rsk-usb/src/ctaphid.rs	757-762	// frames during fast/crypto processing would consume — and then	if up_pending() {
-formal/RSKeySecurityState.tla	firmware/src/main.rs	656-656	let _ = rsk_fido::seed::ensure_seed(&dev, &mut fs, &mut rng);	let _ = rsk_fido::seed::ensure_seed(&dev, &mut fs, &mut rng);
+formal/RSKeySecurityState.tla	firmware/src/main.rs	656-656	};	};
 formal/RSKeySecurityState.tla	firmware/src/presence.rs	39-40	#[cfg(not(any(feature = "display", feature = "display-keys")))]	use rsk_device::presence::ButtonWait;
 formal/RSKeySecurityState.tla	firmware/src/worker.rs	434-434	crate::presence::set_wait_scope(match ex.kind {	crate::presence::set_wait_scope(match ex.kind {
 formal/RSKeySecurityState.tla	firmware/src/worker.rs	526-528	// Nothing is in flight again: a wait started from here on is an on-panel	crate::presence::set_wait_scope(crate::presence::SCOPE_NONE);
@@ -459,7 +459,7 @@ formal/RSKeyTrustedDisplay.tla	crates/rsk-fido/src/clientpin.rs	536-537	pub fn n
 formal/RSKeyTrustedDisplay.tla	crates/rsk-fido/src/getassertion.rs	616-617	// below is the only thing that names the rp, and the PIN pad cannot ([`needs_confirm`]).	let want_up = want_up(req) && verified.needs_confirm(ctx.presence.shows_confirm());
 formal/RSKeyTrustedDisplay.tla	crates/rsk-fido/src/makecredential.rs	660-661	// naming the rp being registered ([`needs_confirm`]).	if verified.needs_confirm(ctx.presence.shows_confirm()) {
 formal/RSKeyTrustedDisplay.tla	crates/rsk-fido/src/u2f.rs	94-94	crate::clientpin::UvOutcome::BUILTIN.needs_confirm(ctx.presence.shows_confirm());	crate::clientpin::UvOutcome::BUILTIN.needs_confirm(ctx.presence.shows_confirm());
-formal/RSKeyTrustedDisplay.tla	crates/rsk-ui/src/lib.rs	253-261	/// Refines `RSKeyTrustedDisplay!OnlyAllowConfirms` — SEC-DISP-003.	}
+formal/RSKeyTrustedDisplay.tla	crates/rsk-ui/src/lib.rs	253-261	/// matches.	None
 formal/TraceSecurity.tla	crates/rsk-fido/src/clientpin.rs	609-609	ctx.presence.uv_available() && ctx.fs.has_data(EF_PIN)	ctx.presence.uv_available() && ctx.fs.has_data(EF_PIN)
 formal/TraceSecurity.tla	crates/rsk-fido/src/config.rs	317-317	const DEFAULT_ALWAYS_UV: bool = cfg!(feature = "always-uv");	const DEFAULT_ALWAYS_UV: bool = cfg!(feature = "always-uv");
 formal/TraceSecurity.tla	crates/rsk-fido/src/makecredential.rs	528-546	let always_uv = crate::config::always_uv_enabled(ctx.fs);	Ok(UvOutcome::NONE)
@@ -472,8 +472,8 @@ formal/comutants.toml	crates/rsk-openpgp/src/lib.rs	336-339	fn select(&mut self,
 formal/comutants.toml	crates/rsk-openpgp/src/pin.rs	220-224	if idx < n && pw[idx] == 0 {	let mut rec = [0u8; 64];
 formal/comutants.toml	crates/rsk-openpgp/src/pin.rs	796-796	let sw = check_pin(dev, fs, sess, rng, EF_RC, p2, &data[..rc_len]);	let sw = check_pin(dev, fs, sess, rng, EF_RC, p2, &data[..rc_len]);
 formal/comutants.toml	crates/rsk-otp/src/lib.rs	541-545	let unmatched =	}
-formal/comutants.toml	crates/rsk-piv/src/auth.rs	63-63	PINPOLICY_ALWAYS => sess.has_pin && sess.pin_fresh,	PINPOLICY_ALWAYS => sess.has_pin && sess.pin_fresh,
-formal/comutants.toml	crates/rsk-piv/src/auth.rs	115-119	fn spend_pin(&mut self) {	}
+formal/comutants.toml	crates/rsk-piv/src/auth.rs	63-63	match pinpol {	match pinpol {
+formal/comutants.toml	crates/rsk-piv/src/auth.rs	115-119	/// Spend the PIN freshness an ALWAYS slot reads. Measured on a YubiKey 5.7.4: a	fn spend_pin(&mut self) {
 formal/comutants.toml	crates/rsk-piv/src/keygen.rs	585-585	if !sess.has_mgm {	if !sess.has_mgm {
 formal/comutants.toml	crates/rsk-piv/src/lib.rs	183-186	fn set_pin(&mut self, verified: bool) {	}
 formal/comutants.toml	crates/rsk-piv/src/lib.rs	288-288	if p1 != 0x00 || !self.sess.has_mgm || !is_key(p2) {	if p1 != 0x00 || !self.sess.has_mgm || !is_key(p2) {
