@@ -38,6 +38,15 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
 
 ## [Unreleased]
 
+### Changed
+
+- **PIV touch consent names the slot.** When a PIV private-key operation hits
+  a slot's touch policy, the confirm page on both screen builds now shows
+  which key is being authorized (`9A Auth`, `Retired #1`, `F9 Attestation`)
+  instead of a bare "Use PIV key?". The consent text line itself became one
+  shared rule across the touch and touchless builds (refactor, no pixel
+  change there). (bcdDevice 0x098E.)
+
 ### Added
 
 - **`display-keys` joins the released image set.** The touchless screen +

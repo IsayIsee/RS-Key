@@ -752,7 +752,11 @@ async fn main(spawner: Spawner) {
     // 0x098D: the touchless build's no-host idle menu — after 30 s without a
     // host configuring the device, the STARTING wash becomes a read-only,
     // single-button browse of the device's own metadata.
-    let device_release: u16 = 0x098D;
+    // 0x098E: the PIV touch consent names the slot it asks for (`9A Auth`,
+    // `Retired #1`), and the consent text line became one shared rule across
+    // the two screen builds (refactor, no pixel change there) — bcdDevice
+    // counts builds, so the refactor owes the bump too.
+    let device_release: u16 = 0x098E;
     config.device_release = device_release;
 
     let mut builder = Builder::new(
