@@ -46,7 +46,7 @@ CI already enforces this: the release job rebuilds all eleven flavors with
 ```sh
 cosign verify-blob \
   --bundle SHA256SUMS.sigstore.json \
-  --certificate-identity-regexp '^https://github.com/TheMaxMur/RS-Key/\.github/workflows/release-build\.yml@.*$' \
+  --certificate-identity-regexp '^https://github.com/IsayIsee/RS-Key/\.github/workflows/release-build\.yml@.*$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   SHA256SUMS
 sha256sum -c SHA256SUMS          # then check the artifacts against it
@@ -60,8 +60,8 @@ workflow's identity (`job_workflow_ref`).
 
 ```sh
 gh attestation verify rs-key-<tag>-default.uf2 \
-  --repo TheMaxMur/RS-Key \
-  --signer-workflow TheMaxMur/RS-Key/.github/workflows/release-build.yml
+  --repo IsayIsee/RS-Key \
+  --signer-workflow IsayIsee/RS-Key/.github/workflows/release-build.yml
 ```
 
 This confirms the `.uf2` was built by the **`release-build.yml` reusable

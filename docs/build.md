@@ -221,6 +221,8 @@ check the seal with `picotool`. The flavors mirror the
 | `.#firmware-strict-up` | `--features strict-up` (touch on every assertion — **not spec-conformant** for `up:false`; also `.#firmware-strict-up-pqc`) |
 | `.#firmware-display` | `--features display`, `FLASH_SIZE=16M`, `LED_KIND=none` (experimental, Waveshare RP2350-Touch-LCD-2.8) |
 | `.#firmware-display-keys` | `--features display-keys`, `BOARD=waveshare-geek`, `FLASH_SIZE=16M`, `LED_KIND=none` (experimental, Waveshare RP2350-GEEK) |
+| `.#firmware-display-keys-strong-pin` | the GEEK image + `strong-pin` (6-code-point PIN floor + trivial-PIN block) |
+| `.#firmware-display-keys-always-uv` | the GEEK image + `always-uv` (CTAP 2.1 `alwaysUv`; a PIN for every operation) |
 | `.#firmware-2mb` | default features + RS-Key identity, `FLASH_SIZE=2M`, `KVMAIN=896K` (2 MB boards: Seeed XIAO RP2350, Waveshare RP2350-Zero-CM) |
 | `.#firmware-16mb` | default features + RS-Key identity, `FLASH_SIZE=16M` (16 MB boards, e.g. TenStar RP2350-USB) |
 | `.#firmware-strict-config` | `--features strict-config` (historical strict admin-write posture; the default `firmware` is now the permissive full-ykman admin surface) |

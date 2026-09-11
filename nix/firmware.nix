@@ -317,6 +317,29 @@ in
         "display-keys"
       ];
     };
+    # Security-posture variants of the touchless board, standalone like the
+    # default board's strong-pin / always-uv flavors. No pqc pair: the pqc
+    # advertisement is a niche of a niche on an experimental screen form.
+    firmware-display-keys-strong-pin = mkFirmware {
+      name = "firmware-display-keys-strong-pin";
+      board = "waveshare-geek";
+      flashSize = "16M";
+      ledKind = "none";
+      cargoFlags = [
+        "--features"
+        "display-keys,strong-pin"
+      ];
+    };
+    firmware-display-keys-always-uv = mkFirmware {
+      name = "firmware-display-keys-always-uv";
+      board = "waveshare-geek";
+      flashSize = "16M";
+      ledKind = "none";
+      cargoFlags = [
+        "--features"
+        "display-keys,always-uv"
+      ];
+    };
     # Default (feature-less, RS-Key identity) images for boards whose physical
     # flash is not the 4 MB default — the geometry siblings of `firmware`. The
     # FLASH_SIZE must match the chip (it is the embassy Flash const generic). A
