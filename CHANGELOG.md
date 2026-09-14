@@ -38,6 +38,8 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
 
 ## [Unreleased]
 
+## [0.4.10-isk.2] - 2026-09-14
+
 ### Fixed
 
 - **PIV: the Card Capability Container (`5FC107`) is now served.** It is a
@@ -8664,6 +8666,7 @@ family that keeps the "enterprise" features in the open tree.
   [docs/releases.md](docs/releases.md) to verify a download.
 
 [Unreleased]: https://github.com/TheMaxMur/RS-Key/compare/v0.4.11...HEAD
+[0.4.10-isk.2]: https://github.com/IsayIsee/RS-Key/releases/tag/v0.4.10-isk.2
 [0.4.10-isk.1]: https://github.com/IsayIsee/RS-Key/releases/tag/v0.4.10-isk.1
 [0.4.11]: https://github.com/TheMaxMur/RS-Key/compare/v0.4.10...v0.4.11
 [0.4.10]: https://github.com/TheMaxMur/RS-Key/compare/v0.4.9...v0.4.10
