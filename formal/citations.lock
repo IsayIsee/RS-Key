@@ -187,15 +187,15 @@ formal/README.md	crates/rsk-openpgp/src/putdata.rs	181-183	if matches!(fid, EF_U
 formal/README.md	crates/rsk-piv/src/auth.rs	61-69	/// skips the PIN; listing known gated values made unknown bytes ungated.	}
 formal/README.md	crates/rsk-piv/src/auth.rs	63-63	match pinpol {	match pinpol {
 formal/README.md	crates/rsk-piv/src/auth.rs	117-121	/// nothing clears the PIN's own status — 9B included, hence `is_key`.	self.sess.pin_fresh = false;
-formal/README.md	crates/rsk-piv/src/lib.rs	183-186	fn set_pin(&mut self, verified: bool) {	}
-formal/README.md	crates/rsk-piv/src/lib.rs	199-203	self.clear_challenge();	pub struct PivApplet<'a> {
-formal/README.md	crates/rsk-piv/src/lib.rs	365-368	if !reselect {	// The default PIN/PUK/retry/mgmt/attestation files are provisioned once
-formal/README.md	crates/rsk-piv/src/lib.rs	391-391	self.sess.reset();	self.sess.reset();
-formal/README.md	crates/rsk-piv/src/lib.rs	543-577	// the retry counter … shall be decremented by one." A YubiKey 5.7.4 does	/// `6A88` for anything but `P1 = 00, P2 = 80`, as on `change_pin` — and here
-formal/README.md	crates/rsk-piv/src/lib.rs	1241-1243	Err(sw) => return sw,	if left == 0 {
-formal/README.md	crates/rsk-piv/src/lib.rs	1259-1259	// nothing. The cost is that a power cut here spends a retry the holder did	// nothing. The cost is that a power cut here spends a retry the holder did
-formal/README.md	crates/rsk-piv/src/lib.rs	1272-1272	&& ct_eq(	&& ct_eq(
-formal/README.md	crates/rsk-piv/src/lib.rs	1392-1392	puk: &[u8],	puk: &[u8],
+formal/README.md	crates/rsk-piv/src/lib.rs	185-188	fn set_pin(&mut self, verified: bool) {	}
+formal/README.md	crates/rsk-piv/src/lib.rs	201-205	self.clear_challenge();	pub struct PivApplet<'a> {
+formal/README.md	crates/rsk-piv/src/lib.rs	367-370	if !reselect {	// The default PIN/PUK/retry/mgmt/attestation files are provisioned once
+formal/README.md	crates/rsk-piv/src/lib.rs	393-393	self.sess.reset();	self.sess.reset();
+formal/README.md	crates/rsk-piv/src/lib.rs	545-579	// the retry counter … shall be decremented by one." A YubiKey 5.7.4 does	/// `6A88` for anything but `P1 = 00, P2 = 80`, as on `change_pin` — and here
+formal/README.md	crates/rsk-piv/src/lib.rs	1250-1252	Err(sw) => return sw,	if left == 0 {
+formal/README.md	crates/rsk-piv/src/lib.rs	1268-1268	// nothing. The cost is that a power cut here spends a retry the holder did	// nothing. The cost is that a power cut here spends a retry the holder did
+formal/README.md	crates/rsk-piv/src/lib.rs	1281-1281	&& ct_eq(	&& ct_eq(
+formal/README.md	crates/rsk-piv/src/lib.rs	1401-1401	puk: &[u8],	puk: &[u8],
 formal/README.md	crates/rsk-rescue/src/lib.rs	141-143	/// Refines `RSKeyAdminSurface!PrivilegedOpNeedsPresence` — SEC-ADM-002.	self.presence.borrow_mut().request(confirm) == Presence::Confirmed
 formal/README.md	crates/rsk-sdk/src/applet.rs	208-210	fn selectable(&self, i: usize) -> bool {	}
 formal/README.md	crates/rsk-sdk/src/applet.rs	374-390	// answered to the AID SP 800-85A-4 C.1.1.2 names as invalid. A YubiKey	{
@@ -262,11 +262,11 @@ formal/RSKeyAppletSeams.tla	crates/rsk-openpgp/src/pin.rs	253-255	// comparison,
 formal/RSKeyAppletSeams.tla	crates/rsk-openpgp/src/putdata.rs	59-65	pub fn write_authorized(sess: &Session, fid: u16) -> bool {	}
 formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/auth.rs	61-69	/// skips the PIN; listing known gated values made unknown bytes ungated.	}
 formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/auth.rs	117-121	/// nothing clears the PIN's own status — 9B included, hence `is_key`.	self.sess.pin_fresh = false;
-formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	165-179	/// A private-key operation at any PIN-gated slot spends this one alone	impl Session {
-formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	183-186	fn set_pin(&mut self, verified: bool) {	}
-formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	199-203	self.clear_challenge();	pub struct PivApplet<'a> {
-formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	521-535	return Sw::PIN_BLOCKED;	// the oracle's order too.
-formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	543-577	// the retry counter … shall be decremented by one." A YubiKey 5.7.4 does	/// `6A88` for anything but `P1 = 00, P2 = 80`, as on `change_pin` — and here
+formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	167-181	/// A private-key operation at any PIN-gated slot spends this one alone	impl Session {
+formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	185-188	fn set_pin(&mut self, verified: bool) {	}
+formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	201-205	self.clear_challenge();	pub struct PivApplet<'a> {
+formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	523-537	return Sw::PIN_BLOCKED;	// the oracle's order too.
+formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	545-579	// the retry counter … shall be decremented by one." A YubiKey 5.7.4 does	/// `6A88` for anything but `P1 = 00, P2 = 80`, as on `change_pin` — and here
 formal/RSKeyAppletSeams.tla	crates/rsk-sdk/src/applet.rs	145-145	apdu.ins == 0xA4 && apdu.p1 == 0x04 && (apdu.p2 == 0x00 || apdu.p2 == 0x04)	apdu.ins == 0xA4 && apdu.p1 == 0x04 && (apdu.p2 == 0x00 || apdu.p2 == 0x04)
 formal/RSKeyAppletSeams.tla	crates/rsk-sdk/src/applet.rs	222-230	///	{
 formal/RSKeyAppletSeams.tla	crates/rsk-sdk/src/applet.rs	374-390	// answered to the AID SP 800-85A-4 C.1.1.2 names as invalid. A YubiKey	{
@@ -276,7 +276,7 @@ formal/RSKeyBootHardening.tla	crates/rsk-fido/src/clientpin.rs	811-813	if migrat
 formal/RSKeyBootHardening.tla	crates/rsk-fs/src/lib.rs	26-46	/// Set (`[1]`) once the post-OTP-provisioning at-rest hardening pass has run: the seal	let _ = fs.delete(EF_HARDENED);
 formal/RSKeyBootHardening.tla	crates/rsk-oath/src/lib.rs	1156-1156	// (rsk-fs `EF_HARDENED` invariant; audit run-35).	// (rsk-fs `EF_HARDENED` invariant; audit run-35).
 formal/RSKeyBootHardening.tla	crates/rsk-openpgp/src/pin.rs	340-340	// both are rooted in the *public* chip serial (so the verifier is brute-forceable	// both are rooted in the *public* chip serial (so the verifier is brute-forceable
-formal/RSKeyBootHardening.tla	crates/rsk-piv/src/lib.rs	1281-1284	return Sw::MEMORY_FAILURE;	// the pre-OTP arm, which the public chip serial alone derives (rsk-fs
+formal/RSKeyBootHardening.tla	crates/rsk-piv/src/lib.rs	1290-1293	return Sw::MEMORY_FAILURE;	// the pre-OTP arm, which the public chip serial alone derives (rsk-fs
 formal/RSKeyBootHardening.tla	firmware/src/main.rs	658-669	rsk_rescue::keydev::migrate_kbase(&dev, &mut fs, &mut rng);	// the lap is idempotent). Runs here, before USB attach — except the screen
 formal/RSKeyBootHardening.tla	firmware/src/main.rs	668-668	// Gated on `EF_HARDENED` so it runs once and crash-safely (absent ⇒ re-run;	// Gated on `EF_HARDENED` so it runs once and crash-safely (absent ⇒ re-run;
 formal/RSKeyBootHardening.tla	firmware/src/pin_lock.rs	18-21	//! a real power cycle clears it. The *whole* lock moves: carrying the engaged flag	//!
@@ -289,11 +289,11 @@ formal/RSKeyRetryLattice.tla	crates/rsk-openpgp/src/pin.rs	564-564	let mut fid =
 formal/RSKeyRetryLattice.tla	crates/rsk-openpgp/src/pin.rs	770-820	/// resetting code (P1=0x00) or via a verified admin PIN (P1=0x02). Both re-seal	return match result {
 formal/RSKeyRetryLattice.tla	crates/rsk-openpgp/src/pin.rs	793-793	if data.len() <= rc_len {	if data.len() <= rc_len {
 formal/RSKeyRetryLattice.tla	crates/rsk-openpgp/src/pin.rs	825-825	if p1 != 0x02 {	if p1 != 0x02 {
-formal/RSKeyRetryLattice.tla	crates/rsk-piv/src/lib.rs	580-587	fn reset_retry<S: Storage>(&mut self, dev: &Device, fs: &mut Fs<S>, apdu: &Apdu) -> Sw {	unblock_pin_with_puk(dev, fs, puk, new)
-formal/RSKeyRetryLattice.tla	crates/rsk-piv/src/lib.rs	1236-1299	/// Refines `RSKeyRetryLattice!NoAuthWhenBlocked` — SEC-LAT-001.	Sw::retries(left)
-formal/RSKeyRetryLattice.tla	crates/rsk-piv/src/lib.rs	1241-1243	Err(sw) => return sw,	if left == 0 {
-formal/RSKeyRetryLattice.tla	crates/rsk-piv/src/lib.rs	1259-1259	// nothing. The cost is that a power cut here spends a retry the holder did	// nothing. The cost is that a power cut here spends a retry the holder did
-formal/RSKeyRetryLattice.tla	crates/rsk-piv/src/lib.rs	1392-1392	puk: &[u8],	puk: &[u8],
+formal/RSKeyRetryLattice.tla	crates/rsk-piv/src/lib.rs	582-589	fn reset_retry<S: Storage>(&mut self, dev: &Device, fs: &mut Fs<S>, apdu: &Apdu) -> Sw {	unblock_pin_with_puk(dev, fs, puk, new)
+formal/RSKeyRetryLattice.tla	crates/rsk-piv/src/lib.rs	1245-1308	/// Refines `RSKeyRetryLattice!NoAuthWhenBlocked` — SEC-LAT-001.	Sw::retries(left)
+formal/RSKeyRetryLattice.tla	crates/rsk-piv/src/lib.rs	1250-1252	Err(sw) => return sw,	if left == 0 {
+formal/RSKeyRetryLattice.tla	crates/rsk-piv/src/lib.rs	1268-1268	// nothing. The cost is that a power cut here spends a retry the holder did	// nothing. The cost is that a power cut here spends a retry the holder did
+formal/RSKeyRetryLattice.tla	crates/rsk-piv/src/lib.rs	1401-1401	puk: &[u8],	puk: &[u8],
 formal/RSKeySecurityState.tla	crates/rsk-device/src/ctap.rs	202-205	backup_sealed_record: fs.has_data(EF_BACKUP_SEALED),	credential_slots_raw: credentials.iter().filter(|present| **present).count() as u16,
 formal/RSKeySecurityState.tla	crates/rsk-device/src/ctap.rs	354-361	// Persist the clientPIN soft lock across a warm reboot. It is RAM-only, and a	.store_pin_lock(self.fido_state.borrow().pin_lock());
 formal/RSKeySecurityState.tla	crates/rsk-device/src/presence.rs	25-26	/// No host request in flight: an on-panel (local) flow owns the button.	pub const SCOPE_NONE: u8 = 0;
@@ -475,15 +475,15 @@ formal/comutants.toml	crates/rsk-otp/src/lib.rs	541-545	let unmatched =	}
 formal/comutants.toml	crates/rsk-piv/src/auth.rs	63-63	match pinpol {	match pinpol {
 formal/comutants.toml	crates/rsk-piv/src/auth.rs	115-119	/// Spend the PIN freshness an ALWAYS slot reads. Measured on a YubiKey 5.7.4: a	fn spend_pin(&mut self) {
 formal/comutants.toml	crates/rsk-piv/src/keygen.rs	585-585	if !sess.has_mgm {	if !sess.has_mgm {
-formal/comutants.toml	crates/rsk-piv/src/lib.rs	183-186	fn set_pin(&mut self, verified: bool) {	}
-formal/comutants.toml	crates/rsk-piv/src/lib.rs	288-288	if p1 != 0x00 || !self.sess.has_mgm || !is_key(p2) {	if p1 != 0x00 || !self.sess.has_mgm || !is_key(p2) {
-formal/comutants.toml	crates/rsk-piv/src/lib.rs	390-392	fn deselect(&mut self, _fs: &mut Fs<S>) {	}
-formal/comutants.toml	crates/rsk-piv/src/lib.rs	594-594	if !self.sess.has_mgm || !self.sess.has_pin {	if !self.sess.has_mgm || !self.sess.has_pin {
-formal/comutants.toml	crates/rsk-piv/src/lib.rs	665-665	if !self.sess.has_mgm {	if !self.sess.has_mgm {
-formal/comutants.toml	crates/rsk-piv/src/lib.rs	793-793	if !self.sess.has_mgm {	if !self.sess.has_mgm {
-formal/comutants.toml	crates/rsk-piv/src/lib.rs	1030-1030	if !self.sess.has_mgm {	if !self.sess.has_mgm {
-formal/comutants.toml	crates/rsk-piv/src/lib.rs	1090-1090	if !self.sess.has_mgm {	if !self.sess.has_mgm {
-formal/comutants.toml	crates/rsk-piv/src/lib.rs	1261-1261	if set_retries_left(fs, retry, left - 1).is_err() {	if set_retries_left(fs, retry, left - 1).is_err() {
+formal/comutants.toml	crates/rsk-piv/src/lib.rs	185-188	fn set_pin(&mut self, verified: bool) {	}
+formal/comutants.toml	crates/rsk-piv/src/lib.rs	290-290	if p1 != 0x00 || !self.sess.has_mgm || !is_key(p2) {	if p1 != 0x00 || !self.sess.has_mgm || !is_key(p2) {
+formal/comutants.toml	crates/rsk-piv/src/lib.rs	392-394	fn deselect(&mut self, _fs: &mut Fs<S>) {	}
+formal/comutants.toml	crates/rsk-piv/src/lib.rs	596-596	if !self.sess.has_mgm || !self.sess.has_pin {	if !self.sess.has_mgm || !self.sess.has_pin {
+formal/comutants.toml	crates/rsk-piv/src/lib.rs	667-667	if !self.sess.has_mgm {	if !self.sess.has_mgm {
+formal/comutants.toml	crates/rsk-piv/src/lib.rs	802-802	if !self.sess.has_mgm {	if !self.sess.has_mgm {
+formal/comutants.toml	crates/rsk-piv/src/lib.rs	1039-1039	if !self.sess.has_mgm {	if !self.sess.has_mgm {
+formal/comutants.toml	crates/rsk-piv/src/lib.rs	1099-1099	if !self.sess.has_mgm {	if !self.sess.has_mgm {
+formal/comutants.toml	crates/rsk-piv/src/lib.rs	1270-1270	if set_retries_left(fs, retry, left - 1).is_err() {	if set_retries_left(fs, retry, left - 1).is_err() {
 formal/comutants.toml	crates/rsk-sdk/src/applet.rs	227-227	pub fn reset_card<C>(&mut self, applets: &mut [&mut dyn Applet<C>], ctx: &mut C) {	pub fn reset_card<C>(&mut self, applets: &mut [&mut dyn Applet<C>], ctx: &mut C) {
 formal/gen-configs.sh	crates/rsk-fido/src/consts.rs	364-364	pub const MAX_PIN_RETRIES: u8 = 8;	pub const MAX_PIN_RETRIES: u8 = 8;
 formal/gen-configs.sh	crates/rsk-fido/src/consts.rs	368-368	pub const PIN_MISMATCH_LIMIT: u8 = 3;	pub const PIN_MISMATCH_LIMIT: u8 = 3;
