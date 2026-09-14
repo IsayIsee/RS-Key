@@ -38,6 +38,23 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
 
 ## [Unreleased]
 
+### Fixed
+
+- **PIV: the Card Capability Container (`5FC107`) is now served.** It is a
+  mandatory PIV data object (SP 800-73-4 pt1 §3.1.1); the card previously held
+  it only if a host had written one, and `GET DATA` answered `6A82` otherwise.
+  A freshly flashed card now serves a synthesized default — zero-length
+  mandatory elements plus the data model number `0x10`, the one element §3.1.1
+  requires to carry a value — and a host `PUT DATA` still overrides it, exactly
+  like the CHUID. The change targets the certificate-login failure reported on
+  Windows (`NTE_BAD_KEYSET` / "the keyset does not exist" during an 802.1X
+  EAP-TLS login). Whether the absent object is what that failure turns on is
+  **not yet measured**: this tree's record of the reference card is
+  inconsistent (an earlier commit found a YubiKey answering none; Yubico's SDK
+  documents a factory CCC as present-but-empty), so the shape here follows the
+  specification rather than a capture. The applet is shared — every board gets
+  it. (bcdDevice 0x098F.)
+
 ## [0.4.10-isk.1] - 2026-09-11
 
 ### Changed

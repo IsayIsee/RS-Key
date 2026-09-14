@@ -756,7 +756,10 @@ async fn main(spawner: Spawner) {
     // `Retired #1`), and the consent text line became one shared rule across
     // the two screen builds (refactor, no pixel change there) — bcdDevice
     // counts builds, so the refactor owes the bump too.
-    let device_release: u16 = 0x098E;
+    // 0x098F: PIV serves a synthesized Card Capability Container (`5FC107`,
+    // mandatory per SP 800-73-4 pt1 §3.1.1) where it previously answered 6A82 —
+    // the object a Windows key-container open reads.
+    let device_release: u16 = 0x098F;
     config.device_release = device_release;
 
     let mut builder = Builder::new(
