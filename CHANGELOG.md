@@ -48,12 +48,16 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
   requires to carry a value — and a host `PUT DATA` still overrides it, exactly
   like the CHUID. The change targets the certificate-login failure reported on
   Windows (`NTE_BAD_KEYSET` / "the keyset does not exist" during an 802.1X
-  EAP-TLS login). Whether the absent object is what that failure turns on is
-  **not yet measured**: this tree's record of the reference card is
+  EAP-TLS login). The machine that reported it completes that login on this
+  build. Two further machines authenticated on first use, but neither had been
+  tried before the change, so they show the default is compatible rather than
+  that it is the cure — and the control (this build's predecessor, same
+  machine) has not been run. Whether the absent object is what that failure
+  turns on is therefore **inferred, not demonstrated**, and the default's
+  *shape* is not a capture either: this tree's record of the reference card is
   inconsistent (an earlier commit found a YubiKey answering none; Yubico's SDK
-  documents a factory CCC as present-but-empty), so the shape here follows the
-  specification rather than a capture. The applet is shared — every board gets
-  it. (bcdDevice 0x098F.)
+  documents a factory CCC as present-but-empty), so it follows the
+  specification. The applet is shared — every board gets it. (bcdDevice 0x098F.)
 
 ## [0.4.10-isk.1] - 2026-09-11
 
