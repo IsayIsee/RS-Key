@@ -2,7 +2,7 @@
 
 Releases live on the [GitHub Releases](https://github.com/IsayIsee/RS-Key/releases)
 page. Each is cut from a `v*` git tag by the
-[release workflow](https://github.com/IsayIsee/RS-Key/blob/main/.github/workflows/release.yml).
+[release workflow](https://github.com/IsayIsee/RS-Key/blob/my_main/.github/workflows/release.yml).
 It builds every artifact reproducibly, hashes it, and signs the manifest.
 
 ## What a release contains

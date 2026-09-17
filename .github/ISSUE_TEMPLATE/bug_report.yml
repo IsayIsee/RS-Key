@@ -22,7 +22,7 @@ body:
           required: true
         - label: This is not an exploitable security bug (those go to a private advisory, not here).
           required: true
-        - label: I can still reproduce it on current `main`.
+        - label: I can still reproduce it on current `my_main`.
           required: false
 
   - type: dropdown

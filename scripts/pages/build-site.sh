@@ -3,7 +3,7 @@
 # Copyright (C) 2026 RS-Key contributors
 #
 # Build the *versioned* documentation site into <out> (default: site/):
-#   main     -> <out>/            (root — the default version Pages serves)
+#   my_main  -> <out>/            (root — the default version Pages serves)
 #   develop  -> <out>/develop/
 #   v*       -> <out>/<tag>/      (one dir per release tag)
 #
@@ -76,7 +76,7 @@ build_version() {
   git worktree remove --force "$wt"
 }
 
-build_version "$(resolve main)"    "main"    ""
+build_version "$(resolve my_main)" "my_main" ""
 build_version "$(resolve develop)" "develop" "develop"
 
 # Publish the newest PAGES_TAG_LIMIT tags (default 10; 0/empty/non-numeric =
@@ -106,7 +106,7 @@ fi
 
 cp "$SWITCHER" "$OUT/version-switcher.js"
 
-# versions.json — machine-readable index of what got published (main first,
+# versions.json — machine-readable index of what got published (my_main first,
 # then develop, then tags newest-first; consumed by humans / future tooling).
 {
   printf '{\n  "base": "%s",\n  "versions": [\n' "$BASE"

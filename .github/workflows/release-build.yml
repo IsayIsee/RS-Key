@@ -8,8 +8,8 @@
 #   * this fork ships ONLY the boards it has adapted: the Waveshare
 #     RP2350-GEEK images (`firmware-display-keys*`); the flavor lists below
 #     are trimmed accordingly (upstream ships ~17 flavors);
-#   * releases are cut from `my_dev`, so the tag check below accepts a tag
-#     that is an ancestor of `origin/my_dev` as well as `origin/main`.
+#   * releases are cut from `my_main`, so the tag check below accepts a tag
+#     that is an ancestor of `origin/my_main` as well as `origin/main`.
 #   Everything else (SLSA attestation, keyless cosign, SBOM, the CHANGELOG
 #   notes extraction) is upstream's, unchanged.
 # ---------------------------------------------------------------------------
@@ -120,14 +120,14 @@ jobs:
           # controls this workflow file at that ref and can delete the check — so the
           # PRIMARY control is a repository tag ruleset restricting who may create
           # refs/tags/v*. Configure that in the repo settings.
-          # FORK MODIFICATION: releases are cut from `my_dev` here (upstream
+          # FORK MODIFICATION: releases are cut from `my_main` here (upstream
           # requires `main`), so a tag on either branch is accepted.
           git fetch --no-tags --quiet origin \
             +refs/heads/main:refs/remotes/origin/main \
-            +refs/heads/my_dev:refs/remotes/origin/my_dev
+            +refs/heads/my_main:refs/remotes/origin/my_main
           if ! git merge-base --is-ancestor "$TAG^{commit}" origin/main \
-            && ! git merge-base --is-ancestor "$TAG^{commit}" origin/my_dev; then
-            echo "refusing: $TAG points at neither main nor my_dev" >&2
+            && ! git merge-base --is-ancestor "$TAG^{commit}" origin/my_main; then
+            echo "refusing: $TAG points at neither main nor my_main" >&2
             exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"

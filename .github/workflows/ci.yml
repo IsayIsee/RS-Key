@@ -36,7 +36,7 @@
 #             default build bakes this project's own RS-Key identity while the
 #             opt-in Yubico flavor bakes Yubico's (the vendor-mimicking ids are
 #             local interop only, never shipped).
-#   knobs   — the aggregate of those rows, and the name `main`'s ruleset requires.
+#   knobs   — the aggregate of those rows, and the name `my_main`'s ruleset requires.
 #             A required check has to be reported by a fixed name; a matrix
 #             reports one per row.
 
@@ -44,7 +44,7 @@ name: ci
 
 on:
   push:
-    branches: [my_dev]
+    branches: [my_main]
   pull_request:
 
 permissions:
@@ -361,7 +361,7 @@ jobs:
       - name: knobs (${{ matrix.group }})
         run: nix develop -c ./scripts/ci-knobs.sh ${{ matrix.group }}
 
-  # The name `knobs` is a required status check on `main`, so it has to be
+  # The name `knobs` is a required status check on `my_main`, so it has to be
   # reported by *something* whatever the matrix above looks like. Splitting the
   # job renamed its checks to `knobs (<group>)` and left the required context
   # waiting for a report that would never come — a merge blocked on a check that
