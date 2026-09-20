@@ -129,6 +129,7 @@ CLAIM_RUNNERS=(
   "scripts/metrics.sh|-|advisory refactor reconnaissance, explicitly not a gate and nothing depends on its numbers"
   "scripts/pages/build-site.sh|-|renders the published docs site for GitHub Pages; the docs phase builds and link-checks the same book"
   "scripts/reproduce.sh|-|this file: the runner the phases above are run by, and the one shape that cannot be a phase of itself — its own drift check is --self-test"
+  "scripts/fork-version.sh|-|fork-only bcd bookkeeping: it judges this row's known red against an upstream ref, and no upstream checkout has the policy or the ref"
 )
 
 #: Every job in the three workflows that produce evidence. `pages.yml`,
