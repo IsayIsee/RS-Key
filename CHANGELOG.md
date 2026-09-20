@@ -38,6 +38,13 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
 
 ## [Unreleased]
 
+### Changed
+
+- **`bcdDevice` follows upstream's line again.** The fork's own number (0x098F)
+  rejoins `develop` at 0x09D7 and is taken from upstream on each merge instead of
+  being incremented here — a build's own identity is its `-isk.N` tag, since a
+  frozen counter no longer tells two fork builds apart. (bcdDevice 0x09D7.)
+
 ## [0.4.10-isk.2] - 2026-09-14
 
 ### Fixed

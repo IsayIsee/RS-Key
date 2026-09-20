@@ -781,10 +781,11 @@ async fn main(spawner: Spawner) {
     // counts builds, so the refactor owes the bump too.
     // 0x098F: PIV serves a synthesized Card Capability Container (`5FC107`,
     // mandatory per SP 800-73-4 pt1 §3.1.1) where it previously answered 6A82 —
-    // the object a Windows key-container open reads. Held on the fork's own
-    // line by decision (2026-09-17), not by drift: upstream's develop merge
-    // brought a counter at 0x09D7, and the fork keeps its published value.
-    let device_release: u16 = 0x098F;
+    // the object a Windows key-container open reads.
+    // 0x09D7: the fork's line rejoins upstream's here and follows it from now on
+    // (decision 2026-09-20): the value is upstream develop's, taken on merge and
+    // never incremented here — a build's own identity is its `-isk.N` tag.
+    let device_release: u16 = 0x09D7;
     config.device_release = device_release;
 
     let mut builder = Builder::new(
