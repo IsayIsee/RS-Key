@@ -176,6 +176,59 @@ impl UserPresence for Scripted {
     }
 }
 
+/// A presence stand-in that records the confirm it was asked, so a test can
+/// assert what the consent prompt would have shown.
+struct LabelSpy {
+    primary: Vec<u8>,
+}
+impl UserPresence for LabelSpy {
+    fn request(&mut self, confirm: rsk_sdk::Confirm<'_>) -> Presence {
+        self.primary = confirm.primary.to_vec();
+        Presence::Confirmed
+    }
+}
+
+/// A touch-policy sign must name the slot it is asking about: the primary slot's
+/// label ("9A Auth") for a primary slot, the numbered retired label for a
+/// retired one — "Retired" alone would not say which key is being authorized.
+#[test]
+fn touch_prompt_names_the_slot() {
+    let rng = RefCell::new(TestRng(7));
+    let pres = RefCell::new(LabelSpy {
+        primary: Vec::new(),
+    });
+    let mut app = PivApplet::new(SERIAL, HASH, None, &rng, &pres);
+    let mut fs = new_fs();
+    select(&mut app, &mut fs);
+    auth_mgm(&mut app, &mut fs);
+    verify_pin(&mut app, &mut fs);
+    // 9A asks for touch ALWAYS (the card's own default is NEVER).
+    let mut tmpl = gen_template(ALGO_ECCP256);
+    tmpl.extend_from_slice(&[0xAB, 0x01, TOUCHPOLICY_ALWAYS]);
+    tmpl[1] += 3;
+    assert_eq!(
+        run(&mut app, &mut fs, INS_ASYM_KEYGEN, 0, 0x9A, &tmpl).0,
+        Sw::OK
+    );
+    assert_eq!(sign_p256(&mut app, &mut fs, 0x9A), Sw::OK);
+    assert_eq!(pres.borrow().primary, b"9A Auth");
+    // The same prompt for a retired slot carries its number.
+    assert_eq!(
+        run(
+            &mut app,
+            &mut fs,
+            INS_ASYM_KEYGEN,
+            0,
+            SLOT_RETIRED_FIRST,
+            &tmpl
+        )
+        .0,
+        Sw::OK
+    );
+    assert_eq!(sign_p256(&mut app, &mut fs, SLOT_RETIRED_FIRST), Sw::OK);
+    assert_eq!(pres.borrow().primary, b"Retired #1");
+}
+
 /// Extract `point` from the keygen response `7F49 { 86 point }` (P-256 and
 /// P-384 bodies use short-form lengths).
 fn ec_point_of(resp: &[u8]) -> Vec<u8> {
@@ -1445,15 +1498,16 @@ fn the_pin_read_condition_objects_are_not_world_readable() {
         CARDHOLDER_IRIS_IMAGES_ID,
     ];
     // The controls include each gated id's immediate neighbours, so an off-by-one
-    // in `read_needs_pin` cannot pass. CHUID is a weak control on its own — it
-    // answers OK even when absent (the Windows synthesis) — hence the rest.
+    // in `read_needs_pin` cannot pass. CHUID and CCC are weak controls on their
+    // own — both answer OK even when absent (synthesized defaults) — hence the
+    // rest.
     let ungated = [
         CHUID_ID,
         0x5FC101u32,
         0x5FC102,
         0x5FC104,
         0x5FC105,
-        0x5FC107,
+        CCC_ID,
         0x5FC10A,
         0x5FC10B,
         0x5FC10C,
@@ -4357,6 +4411,54 @@ fn chuid_synthesized_on_fresh_card() {
     // The GUID (tag 34) is the serial-hash prefix: stable across reboots and
     // device-unique, so Windows never re-enrols the card.
     assert_eq!(&body[29..45], &HASH[..16]);
+}
+
+#[test]
+fn ccc_synthesized_on_fresh_card_and_put_wins() {
+    // The CCC is mandatory (SP 800-73-4 pt1 §3.1.1). A card that answers 6A82
+    // for it made a Windows certificate login fail with "the keyset does not
+    // exist" when CAPI opened the key container; a fresh card serves the
+    // synthesized default, and a host PUT still overrides it.
+    let rng = RefCell::new(TestRng(7));
+    let pres = RefCell::new(AlwaysConfirm);
+    let mut app = PivApplet::new(SERIAL, HASH, None, &rng, &pres);
+    let mut fs = new_fs();
+    select(&mut app, &mut fs);
+    let (sw, obj) = run(
+        &mut app,
+        &mut fs,
+        INS_GET_DATA,
+        0x3F,
+        0xFF,
+        &[0x5C, 0x03, 0x5F, 0xC1, 0x07],
+    );
+    assert_eq!(sw, Sw::OK);
+    // The wire anchor, as a literal: routing through the arm is not enough to
+    // pin the bytes (see ccc_tests.rs for the shape's Table 8 derivation).
+    assert_eq!(
+        find_tag(&obj, 0x53).unwrap(),
+        &[0xF0, 0x00, 0xF1, 0x00, 0xF2, 0x00, 0xF5, 0x01, 0x10]
+    );
+    // A host-written CCC persists at the same fid and wins the read (PUT DATA
+    // needs the management key, as for every object).
+    auth_mgm(&mut app, &mut fs);
+    let host = [0xF5u8, 0x01, 0x10, 0xFE, 0x00];
+    let mut put = vec![0x5C, 0x03, 0x5F, 0xC1, 0x07, 0x53, host.len() as u8];
+    put.extend_from_slice(&host);
+    assert_eq!(
+        run(&mut app, &mut fs, INS_PUT_DATA, 0x3F, 0xFF, &put).0,
+        Sw::OK
+    );
+    let (sw, obj) = run(
+        &mut app,
+        &mut fs,
+        INS_GET_DATA,
+        0x3F,
+        0xFF,
+        &[0x5C, 0x03, 0x5F, 0xC1, 0x07],
+    );
+    assert_eq!(sw, Sw::OK);
+    assert_eq!(find_tag(&obj, 0x53).unwrap(), &host);
 }
 
 #[test]

@@ -38,6 +38,145 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
 
 ## [Unreleased]
 
+## [0.4.10-isk.2] - 2026-09-14
+
+### Fixed
+
+- **PIV: the Card Capability Container (`5FC107`) is now served.** It is a
+  mandatory PIV data object (SP 800-73-4 pt1 §3.1.1); the card previously held
+  it only if a host had written one, and `GET DATA` answered `6A82` otherwise.
+  A freshly flashed card now serves a synthesized default — zero-length
+  mandatory elements plus the data model number `0x10`, the one element §3.1.1
+  requires to carry a value — and a host `PUT DATA` still overrides it, exactly
+  like the CHUID. The change targets the certificate-login failure reported on
+  Windows (`NTE_BAD_KEYSET` / "the keyset does not exist" during an 802.1X
+  EAP-TLS login). The machine that reported it completes that login on this
+  build. Two further machines authenticated on first use, but neither had been
+  tried before the change, so they show the default is compatible rather than
+  that it is the cure — and the control (this build's predecessor, same
+  machine) has not been run. Whether the absent object is what that failure
+  turns on is therefore **inferred, not demonstrated**, and the default's
+  *shape* is not a capture either: this tree's record of the reference card is
+  inconsistent (an earlier commit found a YubiKey answering none; Yubico's SDK
+  documents a factory CCC as present-but-empty), so it follows the
+  specification. The applet is shared — every board gets it. (bcdDevice 0x098F.)
+
+## [0.4.10-isk.1] - 2026-09-11
+
+### Changed
+
+- **PIV touch consent names the slot.** When a PIV private-key operation hits
+  a slot's touch policy, the confirm page on both screen builds now shows
+  which key is being authorized (`9A Auth`, `Retired #1`, `F9 Attestation`)
+  instead of a bare "Use PIV key?". The consent text line itself became one
+  shared rule across the touch and touchless builds (refactor, no pixel
+  change there). (bcdDevice 0x098E.)
+
+### Added
+
+- **`display-keys` joins the released image set.** The touchless screen +
+  button build (Waveshare RP2350-GEEK) is one of the signed release flavors
+  now — `rs-key-<tag>-display-keys.uf2`, next to `display` — so the board is
+  usable without a Rust/nix build environment. Reproducible via
+  `nix build .#firmware-display-keys`; from source: `BOARD=waveshare-geek
+  LED_KIND=none cargo build --release -p firmware --features display-keys`.
+  Two security-posture variants ship alongside it: `display-keys-strong-pin`
+  (6-code-point PIN floor) and `display-keys-always-uv` (a PIN for every
+  operation). Every newly adapted board gets its own package and
+  release-matrix line the same way. No firmware behaviour change; no
+  `bcdDevice` bump.
+
+- **`display-keys`: a no-host idle menu.** When no USB host has configured the
+  device for a while (a charger, a bench supply, a dead plug), the STARTING
+  wash gives way to a single-button browse of the device's own metadata: an
+  OVERVIEW of per-applet counts, PIV primary-slot states plus retry /
+  certificate / occupied retired-F9 rows (a hold on a populated slot opens its
+  policy page — PIN/touch policy, origin, certificate), OpenPGP slots with
+  signature fingerprint, cardholder, PW1/PW3 retries and signature count, OATH
+  credential names and types (never codes), the passkey counters alone on the
+  first screen and then one row per relying party (a hold opens that party's
+  credential list — user name / display name, a `UV` mark on protected
+  credentials), backup state, the four
+  Yubico-OTP slots' kinds (empty / Yubico-OTP / static / challenge-response /
+  OATH-HOTP, never their secrets), and firmware identity (version / chip id /
+  secure boot). The data is captured once on entry from the applets' public
+  info readers — nothing writes flash, no PIN or session is needed, and page
+  turns never re-read it (a picked detail page reads its own rows on demand,
+  the one fused-key window staying inside that read). Three gestures on the
+  single button: tap = next page, double-tap = back (the page ring wraps both
+  ways), hold past 800 ms = enter — the SETTINGS overview, or the row pick on
+  a PIV / PASSKEYS directory page. SETTINGS is an overview page (one row per
+  option + its current value); a hold enters a select mode (taps walk the
+  rows, the selected row reads green), a hold on the selected row opens its
+  option editor, where a hold confirms. The two options: menu entry delay
+  (3 / 5 / 10 / 30 s) and screen direction (0° / 180° — the reversible USB-C
+  plug; applied live on confirm and at boot). A hold fires the moment it
+  reaches its threshold, without waiting for the release. There is no gesture
+  back to the STARTING wash — under a charger the menu is the useful screen,
+  and only a host configuring the device leaves it. The settings record lives
+  in the display-config flash area, so a factory reset clears it to the
+  defaults (30 s delay, 0°). (bcdDevice 0x098D.)
+
+- **Touchless display build (`display-keys`) for screen + button boards.** The
+  Waveshare RP2350-GEEK is the first target: a 240×135 ST7789 landscape panel
+  driven over the same PIO link as the touch build, with the physical button
+  (BOOTSEL) as the presence source. The screen shows the ambient status (Ready
+  breathing, Working, Starting), a trusted one-key confirm page naming the
+  pending operation, and an approve/decline outcome page. Gestures: short press
+  approves, a hold past 800 ms declines (a genuine `OPERATION_DENIED`). No
+  on-device PIN entry — `uv` stays unadvertised, exactly like the
+  button-only build. RSA keygen drives the busy page from its own progress
+  hook. Build with `BOARD=waveshare-geek LED_KIND=none --features display-keys`.
+
+### Changed
+
+- **PIV touch prompts name the slot.** When a slot's touch policy makes the
+  device ask (`Use PIV key?`), the prompt now says which key is meant — `9A
+  Auth`, `9D Key Mgmt`, `Retired #1`, `F9 Attestation` — on both screen builds
+  (the trusted-display ceremony page and the GEEK confirm page). The slot label
+  rides the `primary` field the FIDO rp prompt already uses; the title stays a
+  fixed literal, and one mapping (`rsk_piv::info::slot_label`) feeds it.
+
+- **`display-keys`: idle clicks type OTP slots again.** `poll_pressed` returns
+  the real button level (as on the button build), so N idle clicks type slot N's
+  ticket; confirm presses are unaffected (they only happen on request screens).
+  Also rustdoc/clippy fixes across the touchless build. (bcdDevice 0x098B.)
+
+- **`display-keys`: the boot-time hardening lap shows a CHECKING page instead
+  of a black panel.** The one-shot at-rest scrub re-arms whenever an OpenPGP
+  PIN change supersedes a chip-serial-rooted copy (SEC-BOOT-001), so the ~30 s
+  full-GC lap can hit any cold boot after a PIN change — the panel previously
+  stayed dark the whole time and the key looked dead. The screen build defers
+  the lap until the panel is up and paints the check page in the status-word
+  style. (bcdDevice 0x098C.)
+
+- **Panel init now uses the full Waveshare register set with a pre-display-on
+  GRAM blank.** The ST7789 init runs the porch / gate / VCOM / gamma defaults
+  (which place a *partial* 240×135 glass on the controller's GRAM — previously
+  the frame came up shifted and clipped on the GEEK) and clears GRAM to black
+  while the display is still off, so a fresh plug never shows the uninitialised
+  random pattern. The touch board's 240×320 panel is unaffected functionally.
+  Backlight/graphics knobs gained the `madctl_scan` and `win_x`/`win_y` board
+  keys (0 and no-offset for the touch build).
+
+- **Trusted-display page changes now use a retained, framebuffer-less DMA
+  compositor.** One scene build records the laid-out frame. Per-boot keyed
+  128-bit tags keep unchanged 32×32 visual-state tiles on the panel. Typed UI
+  components also produce exact damage rectangles before they are composed. The
+  ST7789 receives one continuous RAM write per rectangle from two alternating
+  8-row RGB565 buffers while the CPU composes the next band. A TX-only PIO link
+  runs at 80 MHz, reducing full-frame wire time to 15.36 ms. Static raster rows
+  in flash avoid regenerating common page backgrounds.
+  Text now lays out glyphs once and rasterizes coverage by row through RGB565
+  lookup tables; fixed antialiasing masks and speed-optimized display crates
+  remove the other repeated pixel math. The spinner's 15 exact phases use a
+  flash lookup table. RLE checkpoints and a vertical command index skip work
+  from earlier bands. Narrow rectangles use the full fixed DMA buffer, semantic
+  damage skips unused tile hashing, and hold progress paints only its new strip.
+  The DMA buffers use the active stack, not permanent RAM, and the gate checks
+  the display build's stack reserve. A scene overflow or display transfer error
+  now stops input instead of leaving an active prompt with incomplete pixels.
+
 ## [0.4.11] - 2026-09-08
 
 The catch-up release, and the one where the instruments were audited harder than
@@ -13492,6 +13631,8 @@ family that keeps the "enterprise" features in the open tree.
   [docs/releases.md](docs/releases.md) to verify a download.
 
 [Unreleased]: https://github.com/TheMaxMur/RS-Key/compare/v0.4.11...HEAD
+[0.4.10-isk.2]: https://github.com/IsayIsee/RS-Key/releases/tag/v0.4.10-isk.2
+[0.4.10-isk.1]: https://github.com/IsayIsee/RS-Key/releases/tag/v0.4.10-isk.1
 [0.4.11]: https://github.com/TheMaxMur/RS-Key/compare/v0.4.10...v0.4.11
 [0.4.10]: https://github.com/TheMaxMur/RS-Key/compare/v0.4.9...v0.4.10
 [0.4.9]: https://github.com/TheMaxMur/RS-Key/compare/v0.4.8...v0.4.9

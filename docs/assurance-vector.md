@@ -126,25 +126,28 @@ The same 40 P0-family rows, counted the other way round: per column rather than 
 
 | Column | Kind | Published | Placed | Unplaced |
 |---|---|---|---:|---:|
-| `firmware` | package | yes | 40 | 0 |
+| `firmware` | package | no | 40 | 0 |
 | `firmware-no-touch` | package | no | 7 | 33 |
-| `firmware-fips` | package | yes | 3 | 37 |
-| `firmware-pqc` | package | yes | 3 | 37 |
-| `firmware-fips-pqc` | package | yes | 3 | 37 |
+| `firmware-fips` | package | no | 3 | 37 |
+| `firmware-pqc` | package | no | 3 | 37 |
+| `firmware-fips-pqc` | package | no | 3 | 37 |
 | `firmware-no-touch-pqc` | package | no | 7 | 33 |
 | `firmware-no-touch-fips` | package | no | 7 | 33 |
 | `firmware-no-touch-fips-pqc` | package | no | 7 | 33 |
-| `firmware-strong-pin` | package | yes | 3 | 37 |
-| `firmware-strong-pin-pqc` | package | yes | 3 | 37 |
-| `firmware-always-uv` | package | yes | 3 | 37 |
-| `firmware-always-uv-pqc` | package | yes | 3 | 37 |
-| `firmware-strict-up` | package | yes | 3 | 37 |
-| `firmware-strict-up-pqc` | package | yes | 3 | 37 |
+| `firmware-strong-pin` | package | no | 3 | 37 |
+| `firmware-strong-pin-pqc` | package | no | 3 | 37 |
+| `firmware-always-uv` | package | no | 3 | 37 |
+| `firmware-always-uv-pqc` | package | no | 3 | 37 |
+| `firmware-strict-up` | package | no | 3 | 37 |
+| `firmware-strict-up-pqc` | package | no | 3 | 37 |
 | `firmware-pico` | package | no | 40 | 0 |
-| `firmware-display` | package | yes | 0 | 40 |
-| `firmware-2mb` | package | yes | 9 | 31 |
-| `firmware-16mb` | package | yes | 9 | 31 |
-| `firmware-strict-config` | package | yes | 3 | 37 |
+| `firmware-display` | package | no | 0 | 40 |
+| `firmware-display-keys` | package | yes | 0 | 40 |
+| `firmware-display-keys-strong-pin` | package | yes | 0 | 40 |
+| `firmware-display-keys-always-uv` | package | yes | 0 | 40 |
+| `firmware-2mb` | package | no | 9 | 31 |
+| `firmware-16mb` | package | no | 9 | 31 |
+| `firmware-strict-config` | package | no | 3 | 37 |
 | `keygen-bench` | feature | no | 3 | 37 |
 | `core1-stats` | feature | no | 3 | 37 |
 | `bench` | feature | no | 3 | 37 |
@@ -155,6 +158,7 @@ The same 40 P0-family rows, counted the other way round: per column rather than 
 | `abrobot-4m` | board | no | 36 | 4 |
 | `seeed-xiao` | board | no | 9 | 31 |
 | `tenstar-usb` | board | no | 9 | 31 |
+| `waveshare-geek` | board | no | 0 | 40 |
 | `waveshare-one` | board | no | 40 | 0 |
 | `waveshare-touch-lcd` | board | no | 9 | 31 |
 

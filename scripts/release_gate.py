@@ -310,7 +310,16 @@ ENTRIES = (
 ENTRY_FLOOR = 12
 
 #: The same, for the flavor loops. Every image the release publishes is one row.
-FLAVOR_FLOOR = 10
+#:
+#: FORK MODIFICATION (IsayIsee/RS-Key): 10 -> 3. Upstream ships ~17 flavors and
+#: calibrated this floor to its own set; this fork ships ONLY the boards it has
+#: adapted (`firmware-display-keys*` — see the FORK MODIFICATION banner in
+#: `.github/workflows/release-build.yml`), so the floor is that set's size. What
+#: the rule is for — a loop that collapsed toward nothing still satisfies every
+#: rule above — is served at 3 exactly as at 10; what it must not be is low
+#: enough to pass over an empty or one-package loop. Re-apply after syncing
+#: upstream, and re-derive it from the workflow rather than from this comment.
+FLAVOR_FLOOR = 3
 
 #: The knobs `nix/firmware.nix` marks "TEST builds only". They are declarative
 #: derivation arguments, not `cargoFlags`, so `check_no_touch`'s two readings —

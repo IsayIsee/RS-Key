@@ -344,7 +344,7 @@ back the same way:
 |---|---|---|
 | `crates/rsk-fs/src/lib.rs:62` | `request_rescrub` → `()`: the at-rest lap is never re-armed | `BugRekeyKeepsTheMarker`, RED on `MarkerNeverLies` |
 | `crates/rsk-oath/src/lib.rs:1226` | `deselect` → `()`: the VALIDATE unlock outlives its selection | `BugSelectKeepsOtherApplet`, RED on `NoStatusOutsideItsSelection` |
-| `crates/rsk-piv/src/lib.rs:391` | `deselect` → `()`: the verified PIN outlives its selection | the same |
+| `crates/rsk-piv/src/lib.rs:393` | `deselect` → `()`: the verified PIN outlives its selection | the same |
 
 That is **model-catches** three times: a defect the suite could not tell from
 correct code, on a line carrying the property's own tag, which the model reddens.
@@ -408,7 +408,7 @@ whole seam module is about was handed to nobody who looked.
 
 #### The ninth row, and the column number that decided it
 
-`crates/rsk-piv/src/lib.rs:1323` `&&` → `||` is the sharpest thing this pass has
+`crates/rsk-piv/src/lib.rs:1332` `&&` → `||` is the sharpest thing this pass has
 produced. The PIV PIN gate ends in
 
 ```rust
@@ -1371,7 +1371,7 @@ obligation that says so where a gate can read it. The
 display **build** is not modelled either — `presence.shows_confirm()` stays
 FALSE, so the reset window still applies where a display build bypasses it
 (`reset.rs:37`), and `ButtonWait`'s `spent` latch stays where that build
-compiles it out (`firmware/src/presence.rs:99-106`) in favour of the panel's own
+compiles it out (`firmware/src/presence.rs:109-116`) in favour of the panel's own
 release debounce. And `OpenWaitFor` now stands for **two** different stale-cancel
 drops — `ButtonWait::wait`'s and the display's own
 (`crates/rsk-display/src/presence.rs:45-48`) — so
@@ -1404,10 +1404,10 @@ share — one flash, one button — appears here as events (`FactoryWipe`,
 
 | Invariant | What it asserts | The Rust that owns it |
 |---|---|---|
-| `NoStatusOutsideItsSelection` | An applet holds a security status only while it is the **selected** applet. Structural — it reads straight out of the state | `crates/rsk-sdk/src/applet.rs:374-390` (the one place that decides what a selection does to the applet that was current) · `crates/rsk-piv/src/lib.rs:199-203` · `crates/rsk-openpgp/src/pin.rs:81-94` · `crates/rsk-oath/src/lib.rs:1224-1228` · `crates/rsk-device/src/ccid.rs:354-369` (the ICC power transition) |
-| `NoStatusAfterARefusedAuth` | A reference whose authentication was just refused is not authenticated | `crates/rsk-piv/src/lib.rs:183-186` · `crates/rsk-openpgp/src/pin.rs:190-202` · `crates/rsk-oath/src/lib.rs:1160-1161` |
-| `NoKeyOpOnTheAdminStatus` | No key operation runs on a status its own specification does not name | `crates/rsk-openpgp/src/pso.rs:80-92` · `crates/rsk-openpgp/src/internalaut.rs:45-48` · `crates/rsk-piv/src/auth.rs:57-65`, `:113-117` |
-| `ReselectPreservesAccessStatus` | A re-SELECT of the same AID changes no access status. **A conformance claim, labelled as one** | `crates/rsk-piv/src/lib.rs:365-368` · `crates/rsk-openpgp/src/lib.rs:354-357` |
+| `NoStatusOutsideItsSelection` | An applet holds a security status only while it is the **selected** applet. Structural — it reads straight out of the state | `crates/rsk-sdk/src/applet.rs:374-390` (the one place that decides what a selection does to the applet that was current) · `crates/rsk-piv/src/lib.rs:201-205` · `crates/rsk-openpgp/src/pin.rs:81-94` · `crates/rsk-oath/src/lib.rs:1224-1228` · `crates/rsk-device/src/ccid.rs:354-369` (the ICC power transition) |
+| `NoStatusAfterARefusedAuth` | A reference whose authentication was just refused is not authenticated | `crates/rsk-piv/src/lib.rs:185-188` · `crates/rsk-openpgp/src/pin.rs:190-202` · `crates/rsk-oath/src/lib.rs:1160-1161` |
+| `NoKeyOpOnTheAdminStatus` | No key operation runs on a status its own specification does not name | `crates/rsk-openpgp/src/pso.rs:80-92` · `crates/rsk-openpgp/src/internalaut.rs:45-48` · `crates/rsk-piv/src/auth.rs:61-69`, `:117-121` |
+| `ReselectPreservesAccessStatus` | A re-SELECT of the same AID changes no access status. **A conformance claim, labelled as one** | `crates/rsk-piv/src/lib.rs:367-370` · `crates/rsk-openpgp/src/lib.rs:354-357` |
 | `AccessCodeRemovalNeedsTheCode` | Removing the OATH access code needs the validated status the code bought. **A step rule — its violation produces exactly the exempt code-less state, so no state predicate can see it** | `crates/rsk-oath/src/lib.rs:330-332` (the shared gate) · `:337-349` (the removal path) |
 
 The fourth one points the other way from the first three and that is why it is
@@ -1426,8 +1426,8 @@ direction it actually goes.
 
 | Command | What a refusal costs | The authority | The mutant |
 |---|---|---|---|
-| PIV `VERIFY` | `has_pin` **and** `pin_fresh` (`crates/rsk-piv/src/lib.rs:183-186` is the only writer of either) | the applet's own session discipline | `NoStatusAfterARefusedAuth` |
-| PIV `CHANGE REFERENCE DATA` / `RESET RETRY COUNTER` | **nothing** — it takes no `&mut Session` at all (`crates/rsk-piv/src/lib.rs:543-577`) | SP 800-73-4 pt 2 §3.2.2/§3.2.3, plus a measured YubiKey 5.7.4 | `BugPivChangeResetsStatus`, RED in 46 |
+| PIV `VERIFY` | `has_pin` **and** `pin_fresh` (`crates/rsk-piv/src/lib.rs:185-188` is the only writer of either) | the applet's own session discipline | `NoStatusAfterARefusedAuth` |
+| PIV `CHANGE REFERENCE DATA` / `RESET RETRY COUNTER` | **nothing** — it takes no `&mut Session` at all (`crates/rsk-piv/src/lib.rs:545-579`) | SP 800-73-4 pt 2 §3.2.2/§3.2.3, plus a measured YubiKey 5.7.4 | `BugPivChangeResetsStatus`, RED in 46 |
 | OpenPGP `VERIFY` / `CHANGE` | exactly the **addressed** reference, keyed on the FID compared rather than on P2 (`crates/rsk-openpgp/src/pin.rs:190-202`, `:267-269`) | OpenPGP 3.4.1, and the `RESET RETRY COUNTER` case that compares `EF_RC` while passing `p2 = 0x81` | `NoStatusAfterARefusedAuth` |
 | OATH OTP-PIN `CHANGE` | **both** flags (`crates/rsk-oath/src/lib.rs:1160-1161`) | `aa47867` — before it the whole retry budget could be burned through the door that did not close | `BugFailedChangeKeepsStatus` |
 | OATH access-code `VALIDATE` | **nothing** — the standing unlock survives (`crates/rsk-oath/src/lib.rs:540-542`) | a MAC challenge-response has no retry counter for a refusal to protect; a YubiKey 5.7.4 measured keeping it from a genuinely locked applet | `BugRefusedValidateDropsUnlock`, RED in 46 |
@@ -1452,7 +1452,7 @@ it.
 | `BugCardResetKeepsStatus` | `crates/rsk-device/src/ccid.rs:354-369` — the ICC power transition | `NoStatusOutsideItsSelection` | 29 states |
 | `BugAdminOpensKeyOps` | `e5da38b` taken back out: PW3 standing in for PW1/PW2 | `NoKeyOpOnTheAdminStatus` | 67 states |
 | `BugFailedChangeKeepsStatus` | `aa47867` taken back out: a refused OTP-PIN change that leaves the safe open | `NoStatusAfterARefusedAuth` | 74 states |
-| `BugPinFreshNotSpent` | `crates/rsk-piv/src/auth.rs:113-117` — one VERIFY, one key operation | `NoKeyOpOnTheAdminStatus` | 45 states |
+| `BugPinFreshNotSpent` | `crates/rsk-piv/src/auth.rs:117-121` — one VERIFY, one key operation | `NoKeyOpOnTheAdminStatus` | 45 states |
 | `BugPinFreshOutlivesPin` | the selection clamp removed, so `pin_fresh` survives after `has_pin` is cleared | `NoKeyOpOnTheAdminStatus` | 42 states |
 | `BugSigPinNotSpent` | `crates/rsk-openpgp/src/keys.rs:405-419` — the same shape one applet over, PW1 valid for one PSO:CDS | `NoKeyOpOnTheAdminStatus` | 212 states |
 | `BugUserStatusOpensAdmin` | a *user* status opening the admin surface — the converse `BugAdminOpensKeyOps` cannot express | `NoKeyOpOnTheAdminStatus` | 48 states |
@@ -1662,9 +1662,9 @@ seam modules keep, so a switch is one real thing a reviewer could break:
 
 | Mutation switch | Removes | Target invariant | Caught in |
 |---|---|---|---|
-| `BugUseWhenBlocked` | the `left == 0 => PIN_BLOCKED` floor (`crates/rsk-piv/src/lib.rs:1292-1294` / `crates/rsk-openpgp/src/pin.rs:232-234`), which guards a direct verify AND a recovery reference | `NoAuthWhenBlocked` | 30 states |
-| `BugWrongDoesNotSpend` | the decrement that IS the gate (`crates/rsk-piv/src/lib.rs:1312` / `crates/rsk-openpgp/src/pin.rs:139`) | `WrongAttemptIsCharged` | 2 states |
-| `BugRecoveryWithoutSecret` | the recovery secret verified before the refill (`crates/rsk-piv/src/lib.rs:1447` / `crates/rsk-openpgp/src/pin.rs:885`) | `BudgetRisesOnlyWithItsSecret` | 9 states |
+| `BugUseWhenBlocked` | the `left == 0 => PIN_BLOCKED` floor (`crates/rsk-piv/src/lib.rs:1301-1303` / `crates/rsk-openpgp/src/pin.rs:232-234`), which guards a direct verify AND a recovery reference | `NoAuthWhenBlocked` | 30 states |
+| `BugWrongDoesNotSpend` | the decrement that IS the gate (`crates/rsk-piv/src/lib.rs:1321` / `crates/rsk-openpgp/src/pin.rs:139`) | `WrongAttemptIsCharged` | 2 states |
+| `BugRecoveryWithoutSecret` | the recovery secret verified before the refill (`crates/rsk-piv/src/lib.rs:1456` / `crates/rsk-openpgp/src/pin.rs:885`) | `BudgetRisesOnlyWithItsSecret` | 9 states |
 
 `Lattice.cfg` is **GREEN, exhaustive** over 243 distinct states at depth 11, with
 no dead action; every `LatSolo_*.cfg` is RED on its own target. The all-blocked
@@ -1772,7 +1772,7 @@ assertion rather than taking a suite down with it.
   failures read "expected 9000, got 6982" — not one was an operation that should
   have been refused succeeding. The faithful mutant is green, and the reason is
   the finding: `pin_fresh` has exactly one reader,
-  `crates/rsk-piv/src/auth.rs:63`, **conjoined** with the status it refines, so a freshness that outlives `has_pin` authorises
+  `crates/rsk-piv/src/auth.rs:67`, **conjoined** with the status it refines, so a freshness that outlives `has_pin` authorises
   nothing.
 - `BugCardResetKeepsStatus` was patched by neutering the whole `reset_card`
   call, which also stops the SELECTION being dropped — and the only test that
@@ -1869,7 +1869,7 @@ what the registry refuses:
 - `OnlyAllowConfirms` — Deny, the power button, timeout and CTAPHID cancel all
   end as Cancelled (`crates/rsk-display/src/presence.rs:120-124`); the
   Allow/Deny rectangles are disjoint and a stray touch above the band is no
-  button at all (`crates/rsk-ui/src/lib.rs:252-260`).
+  button at all (`crates/rsk-ui/src/lib.rs:254-262`).
 
 All three are ghosts, and the module says why plainly: a completed ceremony
 leaves nothing on the glass, so no reachable *state* distinguishes a phished
@@ -1922,11 +1922,11 @@ it off the medium. `EF_HARDENED` says the lap has run
 and writes the marker only after `compact()` returns Ok
 (`crates/rsk-fs/src/lib.rs:80-98`) — marker AFTER scrub, the same write-order
 family as the store's delete and the PIN flows' revoke. The boot glue keeps only
-the OTP gate and the placement of the stall (`firmware/src/main.rs:631-647`).
+the OTP gate and the placement of the stall (`firmware/src/main.rs:681-702`).
 Every *lazy* re-key **or delete** after the lap must re-arm it — a tombstone
 appends too: **run-35 found four of five re-key sites skipping exactly that**,
 and the swept sites are the module's citations. *After the lap* means after any
-lap this device ever ran, the boot pass at `firmware/src/main.rs:623-630`
+lap this device ever ran, the boot pass at `firmware/src/main.rs:673-680`
 included: the marker latches once, so a boot that skipped a record — a faulted
 `read_key`, a refused `put` — leaves it standing over the boot that finally
 migrates that record. Those six arms re-arm for that reason, not because they
@@ -2115,7 +2115,7 @@ interface wedge (0x075D, `TX_TIMEOUT_MS`) is a liveness property, and **no
 liveness proof is claimed from CTAPHID evidence**. It lives on `write_frames`
 (`crates/rsk-usb/src/ctaphid.rs:875-887`), the response path, where two host
 regressions pin the abandon and the drain
-(`crates/rsk-usb/src/ctaphid_tests.rs:449,471`) — not on the async `run` loop
+(`crates/rsk-usb/src/ctaphid_tests.rs:449, 471`) — not on the async `run` loop
 (`crates/rsk-usb/src/ctaphid.rs:584`), which neither of them enters. No mutation
 record stands behind either: `write_frames`, `FrameSink` and `TX_TIMEOUT` appear
 in none of `formal/comutants.toml`, `formal/floors.txt` or `formal/runs.toml`,
@@ -2987,7 +2987,7 @@ it does not promote MODELLED-ONLY to a proof or turn bounded Kani into PROVEN.
 behaviour than the firmware, "which is sound for safety". That was false**, and
 the one that broke it was holding the green run up: `PowerCut` left the seed as
 the cut found it, while the firmware regenerates a missing seed on **every**
-boot (`firmware/src/main.rs:629`, `tools/emu/src/device.rs:264`). A cut device
+boot (`firmware/src/main.rs:679`, `tools/emu/src/device.rs:264`). A cut device
 was permanently seedless in the model and could never hold a usable credential
 again — the model was *narrower* than the code, which is the one direction a
 safety argument cannot absorb. It is fixed (`BootEnsuresSeed`), and every

@@ -28,11 +28,11 @@ assurance/board/PLAT-TIMER-002.toml	crates/rsk-usb/src/ctaphid.rs	775-775	Timer:
 assurance/board/PLAT-TIMER-002.toml	firmware/src/led.rs	618-618	Timer::after_millis(5).await;	Timer::after_millis(5).await;
 assurance/board/PLAT-TIMER-002.toml	firmware/src/led.rs	692-692	const PERIOD_US: u64 = 2000;	const PERIOD_US: u64 = 2000;
 assurance/board/PLAT-TIMER-002.toml	firmware/src/led.rs	727-727	Timer::after_millis(5).await;	Timer::after_millis(5).await;
-assurance/board/PLAT-TIMER-002.toml	firmware/src/main.rs	524-524	let mut config = embassy_rp::config::Config::default();	let mut config = embassy_rp::config::Config::default();
-assurance/board/PLAT-TIMER-002.toml	firmware/src/main.rs	960-960	hp.spawn(led::gpio_task(led).unwrap());	hp.spawn(led::gpio_task(led).unwrap());
-assurance/board/PLAT-TIMER-002.toml	firmware/src/main.rs	968-968	hp.spawn(led::pimoroni_task(rg, b).unwrap());	hp.spawn(led::pimoroni_task(rg, b).unwrap());
-assurance/board/PLAT-TIMER-002.toml	firmware/src/main.rs	1022-1022	hp.spawn(led::ws2812_task(ws2812).unwrap());	hp.spawn(led::ws2812_task(ws2812).unwrap());
-assurance/board/PLAT-TIMER-002.toml	firmware/src/presence.rs	237-240	#[cfg(feature = "no-touch")]	}
+assurance/board/PLAT-TIMER-002.toml	firmware/src/main.rs	570-570	let mut config = embassy_rp::config::Config::default();	let mut config = embassy_rp::config::Config::default();
+assurance/board/PLAT-TIMER-002.toml	firmware/src/main.rs	1030-1030	hp.spawn(led::gpio_task(led).unwrap());	hp.spawn(led::gpio_task(led).unwrap());
+assurance/board/PLAT-TIMER-002.toml	firmware/src/main.rs	1038-1038	hp.spawn(led::pimoroni_task(rg, b).unwrap());	hp.spawn(led::pimoroni_task(rg, b).unwrap());
+assurance/board/PLAT-TIMER-002.toml	firmware/src/main.rs	1092-1092	hp.spawn(led::ws2812_task(ws2812).unwrap());	hp.spawn(led::ws2812_task(ws2812).unwrap());
+assurance/board/PLAT-TIMER-002.toml	firmware/src/presence.rs	261-264	#[cfg(feature = "no-touch")]	}
 assurance/board/PLAT-TIMER-002.toml	firmware/src/usb_attach.rs	34-36	/// Milliseconds since the attach — the clock the FIDO layer gets as `Ctx::now_ms`,	pub fn elapsed_ms() -> u64 {
 assurance/board/PLAT-TIMER-002.toml	firmware/src/worker.rs	307-307	const BTN_POLL_MS: u64 = 16;	const BTN_POLL_MS: u64 = 16;
 assurance/board/PLAT-TIMER-002.toml	firmware/src/worker.rs	469-469	crate::usb_attach::elapsed_ms(),	crate::usb_attach::elapsed_ms(),
@@ -40,14 +40,14 @@ assurance/board/PLAT-TIMER-002.toml	scripts/platform_gate.py	1337-1337	OUTCOME_S
 assurance/board/PLAT-TIMER-002.toml	tools/rsk/audit.py	170-170	print(f"{'seq':>6}  {'uptime':>10}  {'event':<18} aux  detail")	print(f"{'seq':>6}  {'uptime':>10}  {'event':<18} aux  detail")
 assurance/board/PLAT-TIMER-003.toml	crates/rsk-fido/src/journal.rs	215-217	if !ctx.state.audit_boot_logged {	let _ = raw_append(&ctx.dev, ctx.fs, ctx.now_ms, EV_BOOT, 0, &[]);
 assurance/board/PLAT-TIMER-003.toml	crates/rsk-fido/src/vendor.rs	481-481	journal::vendor_read(ctx, out)	journal::vendor_read(ctx, out)
-assurance/board/PLAT-TIMER-003.toml	firmware/src/main.rs	524-524	let mut config = embassy_rp::config::Config::default();	let mut config = embassy_rp::config::Config::default();
-assurance/board/PLAT-TIMER-003.toml	firmware/src/main.rs	800-800	usb_attach::mark();	usb_attach::mark();
+assurance/board/PLAT-TIMER-003.toml	firmware/src/main.rs	570-570	let mut config = embassy_rp::config::Config::default();	let mut config = embassy_rp::config::Config::default();
+assurance/board/PLAT-TIMER-003.toml	firmware/src/main.rs	870-870	usb_attach::mark();	usb_attach::mark();
 assurance/board/PLAT-TIMER-003.toml	firmware/src/pin_lock.rs	54-54	rp_pac::WATCHDOG.scratch2().write_value(encode(lock));	rp_pac::WATCHDOG.scratch2().write_value(encode(lock));
 assurance/board/PLAT-TIMER-003.toml	firmware/src/usb_attach.rs	34-36	/// Milliseconds since the attach — the clock the FIDO layer gets as `Ctx::now_ms`,	pub fn elapsed_ms() -> u64 {
 assurance/board/PLAT-TIMER-003.toml	scripts/platform_gate.py	1337-1337	OUTCOME_STATUS = {"pass": "discharged", "fail": "refuted"}	OUTCOME_STATUS = {"pass": "discharged", "fail": "refuted"}
 assurance/board/PLAT-TIMER-003.toml	tools/rsk/audit.py	170-170	print(f"{'seq':>6}  {'uptime':>10}  {'event':<18} aux  detail")	print(f"{'seq':>6}  {'uptime':>10}  {'event':<18} aux  detail")
-assurance/board/PLAT-TRNG-002.toml	firmware/src/main.rs	609-609	trng_cfg.sample_count = 1000;	trng_cfg.sample_count = 1000;
-assurance/board/PLAT-TRNG-002.toml	firmware/src/main.rs	610-610	let trng = Trng::new(p.TRNG, Irqs, trng_cfg);	let trng = Trng::new(p.TRNG, Irqs, trng_cfg);
+assurance/board/PLAT-TRNG-002.toml	firmware/src/main.rs	655-655	trng_cfg.sample_count = 1000;	trng_cfg.sample_count = 1000;
+assurance/board/PLAT-TRNG-002.toml	firmware/src/main.rs	656-656	let trng = Trng::new(p.TRNG, Irqs, trng_cfg);	let trng = Trng::new(p.TRNG, Irqs, trng_cfg);
 assurance/board/PLAT-TRNG-002.toml	scripts/platform_gate.py	1337-1337	OUTCOME_STATUS = {"pass": "discharged", "fail": "refuted"}	OUTCOME_STATUS = {"pass": "discharged", "fail": "refuted"}
 assurance/bundle/SEC-FIDO-001.toml	crates/rsk-fido/src/clientpin.rs	724-724	/// Refines `RSKeySecurityState!NoAuthorizationBypass` — SEC-FIDO-001.	/// Refines `RSKeySecurityState!NoAuthorizationBypass` — SEC-FIDO-001.
 assurance/bundle/SEC-FIDO-001.toml	crates/rsk-fido/src/state.rs	172-172	/// Refines `RSKeySecurityState!NoAuthorizationBypass` — SEC-FIDO-001.	/// Refines `RSKeySecurityState!NoAuthorizationBypass` — SEC-FIDO-001.
@@ -63,7 +63,7 @@ assurance/bundle/SEC-FIDO-002.toml	crates/rsk-device/src/presence.rs	118-122	pub
 assurance/bundle/SEC-FIDO-002.toml	crates/rsk-device/src/presence.rs	120-120	self.cancel_requested.store(true, Ordering::Release);	self.cancel_requested.store(true, Ordering::Release);
 assurance/bundle/SEC-FIDO-002.toml	crates/rsk-device/src/presence.rs	128-128	/// Refines `RSKeySecurityState!NoCrossTransportTouchConsumption` — SEC-FIDO-002.	/// Refines `RSKeySecurityState!NoCrossTransportTouchConsumption` — SEC-FIDO-002.
 assurance/bundle/SEC-FIDO-002.toml	crates/rsk-device/src/presence.rs	230-233	arb.set_up_pending(false);	arb.set_cancel_requested(false);
-assurance/bundle/SEC-FIDO-002.toml	crates/rsk-device/src/presence.rs	260-260	#[cfg(kani)]	#[cfg(kani)]
+assurance/bundle/SEC-FIDO-002.toml	crates/rsk-device/src/presence.rs	379-379	#[cfg(kani)]	#[cfg(kani)]
 assurance/bundle/SEC-FIDO-002.toml	crates/rsk-device/src/presence_kani.rs	20-25	const BUDGET_POLLS: u32 = 3;	const _: () = assert!(BUDGET_POLLS + 3 == 6);
 assurance/bundle/SEC-FIDO-002.toml	crates/rsk-device/src/presence_kani.rs	158-158	arb.set_cancel_requested(true);	arb.set_cancel_requested(true);
 assurance/bundle/SEC-FIDO-002.toml	crates/rsk-device/src/presence_tests.rs	143-143	fn a5_a6_request_cancel_only_bites_under_the_fido_scope() {	fn a5_a6_request_cancel_only_bites_under_the_fido_scope() {
@@ -75,9 +75,9 @@ assurance/bundle/SEC-FIDO-002.toml	crates/rsk-display/src/presence.rs	45-48	let 
 assurance/bundle/SEC-FIDO-002.toml	crates/rsk-usb/src/ctaphid.rs	88-92	pub fn is_cancel_frame(frame: &[u8; HID_RPT_SIZE], n: usize, cid: u32) -> bool {	}
 assurance/bundle/SEC-FIDO-002.toml	crates/rsk-usb/src/ctaphid.rs	762-762	});	});
 assurance/bundle/SEC-FIDO-002.toml	firmware/src/presence.rs	19-19	//! Kani harnesses for `NoCrossTransportTouchConsumption`. What stays here is the	//! Kani harnesses for `NoCrossTransportTouchConsumption`. What stays here is the
-assurance/bundle/SEC-FIDO-002.toml	firmware/src/presence.rs	99-101	/// User presence via BOOTSEL (default) or a dedicated GPIO button.	pub struct ButtonPresence {
-assurance/bundle/SEC-FIDO-002.toml	firmware/src/presence.rs	202-258	pub fn poll_pressed(&mut self) -> bool {	}
-assurance/bundle/SEC-FIDO-002.toml	firmware/src/presence.rs	263-269	#[cfg(feature = "display")]	ARBITER.set_cancel_requested(requested);
+assurance/bundle/SEC-FIDO-002.toml	firmware/src/presence.rs	109-111	/// the button-only build.	pub struct ButtonPresence {
+assurance/bundle/SEC-FIDO-002.toml	firmware/src/presence.rs	226-282	pub fn poll_pressed(&mut self) -> bool {	}
+assurance/bundle/SEC-FIDO-002.toml	firmware/src/presence.rs	287-293	#[cfg(feature = "display")]	ARBITER.set_cancel_requested(requested);
 assurance/bundle/SEC-FIDO-002.toml	firmware/src/worker.rs	434-434	crate::presence::set_wait_scope(match ex.kind {	crate::presence::set_wait_scope(match ex.kind {
 assurance/bundle/SEC-FIDO-002.toml	formal/gen-configs.sh	105-107	ALL_INV=(NoAuthorizationBypass NoCrossTransportTouchConsumption	NoUnmanageableCredential ResetNeverWeakensSurvivingState)
 assurance/bundle/SEC-FIDO-002.toml	formal/run-tlc.sh	16-16	# (sha256 936a2620...), so `floors.txt` still describes the TLC that measured it.	# (sha256 936a2620...), so `floors.txt` still describes the TLC that measured it.
@@ -235,7 +235,7 @@ assurance/bundle/SEC-FIDO-006.toml	formal/gen-configs.sh	171-176	if [ "$b" = "$o
 assurance/bundle/SEC-FIDO-006.toml	formal/run-tlc.sh	16-16	# (sha256 936a2620...), so `floors.txt` still describes the TLC that measured it.	# (sha256 936a2620...), so `floors.txt` still describes the TLC that measured it.
 assurance/bundle/SEC-FIDO-006.toml	fuzz/fuzz_targets/power_cut.rs	202-204	(!credential_usable || (fs.has_data(EF_PIN) && fs.has_data(EF_ALWAYS_UV)))	}
 assurance/bundle/SEC-FIDO-006.toml	scripts/assurance_gate.py	122-142	def cfg_checked(path: pathlib.Path) -> list[str]:	return out
-assurance/bundle/SEC-FIDO-006.toml	scripts/check.sh	576-576	run "assurance-trace image identity" assurance_trace_is_image_neutral	run "assurance-trace image identity" assurance_trace_is_image_neutral
+assurance/bundle/SEC-FIDO-006.toml	scripts/check.sh	583-583	run "assurance-trace image identity" assurance_trace_is_image_neutral	run "assurance-trace image identity" assurance_trace_is_image_neutral
 assurance/bundle/SEC-FIDO-006A.toml	crates/rsk-fido/src/consts.rs	358-358	pub const EF_PIN: u16 = 0x1080; // PIN: [retries, len, format, verifier(32)]	pub const EF_PIN: u16 = 0x1080; // PIN: [retries, len, format, verifier(32)]
 assurance/bundle/SEC-FIDO-006A.toml	crates/rsk-fido/src/reset.rs	6-6	//! physical touch gates the wipe, inside the CTAP 2.1 §6.6 power-up window	//! physical touch gates the wipe, inside the CTAP 2.1 §6.6 power-up window
 assurance/bundle/SEC-FIDO-006A.toml	crates/rsk-fido/src/reset.rs	37-51	if !ctx.presence.shows_confirm() && !in_reset_window(ctx) {	}
@@ -493,7 +493,7 @@ assurance/platform.toml	crates/rsk-store/src/tests.rs	244-264	#[test]	}
 assurance/platform.toml	crates/rsk-store/src/tests.rs	395-404	#[test]	assert!(!complete);
 assurance/platform.toml	crates/rsk-usb/src/ccid.rs	408-408	match select(fut.as_mut(), Timer::after_millis(WTX_INTERVAL_MS)).await {	match select(fut.as_mut(), Timer::after_millis(WTX_INTERVAL_MS)).await {
 assurance/platform.toml	crates/rsk-usb/src/ctaphid.rs	775-775	Timer::after_millis(KEEPALIVE_MS),	Timer::after_millis(KEEPALIVE_MS),
-assurance/platform.toml	firmware/src/display.rs	198-198	crate::presence::set_cancel_requested(requested);	crate::presence::set_cancel_requested(requested);
+assurance/platform.toml	firmware/src/display.rs	196-196	crate::presence::set_cancel_requested(requested);	crate::presence::set_cancel_requested(requested);
 assurance/platform.toml	firmware/src/handler.rs	44-44	/// reseed. What makes that draw finish is `sample_count = 1000` (`main.rs`), spacing	/// reseed. What makes that draw finish is `sample_count = 1000` (`main.rs`), spacing
 assurance/platform.toml	firmware/src/handler.rs	57-57	const RESEED_INTERVAL: usize = 1 << 16; // 64 KiB	const RESEED_INTERVAL: usize = 1 << 16; // 64 KiB
 assurance/platform.toml	firmware/src/handler.rs	61-61	/// 16 B nonce, SP 800-90A 10.1.2.3), drawn through the `Trng` the caller	/// 16 B nonce, SP 800-90A 10.1.2.3), drawn through the `Trng` the caller
@@ -512,20 +512,20 @@ assurance/platform.toml	firmware/src/led.rs	692-692	const PERIOD_US: u64 = 2000;
 assurance/platform.toml	firmware/src/led.rs	695-695	let c = blinker.tick();	let c = blinker.tick();
 assurance/platform.toml	firmware/src/led.rs	719-719	let c = blinker.tick();	let c = blinker.tick();
 assurance/platform.toml	firmware/src/led.rs	727-727	Timer::after_millis(5).await;	Timer::after_millis(5).await;
-assurance/platform.toml	firmware/src/main.rs	524-524	let mut config = embassy_rp::config::Config::default();	let mut config = embassy_rp::config::Config::default();
-assurance/platform.toml	firmware/src/main.rs	555-555	fs.scan(); // recover dynamic files (counter, resident creds) from flash	fs.scan(); // recover dynamic files (counter, resident creds) from flash
-assurance/platform.toml	firmware/src/main.rs	601-601	let mut trng_cfg = TrngConfig::default();	let mut trng_cfg = TrngConfig::default();
-assurance/platform.toml	firmware/src/main.rs	602-608	// The default sample_count (25) is too low for some RP2350 ROSC units: the	// unchanged — the NIST health checks stay enabled, the source is unchanged.
-assurance/platform.toml	firmware/src/main.rs	609-609	trng_cfg.sample_count = 1000;	trng_cfg.sample_count = 1000;
-assurance/platform.toml	firmware/src/main.rs	610-610	let trng = Trng::new(p.TRNG, Irqs, trng_cfg);	let trng = Trng::new(p.TRNG, Irqs, trng_cfg);
-assurance/platform.toml	firmware/src/main.rs	960-960	hp.spawn(led::gpio_task(led).unwrap());	hp.spawn(led::gpio_task(led).unwrap());
-assurance/platform.toml	firmware/src/main.rs	968-968	hp.spawn(led::pimoroni_task(rg, b).unwrap());	hp.spawn(led::pimoroni_task(rg, b).unwrap());
-assurance/platform.toml	firmware/src/main.rs	1022-1022	hp.spawn(led::ws2812_task(ws2812).unwrap());	hp.spawn(led::ws2812_task(ws2812).unwrap());
-assurance/platform.toml	firmware/src/presence.rs	99-101	/// User presence via BOOTSEL (default) or a dedicated GPIO button.	pub struct ButtonPresence {
-assurance/platform.toml	firmware/src/presence.rs	137-137	const _: () = assert!(embassy_time::TICK_HZ == 1_000_000);	const _: () = assert!(embassy_time::TICK_HZ == 1_000_000);
-assurance/platform.toml	firmware/src/presence.rs	163-166	#[cfg(not(feature = "display"))]	pub type Presence = crate::display::TouchPresence;
-assurance/platform.toml	firmware/src/presence.rs	202-258	pub fn poll_pressed(&mut self) -> bool {	}
-assurance/platform.toml	firmware/src/presence.rs	269-269	ARBITER.set_cancel_requested(requested);	ARBITER.set_cancel_requested(requested);
+assurance/platform.toml	firmware/src/main.rs	570-570	let mut config = embassy_rp::config::Config::default();	let mut config = embassy_rp::config::Config::default();
+assurance/platform.toml	firmware/src/main.rs	601-601	fs.scan(); // recover dynamic files (counter, resident creds) from flash	fs.scan(); // recover dynamic files (counter, resident creds) from flash
+assurance/platform.toml	firmware/src/main.rs	647-647	let mut trng_cfg = TrngConfig::default();	let mut trng_cfg = TrngConfig::default();
+assurance/platform.toml	firmware/src/main.rs	648-654	// The default sample_count (25) is too low for some RP2350 ROSC units: the	// unchanged — the NIST health checks stay enabled, the source is unchanged.
+assurance/platform.toml	firmware/src/main.rs	655-655	trng_cfg.sample_count = 1000;	trng_cfg.sample_count = 1000;
+assurance/platform.toml	firmware/src/main.rs	656-656	let trng = Trng::new(p.TRNG, Irqs, trng_cfg);	let trng = Trng::new(p.TRNG, Irqs, trng_cfg);
+assurance/platform.toml	firmware/src/main.rs	1030-1030	hp.spawn(led::gpio_task(led).unwrap());	hp.spawn(led::gpio_task(led).unwrap());
+assurance/platform.toml	firmware/src/main.rs	1038-1038	hp.spawn(led::pimoroni_task(rg, b).unwrap());	hp.spawn(led::pimoroni_task(rg, b).unwrap());
+assurance/platform.toml	firmware/src/main.rs	1092-1092	hp.spawn(led::ws2812_task(ws2812).unwrap());	hp.spawn(led::ws2812_task(ws2812).unwrap());
+assurance/platform.toml	firmware/src/presence.rs	109-111	/// the button-only build.	pub struct ButtonPresence {
+assurance/platform.toml	firmware/src/presence.rs	150-150	const _: () = assert!(embassy_time::TICK_HZ == 1_000_000);	const _: () = assert!(embassy_time::TICK_HZ == 1_000_000);
+assurance/platform.toml	firmware/src/presence.rs	163-166	}	block_for(Duration::from_millis(ms));
+assurance/platform.toml	firmware/src/presence.rs	226-282	pub fn poll_pressed(&mut self) -> bool {	}
+assurance/platform.toml	firmware/src/presence.rs	293-293	ARBITER.set_cancel_requested(requested);	ARBITER.set_cancel_requested(requested);
 assurance/platform.toml	firmware/src/usb_attach.rs	8-8	//! before the bus pull-up goes up: the TRNG seed (~1.5 s), the seal migrations, the	//! before the bus pull-up goes up: the TRNG seed (~1.5 s), the seal migrations, the
 assurance/platform.toml	firmware/src/worker.rs	307-307	const BTN_POLL_MS: u64 = 16;	const BTN_POLL_MS: u64 = 16;
 assurance/platform.toml	firmware/src/worker.rs	397-397	if rsk_mgmt::take_device_reset() && self.ccid.factory_wipe() {	if rsk_mgmt::take_device_reset() && self.ccid.factory_wipe() {
@@ -536,7 +536,7 @@ assurance/platform.toml	fuzz/fuzz_targets/fido_session.rs	1432-1432	"NoTokenAfte
 assurance/platform.toml	fuzz/fuzz_targets/power_cut.rs	76-78	const FIDS: [u16; 9] = [	];
 assurance/platform.toml	fuzz/fuzz_targets/power_cut.rs	202-202	(!credential_usable || (fs.has_data(EF_PIN) && fs.has_data(EF_ALWAYS_UV)))	(!credential_usable || (fs.has_data(EF_PIN) && fs.has_data(EF_ALWAYS_UV)))
 assurance/platform.toml	scripts/check.sh	199-248	assurance_trace_is_image_neutral() {	}
-assurance/platform.toml	scripts/check.sh	514-514	run_tests "test (host)"              cargo test --workspace --exclude firmware --exclude rsk-wipe --target "$HOST"	run_tests "test (host)"              cargo test --workspace --exclude firmware --exclude rsk-wipe --target "$HOST"
+assurance/platform.toml	scripts/check.sh	518-518	run_tests "test (host)"              cargo test --workspace --exclude firmware --exclude rsk-wipe --target "$HOST"	run_tests "test (host)"              cargo test --workspace --exclude firmware --exclude rsk-wipe --target "$HOST"
 assurance/platform.toml	scripts/citation_gate.py	556-556	EXTS = "rs|sh|txt|py"	EXTS = "rs|sh|txt|py"
 assurance/platform.toml	scripts/fuzz-all.sh	41-41	mapfile -t targets < <(cargo fuzz list)	mapfile -t targets < <(cargo fuzz list)
 assurance/platform.toml	scripts/kani_gate.py	389-409	def workflow_pins(root):	}
@@ -773,25 +773,25 @@ formal/README.md	crates/rsk-openpgp/src/putdata.rs	59-65	pub fn write_authorized
 formal/README.md	crates/rsk-openpgp/src/putdata.rs	246-249	pub fn put_pw_status<S: Storage>(fs: &mut Fs<S>, sess: &Session, data: &[u8]) -> Sw {	}
 formal/README.md	crates/rsk-openpgp/src/terminate.rs	181-181	let mut deleted = 0u32;	let mut deleted = 0u32;
 formal/README.md	crates/rsk-openpgp/src/terminate.rs	212-212	if deleted > WIPE_MAX_DELETES {	if deleted > WIPE_MAX_DELETES {
-formal/README.md	crates/rsk-piv/src/auth.rs	57-65	/// skips the PIN; listing known gated values made unknown bytes ungated.	}
-formal/README.md	crates/rsk-piv/src/auth.rs	63-63	PINPOLICY_ALWAYS => sess.has_pin && sess.pin_fresh,	PINPOLICY_ALWAYS => sess.has_pin && sess.pin_fresh,
-formal/README.md	crates/rsk-piv/src/auth.rs	113-117	/// nothing clears the PIN's own status — 9B included, hence `is_key`.	self.sess.pin_fresh = false;
+formal/README.md	crates/rsk-piv/src/auth.rs	61-69	/// skips the PIN; listing known gated values made unknown bytes ungated.	}
+formal/README.md	crates/rsk-piv/src/auth.rs	67-67	PINPOLICY_ALWAYS => sess.has_pin && sess.pin_fresh,	PINPOLICY_ALWAYS => sess.has_pin && sess.pin_fresh,
+formal/README.md	crates/rsk-piv/src/auth.rs	117-121	/// nothing clears the PIN's own status — 9B included, hence `is_key`.	self.sess.pin_fresh = false;
 formal/README.md	crates/rsk-piv/src/files.rs	513-513	if deleted > RESET_MAX_DELETES {	if deleted > RESET_MAX_DELETES {
-formal/README.md	crates/rsk-piv/src/lib.rs	183-186	fn set_pin(&mut self, verified: bool) {	}
-formal/README.md	crates/rsk-piv/src/lib.rs	199-203	self.clear_challenge();	pub struct PivApplet<'a> {
-formal/README.md	crates/rsk-piv/src/lib.rs	365-368	if !reselect {	// The default PIN/PUK/retry/mgmt/attestation files are provisioned once
-formal/README.md	crates/rsk-piv/src/lib.rs	391-391	self.sess.reset();	self.sess.reset();
-formal/README.md	crates/rsk-piv/src/lib.rs	543-577	// the retry counter … shall be decremented by one." A YubiKey 5.7.4 does	/// `6A88` for anything but `P1 = 00, P2 = 80`, as on `change_pin` — and here
-formal/README.md	crates/rsk-piv/src/lib.rs	1292-1294	Err(sw) => return sw,	if left == 0 {
-formal/README.md	crates/rsk-piv/src/lib.rs	1312-1312	if set_retries_left(fs, retry, left - 1).is_err() {	if set_retries_left(fs, retry, left - 1).is_err() {
-formal/README.md	crates/rsk-piv/src/lib.rs	1323-1323	&& ct_eq(	&& ct_eq(
-formal/README.md	crates/rsk-piv/src/lib.rs	1447-1447	puk: &[u8],	puk: &[u8],
+formal/README.md	crates/rsk-piv/src/lib.rs	185-188	fn set_pin(&mut self, verified: bool) {	}
+formal/README.md	crates/rsk-piv/src/lib.rs	201-205	self.clear_challenge();	pub struct PivApplet<'a> {
+formal/README.md	crates/rsk-piv/src/lib.rs	367-370	if !reselect {	// The default PIN/PUK/retry/mgmt/attestation files are provisioned once
+formal/README.md	crates/rsk-piv/src/lib.rs	393-393	self.sess.reset();	self.sess.reset();
+formal/README.md	crates/rsk-piv/src/lib.rs	545-579	// the retry counter … shall be decremented by one." A YubiKey 5.7.4 does	/// `6A88` for anything but `P1 = 00, P2 = 80`, as on `change_pin` — and here
+formal/README.md	crates/rsk-piv/src/lib.rs	1301-1303	Err(sw) => return sw,	if left == 0 {
+formal/README.md	crates/rsk-piv/src/lib.rs	1321-1321	if set_retries_left(fs, retry, left - 1).is_err() {	if set_retries_left(fs, retry, left - 1).is_err() {
+formal/README.md	crates/rsk-piv/src/lib.rs	1332-1332	&& ct_eq(	&& ct_eq(
+formal/README.md	crates/rsk-piv/src/lib.rs	1456-1456	puk: &[u8],	puk: &[u8],
 formal/README.md	crates/rsk-rescue/src/lib.rs	141-143	/// Refines `RSKeyAdminSurface!PrivilegedOpNeedsPresence` — SEC-ADM-002.	self.presence.borrow_mut().request(confirm) == Presence::Confirmed
 formal/README.md	crates/rsk-sdk/src/applet.rs	208-210	fn selectable(&self, i: usize) -> bool {	}
 formal/README.md	crates/rsk-sdk/src/applet.rs	374-390	// answered to the AID SP 800-85A-4 C.1.1.2 names as invalid. A YubiKey	{
 formal/README.md	crates/rsk-sdk/src/applet.rs	379-387	// A disabled applet is skipped, so its AID matches nothing	let reselect = self.current == Some(i);
 formal/README.md	crates/rsk-sdk/src/applet.rs	387-387	let reselect = self.current == Some(i);	let reselect = self.current == Some(i);
-formal/README.md	crates/rsk-ui/src/lib.rs	252-260	/// Refines `RSKeyTrustedDisplay!OnlyAllowConfirms` — SEC-DISP-003.	}
+formal/README.md	crates/rsk-ui/src/lib.rs	254-262	/// Refines `RSKeyTrustedDisplay!OnlyAllowConfirms` — SEC-DISP-003.	}
 formal/README.md	crates/rsk-usb/src/ctaphid.rs	405-475	pub fn feed(&mut self, f: &[u8; HID_RPT_SIZE]) -> Outcome {	}
 formal/README.md	crates/rsk-usb/src/ctaphid.rs	435-435	let bcnt = ((f[5] as usize) << 8) | f[6] as usize;	let bcnt = ((f[5] as usize) << 8) | f[6] as usize;
 formal/README.md	crates/rsk-usb/src/ctaphid.rs	436-436	if bcnt > CTAP_MAX_MESSAGE {	if bcnt > CTAP_MAX_MESSAGE {
@@ -802,11 +802,11 @@ formal/README.md	crates/rsk-usb/src/ctaphid.rs	584-584	pub async fn run(&mut sel
 formal/README.md	crates/rsk-usb/src/ctaphid.rs	875-887	async fn write_frames<S, T, F>(sink: &mut S, cid: u32, cmd: u8, data: &[u8], mut timeout: F)	}
 formal/README.md	crates/rsk-usb/src/ctaphid_tests.rs	449-449	fn write_frames_abandons_when_host_stalls() {	fn write_frames_abandons_when_host_stalls() {
 formal/README.md	crates/rsk-usb/src/ctaphid_tests.rs	471-471	fn write_frames_writes_every_frame_when_host_drains() {	fn write_frames_writes_every_frame_when_host_drains() {
-formal/README.md	firmware/src/main.rs	623-630	let _ = rsk_fido::seed::migrate_keydev_boot(&dev, &mut fs);	let _ = rsk_openpgp::scan_files(&dev, &mut fs, &mut rng);
-formal/README.md	firmware/src/main.rs	629-629	let _ = rsk_fido::seed::ensure_seed(&dev, &mut fs, &mut rng);	let _ = rsk_fido::seed::ensure_seed(&dev, &mut fs, &mut rng);
-formal/README.md	firmware/src/main.rs	631-647	// One-shot at-rest hardening: the seal migrations above leave the superseded	}
+formal/README.md	firmware/src/main.rs	673-680	let _ = rsk_fido::seed::migrate_keydev_boot(&dev, &mut fs);	let _ = rsk_openpgp::scan_files(&dev, &mut fs, &mut rng);
+formal/README.md	firmware/src/main.rs	679-679	let _ = rsk_fido::seed::ensure_seed(&dev, &mut fs, &mut rng);	let _ = rsk_fido::seed::ensure_seed(&dev, &mut fs, &mut rng);
+formal/README.md	firmware/src/main.rs	681-702	// One-shot at-rest hardening: the seal migrations above leave the superseded	}
 formal/README.md	firmware/src/pin_lock.rs	18-21	//! a real power cycle clears it. The *whole* lock moves: carrying the engaged flag	//!
-formal/README.md	firmware/src/presence.rs	99-106	/// User presence via BOOTSEL (default) or a dedicated GPIO button.	}
+formal/README.md	firmware/src/presence.rs	109-116	/// the button-only build.	}
 formal/README.md	firmware/src/worker.rs	417-430	/// One transport (CTAPHID/CCID) request: run the synchronous dispatch and	let mut ex = EXCHANGE.lock().await;
 formal/README.md	firmware/src/worker.rs	434-434	crate::presence::set_wait_scope(match ex.kind {	crate::presence::set_wait_scope(match ex.kind {
 formal/README.md	firmware/src/worker.rs	521-521	ex.req[..rl].zeroize();	ex.req[..rl].zeroize();
@@ -832,11 +832,11 @@ formal/RSKeyAppletPolicies.tla	crates/rsk-otp/src/lib.rs	519-533	// An absent sl
 formal/RSKeyAppletPolicies.tla	crates/rsk-otp/src/lib.rs	608-615	// The access code gates a swap's move/delete just as it gates	}
 formal/RSKeyAppletPolicies.tla	crates/rsk-otp/src/lib.rs	611-615	let unmatched =	}
 formal/RSKeyAppletPolicies.tla	crates/rsk-otp/src/lib.rs	643-649	// The replay position is a PAIR — the record's persisted use counter and	);
-formal/RSKeyAppletPolicies.tla	crates/rsk-otp/src/lib.rs	1082-1127	pub fn power_up_bump<S: Storage>(dev: &Device, fs: &mut Fs<S>, rng: &mut dyn Rng) {	}
+formal/RSKeyAppletPolicies.tla	crates/rsk-otp/src/lib.rs	1145-1190	pub fn power_up_bump<S: Storage>(dev: &Device, fs: &mut Fs<S>, rng: &mut dyn Rng) {	}
 formal/RSKeyAppletPolicies.tla	crates/rsk-otp/src/tests.rs	1485-1485	fn configure_does_not_rewind_the_session_counter() {	fn configure_does_not_rewind_the_session_counter() {
 formal/RSKeyAppletPolicies.tla	crates/rsk-otp/src/ticket.rs	166-166	let (counter, new_session, bumped) = next_use_counter(counter, session);	let (counter, new_session, bumped) = next_use_counter(counter, session);
-formal/RSKeyAppletPolicies.tla	crates/rsk-piv/src/auth.rs	58-66	fn pin_satisfied(sess: &Session, pinpol: u8) -> bool {	}
-formal/RSKeyAppletPolicies.tla	crates/rsk-piv/src/auth.rs	114-118	/// Refines `RSKeyAppletPolicies!PivAlwaysSpendsFreshness` — SEC-POL-002.	}
+formal/RSKeyAppletPolicies.tla	crates/rsk-piv/src/auth.rs	62-70	fn pin_satisfied(sess: &Session, pinpol: u8) -> bool {	}
+formal/RSKeyAppletPolicies.tla	crates/rsk-piv/src/auth.rs	118-122	/// Refines `RSKeyAppletPolicies!PivAlwaysSpendsFreshness` — SEC-POL-002.	}
 formal/RSKeyAppletSeams.tla	crates/rsk-device/src/ccid.rs	91-109	pub struct CcidApplets<'a, S: Storage, R: rsk_sdk::Rng + 'static, VP: rsk_vendor::Platform> {	enabled_caps: u16,
 formal/RSKeyAppletSeams.tla	crates/rsk-device/src/ccid.rs	310-319	#[cfg(not(feature = "strict-config"))]	.is_ok()
 formal/RSKeyAppletSeams.tla	crates/rsk-device/src/ccid.rs	354-369	/// Drop the selected applet's security status on an ICC power transition, so a	self.disp.reset_card(&mut applets, &mut *fsb);
@@ -863,13 +863,13 @@ formal/RSKeyAppletSeams.tla	crates/rsk-openpgp/src/pin.rs	81-94	pub fn reset(&mu
 formal/RSKeyAppletSeams.tla	crates/rsk-openpgp/src/pin.rs	190-202	/// Refines `RSKeyAppletSeams!NoStatusAfterARefusedAuth` — SEC-SEAM-002.	}
 formal/RSKeyAppletSeams.tla	crates/rsk-openpgp/src/pin.rs	267-269	// comparison, but a YubiKey 5.7.4 clears exactly the addressed	// stops PSO:CDS and the admin surface instead of leaving them open.
 formal/RSKeyAppletSeams.tla	crates/rsk-openpgp/src/putdata.rs	59-65	pub fn write_authorized(sess: &Session, fid: u16) -> bool {	}
-formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/auth.rs	57-65	/// skips the PIN; listing known gated values made unknown bytes ungated.	}
-formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/auth.rs	113-117	/// nothing clears the PIN's own status — 9B included, hence `is_key`.	self.sess.pin_fresh = false;
-formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	165-179	/// A private-key operation at any PIN-gated slot spends this one alone	impl Session {
-formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	183-186	fn set_pin(&mut self, verified: bool) {	}
-formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	199-203	self.clear_challenge();	pub struct PivApplet<'a> {
-formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	521-535	return Sw::PIN_BLOCKED;	// the oracle's order too.
-formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	543-577	// the retry counter … shall be decremented by one." A YubiKey 5.7.4 does	/// `6A88` for anything but `P1 = 00, P2 = 80`, as on `change_pin` — and here
+formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/auth.rs	61-69	/// skips the PIN; listing known gated values made unknown bytes ungated.	}
+formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/auth.rs	117-121	/// nothing clears the PIN's own status — 9B included, hence `is_key`.	self.sess.pin_fresh = false;
+formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	167-181	/// A private-key operation at any PIN-gated slot spends this one alone	impl Session {
+formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	185-188	fn set_pin(&mut self, verified: bool) {	}
+formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	201-205	self.clear_challenge();	pub struct PivApplet<'a> {
+formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	523-537	return Sw::PIN_BLOCKED;	// the oracle's order too.
+formal/RSKeyAppletSeams.tla	crates/rsk-piv/src/lib.rs	545-579	// the retry counter … shall be decremented by one." A YubiKey 5.7.4 does	/// `6A88` for anything but `P1 = 00, P2 = 80`, as on `change_pin` — and here
 formal/RSKeyAppletSeams.tla	crates/rsk-sdk/src/applet.rs	145-145	apdu.ins == 0xA4 && apdu.p1 == 0x04 && (apdu.p2 == 0x00 || apdu.p2 == 0x04)	apdu.ins == 0xA4 && apdu.p1 == 0x04 && (apdu.p2 == 0x00 || apdu.p2 == 0x04)
 formal/RSKeyAppletSeams.tla	crates/rsk-sdk/src/applet.rs	222-230	///	{
 formal/RSKeyAppletSeams.tla	crates/rsk-sdk/src/applet.rs	374-390	// answered to the AID SP 800-85A-4 C.1.1.2 names as invalid. A YubiKey	{
@@ -884,7 +884,7 @@ formal/RSKeyBootHardening.tla	crates/rsk-fs/src/lib.rs	80-98	/// Run the one-sho
 formal/RSKeyBootHardening.tla	crates/rsk-fs/src/lib.rs	99-99	if fs.compact().is_ok() {	if fs.compact().is_ok() {
 formal/RSKeyBootHardening.tla	crates/rsk-oath/src/lib.rs	1206-1206	if rsk_fs::request_rescrub(fs).is_ok() {	if rsk_fs::request_rescrub(fs).is_ok() {
 formal/RSKeyBootHardening.tla	crates/rsk-openpgp/src/pin.rs	330-330	rsk_fs::request_rescrub(fs).map_err(|_| Sw::MEMORY_FAILURE)?;	rsk_fs::request_rescrub(fs).map_err(|_| Sw::MEMORY_FAILURE)?;
-formal/RSKeyBootHardening.tla	crates/rsk-piv/src/lib.rs	1336-1336	if rsk_fs::request_rescrub(fs).is_err() {	if rsk_fs::request_rescrub(fs).is_err() {
+formal/RSKeyBootHardening.tla	crates/rsk-piv/src/lib.rs	1345-1345	if rsk_fs::request_rescrub(fs).is_err() {	if rsk_fs::request_rescrub(fs).is_err() {
 formal/RSKeyBootHardening.tla	firmware/src/pin_lock.rs	18-21	//! a real power cycle clears it. The *whole* lock moves: carrying the engaged flag	//!
 formal/RSKeyBootHardening.tla	firmware/src/pin_lock.rs	36-37	const TAG: u32 = 0x5253_4B00;	const TAG_MASK: u32 = 0xFFFF_FF00;
 formal/RSKeyBootHardening.tla	firmware/src/pin_lock.rs	52-54	/// Refines `RSKeyBootHardening!TheWholeLockRides` — SEC-BOOT-002.	rp_pac::WATCHDOG.scratch2().write_value(encode(lock));
@@ -895,11 +895,11 @@ formal/RSKeyRetryLattice.tla	crates/rsk-openpgp/src/pin.rs	656-656	let mut fid =
 formal/RSKeyRetryLattice.tla	crates/rsk-openpgp/src/pin.rs	862-912	/// resetting code (P1=0x00) or via a verified admin PIN (P1=0x02). Both re-seal	return match result {
 formal/RSKeyRetryLattice.tla	crates/rsk-openpgp/src/pin.rs	885-885	if data.len() <= rc_len {	if data.len() <= rc_len {
 formal/RSKeyRetryLattice.tla	crates/rsk-openpgp/src/pin.rs	917-917	if p1 != 0x02 {	if p1 != 0x02 {
-formal/RSKeyRetryLattice.tla	crates/rsk-piv/src/lib.rs	580-587	fn reset_retry<S: Storage>(&mut self, dev: &Device, fs: &mut Fs<S>, apdu: &Apdu) -> Sw {	unblock_pin_with_puk(dev, fs, puk, new)
-formal/RSKeyRetryLattice.tla	crates/rsk-piv/src/lib.rs	1287-1354	/// Refines `RSKeyRetryLattice!NoAuthWhenBlocked` — SEC-LAT-001.	Sw::retries(left)
-formal/RSKeyRetryLattice.tla	crates/rsk-piv/src/lib.rs	1292-1294	Err(sw) => return sw,	if left == 0 {
-formal/RSKeyRetryLattice.tla	crates/rsk-piv/src/lib.rs	1312-1312	if set_retries_left(fs, retry, left - 1).is_err() {	if set_retries_left(fs, retry, left - 1).is_err() {
-formal/RSKeyRetryLattice.tla	crates/rsk-piv/src/lib.rs	1447-1447	puk: &[u8],	puk: &[u8],
+formal/RSKeyRetryLattice.tla	crates/rsk-piv/src/lib.rs	582-589	fn reset_retry<S: Storage>(&mut self, dev: &Device, fs: &mut Fs<S>, apdu: &Apdu) -> Sw {	unblock_pin_with_puk(dev, fs, puk, new)
+formal/RSKeyRetryLattice.tla	crates/rsk-piv/src/lib.rs	1296-1363	/// Refines `RSKeyRetryLattice!NoAuthWhenBlocked` — SEC-LAT-001.	Sw::retries(left)
+formal/RSKeyRetryLattice.tla	crates/rsk-piv/src/lib.rs	1301-1303	Err(sw) => return sw,	if left == 0 {
+formal/RSKeyRetryLattice.tla	crates/rsk-piv/src/lib.rs	1321-1321	if set_retries_left(fs, retry, left - 1).is_err() {	if set_retries_left(fs, retry, left - 1).is_err() {
+formal/RSKeyRetryLattice.tla	crates/rsk-piv/src/lib.rs	1456-1456	puk: &[u8],	puk: &[u8],
 formal/RSKeySecurityState.tla	crates/rsk-device/src/ctap.rs	202-205	backup_sealed_record: fs.has_data(EF_BACKUP_SEALED),	credential_slots_raw: credentials.iter().filter(|present| **present).count() as u16,
 formal/RSKeySecurityState.tla	crates/rsk-device/src/ctap.rs	354-361	// Persist the clientPIN soft lock across a warm reboot. It is RAM-only, and a	.store_pin_lock(self.fido_state.borrow().pin_lock());
 formal/RSKeySecurityState.tla	crates/rsk-device/src/presence.rs	25-26	/// No host request in flight: an on-panel (local) flow owns the button.	pub const SCOPE_NONE: u8 = 0;
@@ -1035,8 +1035,8 @@ formal/RSKeySecurityState.tla	crates/rsk-fido/src/vendor.rs	942-949	// no MSE ha
 formal/RSKeySecurityState.tla	crates/rsk-fido/src/vendor.rs	1018-1024	/// `EF_BACKUP_SEALED` marker so the seed can no longer be exported **or** shown as	fs.put(EF_BACKUP_SEALED, &[1]).is_ok()
 formal/RSKeySecurityState.tla	crates/rsk-fs/src/fs.rs	385-388	/// A FID can be yielded MORE THAN ONCE — the log-structured backend walks	/// below does).
 formal/RSKeySecurityState.tla	crates/rsk-usb/src/ctaphid.rs	767-772	// frames during fast/crypto processing would consume — and then	if up_pending() {
-formal/RSKeySecurityState.tla	firmware/src/main.rs	629-629	let _ = rsk_fido::seed::ensure_seed(&dev, &mut fs, &mut rng);	let _ = rsk_fido::seed::ensure_seed(&dev, &mut fs, &mut rng);
-formal/RSKeySecurityState.tla	firmware/src/presence.rs	99-106	/// User presence via BOOTSEL (default) or a dedicated GPIO button.	}
+formal/RSKeySecurityState.tla	firmware/src/main.rs	679-679	let _ = rsk_fido::seed::ensure_seed(&dev, &mut fs, &mut rng);	let _ = rsk_fido::seed::ensure_seed(&dev, &mut fs, &mut rng);
+formal/RSKeySecurityState.tla	firmware/src/presence.rs	109-116	/// the button-only build.	}
 formal/RSKeySecurityState.tla	firmware/src/worker.rs	434-434	crate::presence::set_wait_scope(match ex.kind {	crate::presence::set_wait_scope(match ex.kind {
 formal/RSKeySecurityState.tla	firmware/src/worker.rs	526-528	// Nothing is in flight again: a wait started from here on is an on-panel	crate::presence::set_wait_scope(crate::presence::SCOPE_NONE);
 formal/RSKeySecurityState.tla	firmware/src/worker.rs	528-528	crate::presence::set_wait_scope(crate::presence::SCOPE_NONE);	crate::presence::set_wait_scope(crate::presence::SCOPE_NONE);
@@ -1088,7 +1088,7 @@ formal/RSKeyTrustedDisplay.tla	crates/rsk-fido/src/clientpin.rs	539-540	pub fn n
 formal/RSKeyTrustedDisplay.tla	crates/rsk-fido/src/getassertion.rs	652-653	// below is the only thing that names the rp, and the PIN pad cannot ([`needs_confirm`]).	let want_up = want_up(req) && verified.needs_confirm(ctx.presence.shows_confirm());
 formal/RSKeyTrustedDisplay.tla	crates/rsk-fido/src/makecredential.rs	706-707	// naming the rp being registered ([`needs_confirm`]).	if verified.needs_confirm(ctx.presence.shows_confirm()) {
 formal/RSKeyTrustedDisplay.tla	crates/rsk-fido/src/u2f.rs	94-94	crate::clientpin::UvOutcome::BUILTIN.needs_confirm(ctx.presence.shows_confirm());	crate::clientpin::UvOutcome::BUILTIN.needs_confirm(ctx.presence.shows_confirm());
-formal/RSKeyTrustedDisplay.tla	crates/rsk-ui/src/lib.rs	252-260	/// Refines `RSKeyTrustedDisplay!OnlyAllowConfirms` — SEC-DISP-003.	}
+formal/RSKeyTrustedDisplay.tla	crates/rsk-ui/src/lib.rs	254-262	/// Refines `RSKeyTrustedDisplay!OnlyAllowConfirms` — SEC-DISP-003.	}
 formal/TraceSecurity.tla	crates/rsk-fido/src/clientpin.rs	612-612	ctx.presence.uv_available() && ctx.fs.has_data(EF_PIN)	ctx.presence.uv_available() && ctx.fs.has_data(EF_PIN)
 formal/TraceSecurity.tla	crates/rsk-fido/src/config.rs	315-315	const DEFAULT_ALWAYS_UV: bool = cfg!(feature = "always-uv");	const DEFAULT_ALWAYS_UV: bool = cfg!(feature = "always-uv");
 formal/TraceSecurity.tla	crates/rsk-fido/src/makecredential.rs	574-592	let always_uv = crate::config::always_uv_enabled(ctx.fs);	Ok(UvOutcome::NONE)
@@ -1137,18 +1137,18 @@ formal/comutants.toml	crates/rsk-otp/src/tests.rs	2161-2161	assert!(	assert!(
 formal/comutants.toml	crates/rsk-otp/src/tests.rs	2176-2176	assert_eq!(pos, (*pid, 1, 255), "the wrap press did not resume");	assert_eq!(pos, (*pid, 1, 255), "the wrap press did not resume");
 formal/comutants.toml	crates/rsk-otp/src/tests.rs	2184-2184	fn boot_bump_retries_a_refused_write_and_pins_what_it_cannot_close() {	fn boot_bump_retries_a_refused_write_and_pins_what_it_cannot_close() {
 formal/comutants.toml	crates/rsk-otp/src/tests.rs	2217-2217	assert_ne!(	assert_ne!(
-formal/comutants.toml	crates/rsk-piv/src/auth.rs	63-63	PINPOLICY_ALWAYS => sess.has_pin && sess.pin_fresh,	PINPOLICY_ALWAYS => sess.has_pin && sess.pin_fresh,
-formal/comutants.toml	crates/rsk-piv/src/auth.rs	115-119	fn spend_pin(&mut self) {	}
+formal/comutants.toml	crates/rsk-piv/src/auth.rs	67-67	PINPOLICY_ALWAYS => sess.has_pin && sess.pin_fresh,	PINPOLICY_ALWAYS => sess.has_pin && sess.pin_fresh,
+formal/comutants.toml	crates/rsk-piv/src/auth.rs	119-123	fn spend_pin(&mut self) {	}
 formal/comutants.toml	crates/rsk-piv/src/keygen.rs	600-600	if !sess.has_mgm {	if !sess.has_mgm {
-formal/comutants.toml	crates/rsk-piv/src/lib.rs	183-186	fn set_pin(&mut self, verified: bool) {	}
-formal/comutants.toml	crates/rsk-piv/src/lib.rs	288-288	if p1 != 0x00 || !self.sess.has_mgm || !is_key(p2) {	if p1 != 0x00 || !self.sess.has_mgm || !is_key(p2) {
-formal/comutants.toml	crates/rsk-piv/src/lib.rs	390-392	fn deselect(&mut self, _fs: &mut Fs<S>) {	}
-formal/comutants.toml	crates/rsk-piv/src/lib.rs	594-594	if !self.sess.has_mgm || !self.sess.has_pin {	if !self.sess.has_mgm || !self.sess.has_pin {
-formal/comutants.toml	crates/rsk-piv/src/lib.rs	676-676	if !self.sess.has_mgm {	if !self.sess.has_mgm {
-formal/comutants.toml	crates/rsk-piv/src/lib.rs	804-804	if !self.sess.has_mgm {	if !self.sess.has_mgm {
-formal/comutants.toml	crates/rsk-piv/src/lib.rs	1053-1053	if !self.sess.has_mgm {	if !self.sess.has_mgm {
-formal/comutants.toml	crates/rsk-piv/src/lib.rs	1113-1113	if !self.sess.has_mgm {	if !self.sess.has_mgm {
-formal/comutants.toml	crates/rsk-piv/src/lib.rs	1312-1312	if set_retries_left(fs, retry, left - 1).is_err() {	if set_retries_left(fs, retry, left - 1).is_err() {
+formal/comutants.toml	crates/rsk-piv/src/lib.rs	185-188	fn set_pin(&mut self, verified: bool) {	}
+formal/comutants.toml	crates/rsk-piv/src/lib.rs	290-290	if p1 != 0x00 || !self.sess.has_mgm || !is_key(p2) {	if p1 != 0x00 || !self.sess.has_mgm || !is_key(p2) {
+formal/comutants.toml	crates/rsk-piv/src/lib.rs	392-394	fn deselect(&mut self, _fs: &mut Fs<S>) {	}
+formal/comutants.toml	crates/rsk-piv/src/lib.rs	596-596	if !self.sess.has_mgm || !self.sess.has_pin {	if !self.sess.has_mgm || !self.sess.has_pin {
+formal/comutants.toml	crates/rsk-piv/src/lib.rs	678-678	if !self.sess.has_mgm {	if !self.sess.has_mgm {
+formal/comutants.toml	crates/rsk-piv/src/lib.rs	813-813	if !self.sess.has_mgm {	if !self.sess.has_mgm {
+formal/comutants.toml	crates/rsk-piv/src/lib.rs	1062-1062	if !self.sess.has_mgm {	if !self.sess.has_mgm {
+formal/comutants.toml	crates/rsk-piv/src/lib.rs	1122-1122	if !self.sess.has_mgm {	if !self.sess.has_mgm {
+formal/comutants.toml	crates/rsk-piv/src/lib.rs	1321-1321	if set_retries_left(fs, retry, left - 1).is_err() {	if set_retries_left(fs, retry, left - 1).is_err() {
 formal/comutants.toml	crates/rsk-sdk/src/applet.rs	227-227	pub fn reset_card<C>(&mut self, applets: &mut [&mut dyn Applet<C>], ctx: &mut C) {	pub fn reset_card<C>(&mut self, applets: &mut [&mut dyn Applet<C>], ctx: &mut C) {
 formal/comutants.toml	firmware/src/pin_lock.rs	18-21	//! a real power cycle clears it. The *whole* lock moves: carrying the engaged flag	//!
 formal/comutants.toml	firmware/src/worker.rs	397-398	if rsk_mgmt::take_device_reset() && self.ccid.factory_wipe() {	self.reboot(1).await;
@@ -1170,8 +1170,8 @@ scripts/test_run_tlc.py	scripts/verdict_gate.py	619-634	if row["invariant"] is n
 scripts/test_security_trace.py	tools/emu/src/device.rs	751-752	crate::security_trace::POWER_CYCLE,	0,
 scripts/test_token_refinement_gate.py	crates/rsk-device/src/ctap.rs	122-122	*st = rsk_fido::FidoState::new();	*st = rsk_fido::FidoState::new();
 scripts/test_token_refinement_gate.py	crates/rsk-fido/src/credential.rs	919-919	let fid = EF_RP + i;	let fid = EF_RP + i;
-scripts/test_token_refinement_gate.py	firmware/src/main.rs	1167-1167	let fido_state_ref = FIDO_STATE.init(RefCell::new(rsk_fido::FidoState::new()));	let fido_state_ref = FIDO_STATE.init(RefCell::new(rsk_fido::FidoState::new()));
+scripts/test_token_refinement_gate.py	firmware/src/main.rs	1359-1359	let fido_state_ref = FIDO_STATE.init(RefCell::new(rsk_fido::FidoState::new()));	let fido_state_ref = FIDO_STATE.init(RefCell::new(rsk_fido::FidoState::new()));
 scripts/token_refinement_gate.py	crates/rsk-device/src/ctap.rs	122-122	*st = rsk_fido::FidoState::new();	*st = rsk_fido::FidoState::new();
-scripts/token_refinement_gate.py	firmware/src/main.rs	1167-1167	let fido_state_ref = FIDO_STATE.init(RefCell::new(rsk_fido::FidoState::new()));	let fido_state_ref = FIDO_STATE.init(RefCell::new(rsk_fido::FidoState::new()));
+scripts/token_refinement_gate.py	firmware/src/main.rs	1359-1359	let fido_state_ref = FIDO_STATE.init(RefCell::new(rsk_fido::FidoState::new()));	let fido_state_ref = FIDO_STATE.init(RefCell::new(rsk_fido::FidoState::new()));
 scripts/trace_map.py	crates/rsk-sdk/src/applet.rs	387-387	let reselect = self.current == Some(i);	let reselect = self.current == Some(i);
 tools/emu/src/hid.rs	crates/rsk-usb/src/ctaphid.rs	621-634	async fn on_frame(&mut self, f: &[u8; HID_RPT_SIZE]) {	}

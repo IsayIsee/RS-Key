@@ -974,3 +974,62 @@ in `check.sh` builds `firmware` on it at all. The board loop builds `rsk-wipe`, 
 and both `BOARD=` firmware rows pin `waveshare-one`. So the column is real and \
 WHOLLY UNEXERCISED, and what is left to decide is whether the tree should build \
 it, or whether it should be a knob of `firmware-display` instead."""
+
+# ---- The fork's board columns (Waveshare RP2350-GEEK) -----------------------
+#
+# The touchless build and the board preset it was adapted for. Same two shapes
+# as the columns above — a feature set and a board — and the same reason each
+# owes a question: `check.sh` builds these images without measuring anything
+# against them.
+
+[[question]]
+column = "firmware-display-keys"
+owner = "contributor"
+settled_by = "evidence"
+text = """
+The one-button consent path. The P0-launch authorization rows are about a \
+physical gate the operator decides at; this build keeps one — BOOTSEL, a short \
+press to confirm and a hold to decline — but changes what stands in front of \
+the operator: a 240×135 confirm page drawn by the keys UI, with no touch and no \
+on-panel PIN pad, where the touch columns have an Approve/Deny page and a pad. \
+What is open is which rows rest on the operator having SEEN the relying party \
+before deciding, and whether a hold reaches the refusal path the touch build's \
+Deny does. No evidence is produced against this column: `check.sh` builds the \
+image and runs `rsk-ui`'s unit tests, and the TLC models are about the arbiter \
+rather than the screen. Settled by evidence: a `tests/*.py` (or `tools/emu`) \
+run against a `display-keys` image that drives one confirm and one decline \
+through the gesture."""
+
+[[question]]
+column = "firmware-display-keys-strong-pin"
+owner = "contributor"
+settled_by = "evidence"
+text = "As `firmware-display-keys`, plus the `firmware-strong-pin` question: on a build whose only PIN entry is the host's `setPIN`, the raised floor and the guessability rules bind that one surface — and no row runs against THIS column."
+
+[[question]]
+column = "firmware-display-keys-always-uv"
+owner = "contributor"
+settled_by = "evidence"
+text = """
+As `firmware-display-keys`, plus the `firmware-always-uv` question, narrowed: \
+that column argues from the alwaysUv gate's DEMAND changing. Here there is no \
+built-in user verification at all — CTAP 2.1 §7.2.4's exception names one, and \
+a build with no pad has none — so while alwaysUv is on, the CTAP1/U2F interface \
+is disabled outright and every UV ceremony is a host PIN over USB. Which rows \
+written about an on-panel ceremony, or about U2F's presence-only gate, are \
+answered by that surface, and which are vacuous?"""
+
+[[question]]
+column = "waveshare-geek"
+owner = "maintainer"
+settled_by = "ruling"
+text = """
+The adapted board without `display-keys`: `LED_KIND=none`, \
+`presence.source = "bootsel"`, panel pins compiled as inert constants. As \
+`waveshare-touch-lcd`, nothing in `check.sh` builds `firmware` on this preset — \
+the `BOARD=` firmware rows pin it WITH `display-keys`, and the board loop builds \
+`rsk-wipe` — so the column is real and unexercised. Its sharper half is the \
+presence source: BOOTSEL is the boot ROM's button, no other board column uses \
+it, and the P0 rows about presence are written about a GPIO button. Is a \
+ROM-owned pad the same gate, and does this column earn its own row or is it a \
+knob of `firmware-display-keys`?"""

@@ -180,8 +180,17 @@ ROW_TRANCHES = ("p0-launch", "p0b")
 #: catches only the collapse, never the slide, and losing four boards one at a
 #: time is how an axis quietly stops being an axis. Shrinking one for real is
 #: then a deliberate edit here, in the same diff as the shrink.
-FLOOR_PACKAGES = 19
-FLOOR_BOARDS = 6
+#:
+#: FORK MODIFICATION (IsayIsee/RS-Key): 19 -> 22. This fork ships three packages
+#: of its own (`firmware-display-keys` and its two posture variants — see the
+#: FORK MODIFICATION banner in `.github/workflows/release-build.yml`), so the
+#: count this floor equals is `nix/firmware.nix`'s, not upstream's. Re-apply
+#: after syncing upstream, and re-derive it from that file rather than from
+#: this comment.
+FLOOR_PACKAGES = 22
+#: Same fork modification as the package floor above: 6 -> 7, for the
+#: `firmware/boards/waveshare-geek.toml` preset this fork adds.
+FLOOR_BOARDS = 7
 FLOOR_ROWS = 40
 #: A `why` or a settling question shorter than this is a placeholder rather than
 #: prose: `.strip()` alone let `"?"` and `"TODO"` stand as the question that would

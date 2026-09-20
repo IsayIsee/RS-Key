@@ -24,7 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      # workflow_run is privileged. Always use the publisher from main and only
+      # workflow_run is privileged. Always use the publisher from the default
+      # branch and only
       # handle PR artifacts as data; no file downloaded from CI is executed.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

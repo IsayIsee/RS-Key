@@ -17,6 +17,23 @@ browser, `ssh` and `git` signing, GPG, PIV, and TOTP codes.
 
 ![What RS-Key is: any RP2350 board, plus this firmware, gives you passkey and WebAuthn logins, ssh and git signing, an OpenPGP card for gpg, a PIV smart card, and TOTP codes](docs/images/what-it-is.svg)
 
+> ### This is a personal fork — please read
+>
+> Upstream project: [TheMaxMur/RS-Key](https://github.com/TheMaxMur/RS-Key).
+> This fork ([IsayIsee/RS-Key](https://github.com/IsayIsee/RS-Key)) exists for one
+> reason: I own a **Waveshare RP2350-GEEK**, a board with a case and a screen,
+> which suits a USB security key far better than a bare stick — and it needed an
+> adaptation. That adaptation (the `display-keys` build: ambient status screen,
+> one-key confirm, no-host idle menu) was written **mostly with AI assistance**,
+> which is also why **no pull request to upstream is planned**.
+>
+> **No warranty, no liability.** Everything here is provided as-is: flashing
+> firmware can brick a board, wipe its flash, or lose credentials stored on it,
+> and **the author accepts no responsibility for any data loss, hardware damage,
+> or other harm** resulting from building, flashing, or using anything in this
+> fork. Flash at your own risk, and do not use it to guard anything you cannot
+> afford to lose.
+
 > **This project is experimental.** It has had no external security audit, the
 > RP2350 is not a secure element, and a stolen board is only as strong as the
 > optional OTP / secure-boot hardening you have applied to it. Don't use it to
@@ -38,8 +55,8 @@ such as Google Chrome or Microsoft Edge.
 
 ### Manual way
 
-1. Download the newest **`rs-key-<version>-default.uf2`** from the
-   [releases page](https://github.com/TheMaxMur/RS-Key/releases/latest).
+1. Download the newest **`rs-key-<version>-display-keys.uf2`** from this
+   fork's [releases page](https://github.com/IsayIsee/RS-Key/releases/latest).
 2. Hold the board's **BOOT** button while you plug it in. A drive named
    `RP2350` appears.
 3. Copy the `.uf2` onto that drive. The board reboots as a security key.
@@ -55,10 +72,16 @@ Which file to take:
 | 2 MB flash (Seeed XIAO RP2350, Waveshare RP2350-Zero-CM) | `2mb` |
 | 16 MB flash (TenStar RP2350-USB) | `16mb` |
 | Waveshare RP2350-Touch-LCD-2.8 | `display` |
+| Waveshare RP2350-GEEK (screen + one button) | `display-keys` |
 
-The other ten images are behaviour variants (post-quantum algorithms, the FIPS
+The other twelve images are behaviour variants (post-quantum algorithms, the FIPS
 profile, `alwaysUv`, PIN hardening). Full table, plus how to verify the cosign
 signature and reproduce the build yourself: [docs/releases.md](docs/releases.md).
+
+> **This fork** ([IsayIsee/RS-Key](https://github.com/IsayIsee/RS-Key)) publishes
+> only the Waveshare RP2350-GEEK images — `display-keys` plus its `-strong-pin`
+> and `-always-uv` variants. For every other board take the upstream releases:
+> [TheMaxMur/RS-Key/releases](https://github.com/TheMaxMur/RS-Key/releases/latest).
 
 The longer walkthrough, with the PIN, `ssh` and `gpg` steps, is
 [docs/quickstart.md](docs/quickstart.md). On Linux the smart-card half needs a
@@ -136,6 +159,31 @@ Any RP2350 board with USB. Developed and tested on the **Waveshare RP2350-One**
 size, LED pin, or presence-button GPIO is a one-line build knob. Details:
 [docs/hardware.md](docs/hardware.md).
 
+**Touchless display boards (screen + button, experimental).** The Waveshare
+**RP2350-GEEK** (1.14" 240×135 ST7789, no touch, BOOTSEL button) runs the
+`display-keys` build: the panel shows the ambient status (Ready / Working /
+Starting) and a trusted one-key confirm page naming each pending operation —
+a short press approves, a hold past ~0.8 s declines. When no host has
+configured it for a while (a charger, a bench supply, a dead plug) it opens a
+**no-host idle menu** instead: a one-button browse of the device's own
+metadata — per-applet counts and slot states, PIV slot policies, OpenPGP and
+OATH listings, one row per passkey relying party (a hold opens its account
+list), backup state and firmware identity — plus a SETTINGS page for the menu
+entry delay and the screen direction (the USB-C plug is reversible). Taps
+step next, a double steps back, a hold opens a level; the only flash the menu
+writes is its own settings record, and plugging into a host leaves it
+immediately. There is no on-device PIN pad, so PINs stay host-side like a
+button-only key. It ships as the **`display-keys`** image in every release
+(next to the `display` image); to build it yourself: `BOARD=waveshare-geek
+LED_KIND=none cargo build --release -p firmware --features display-keys`. The
+touchscreen display build (`Waveshare RP2350-Touch-LCD-2.8`, "display" image)
+is the supported screen form.
+
+<p align="center">
+  <img src="docs/images/rp2350-geek.jpg" width="330" alt="The Waveshare RP2350-GEEK: a small RP2350 board with a 1.14-inch 240x135 colour LCD, a USB-C plug, and a single BOOTSEL button"><br>
+  <sub>Waveshare RP2350-GEEK: 240×135 screen, one button, no touch — the <code>display-keys</code> target (photo: Waveshare)</sub>
+</p>
+
 <p align="center">
   <img src="assets/hero-boards.jpg" width="330" alt="Three RS-Key boards on a blueprint background: a bare RP2350 USB stick, the trusted-display variant showing its Home &quot;Ready&quot; screen (USB connected, Device PIN set, 2 passkeys), and a Waveshare RP2350-One"><br>
   <sub>Three boards, one firmware: stick · trusted display · RP2350-One</sub>
@@ -164,7 +212,7 @@ The release images are reproducible, so you can rebuild any of them bit for bit
 ([docs/releases.md](docs/releases.md)). To build your own:
 
 ```sh
-git clone https://github.com/TheMaxMur/RS-Key && cd RS-Key
+git clone https://github.com/IsayIsee/RS-Key && cd RS-Key
 nix develop                       # toolchain, picotool, host tools, everything
 
 cargo build --release -p firmware

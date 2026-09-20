@@ -321,9 +321,21 @@ This is an experimental variant. Read [threat-model.md](../threat-model.md) and
 [limitations.md](../limitations.md) for what the trusted display does and does not
 defend against.
 
+## The touchless variant
+
+The same trusted-display idea without a touch pad: the **Waveshare
+RP2350-GEEK** (1.14″ screen + a single button — the `display-keys` build)
+shows the ambient status and a one-key confirm page (a short press approves, a
+hold past ~0.8 s declines), and — when no host has configured it for a while —
+a single-button read-only menu of the device's own metadata (slot states,
+credential listings, backup state, firmware identity) with its own SETTINGS
+page for the menu entry delay and screen direction. See
+[hardware.md](../hardware.md) for the board and [releases.md](../releases.md)
+for the images this fork ships.
+
 ## See also
 
-- [Build options](../build.md): the `display` feature and its knobs.
+- [Build options](../build.md): the `display` and `display-keys` features and their knobs.
 - [Hardware](../hardware.md): boards and flashing.
 - [Host protocol §1.3](../protocol.md): CCID pinpad secure PIN entry.
 - [FIDO2 / WebAuthn](fido2.md) · [PIV](piv.md) · [OpenPGP](openpgp.md) · [Seed backup](seed-backup.md).

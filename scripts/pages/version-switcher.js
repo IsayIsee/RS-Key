@@ -42,7 +42,7 @@
     })
     .catch(function () {});
 
-  // The version whose path prefixes the current URL; main (root) is the fallback.
+  // The version whose path prefixes the current URL; the root version is the fallback.
   function currentVersion(versions) {
     var path = relPath();
     var match = null;

@@ -87,7 +87,7 @@ on:
         description: seconds of fuzzing per target
         default: "120"
   push:
-    branches: [main]
+    branches: [my_main]
     paths:
       [
         ".github/workflows/deep-checks.yml",

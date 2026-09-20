@@ -41,6 +41,18 @@ sram.bin*
 /formal/out/*
 /formal/states/
 
+# Local working documents: the maintainer's packaging/device SOP and the
+# board follow-up notes. They record bench and infrastructure details and
+# stay on the working machine; kept here so a `git add -A` cannot pick
+# them back up (they were purged from history for the same reason).
+/PACKAGING-NIX.md
+/GEEK-FOLLOWUPS.md
+
+# The scratch tree: vendor packages and datasheets, bench logs, and the
+# pre-refactor backups. Nothing in the build reads it — it is the same class
+# as the two above, and `git add -A` used to sweep it in.
+/temp/
+
 # Documentation site: build output and the mermaid assets that
 # `mdbook-mermaid install` generates next to book.toml (not committed).
 /book/

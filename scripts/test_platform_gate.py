@@ -676,7 +676,10 @@ def test_the_checkout_derives_what_it_is_measured_at():
     assert len(kinds["unsafe"]) >= 22, kinds["unsafe"]
     assert all("#" in k for k in kinds["unsafe"]), kinds["unsafe"]
     steals = [k for k in kinds["unsafe"] if "anypin-steal" in k]
-    assert len(steals) == 8, steals
+    # Nine, not upstream's eight: the touchless build reaches its four panel
+    # pads through one `keys_output` helper rather than four inline steals
+    # (firmware/src/main.rs — the duplicates could not be keyed apart).
+    assert len(steals) == 9, steals
 
 
 # --- rule 1: every derived candidate is claimed --------------------------------

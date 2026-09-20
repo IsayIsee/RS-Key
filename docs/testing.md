@@ -30,8 +30,9 @@ nix develop -c ./scripts/check.sh
 runs fmt, clippy (embedded **and** host targets, `-D warnings`), rustdoc over
 every workspace (also `-D warnings`, so a broken intra-doc link fails the gate,
 private items included — but only links in `///` and `//!`: a name in a plain
-`//` comment is not parsed, and rots unseen), all host tests, both firmware
-builds (touch + no-touch), the rsk-wipe build, a firmware flash-size ratchet
+`//` comment is not parsed, and rots unseen), all host tests, the firmware
+builds (touch, no-touch, the trusted `display` and the touchless `display-keys`
+form), the rsk-wipe build, a firmware flash-size ratchet
 (the shipping image must stay under a ceiling that hugs its current size, well
 below the 2560K code region), `cargo-audit`, `cargo-deny`, `cargo-vet` and
 `gitleaks`.

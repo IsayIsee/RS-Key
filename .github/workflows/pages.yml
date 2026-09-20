@@ -4,7 +4,7 @@
 # Builds the *versioned* documentation site (mdBook + mdbook-mermaid) and
 # publishes it to GitHub Pages via the official Pages deployment flow.
 #
-#   main     -> site root                (the default version)
+#   my_main  -> site root                (the default version)
 #   develop  -> /develop/
 #   v* tags  -> /<tag>/   (e.g. /v0.1.0/)
 #
@@ -13,7 +13,7 @@
 # set always matches the live branches + tags. Branch pushes are path-filtered
 # to docs changes; tag pushes always run (GitHub does not apply `paths` to tag
 # pushes). Versioning takes effect for tags created after this workflow lands;
-# existing tags are picked up on the next main/develop docs push.
+# existing tags are picked up on the next my_main/develop docs push.
 #
 # One-time repo setup: Settings -> Pages -> Build and deployment -> Source =
 # "GitHub Actions". The built site is never committed to the repo.
@@ -22,7 +22,7 @@ name: pages
 
 on:
   push:
-    branches: [main, develop]
+    branches: [my_main, develop]
     paths:
       - "docs/**"
       - "book.toml"

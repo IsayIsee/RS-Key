@@ -67,7 +67,7 @@ CONSTANTS
     \* the three below cite crates/rsk-device/src/presence.rs -- the bare name
     \* also resolves to firmware/src/presence.rs since the arbitration was lifted
     BugUnscopedCancel,            \* crates/rsk-device/src/presence.rs:118-122
-    BugTouchNotSpent,             \* crates/rsk-device/src/presence.rs:203-211,226
+    BugTouchNotSpent,             \* crates/rsk-device/src/presence.rs:203-211, 226
     BugSoftLockLostOnWarmReset,   \* ctap.rs:354-361   PinLock across sys_reset
     BugWarmResetReopensWindow,    \* reset.rs:259-260  in_reset_window
     BugCmWalkIgnoresChannel,      \* state.rs:169-180  may_walk_rps
@@ -467,7 +467,7 @@ TouchTimeout ==
 \*
 \* NARROWER than a display build in one way, stated because it is the risk
 \* direction: that build compiles ButtonWait out entirely
-\* (firmware/src/presence.rs:99-106) and the panel's own release debounce takes
+\* (firmware/src/presence.rs:109-116) and the panel's own release debounce takes
 \* over the `spent` latch, so the model keeps a defence the display build
 \* implements somewhere else rather than one it does not have.
 \* THE FOURTH SITE OF THE SAME RULE, and it was the one still written as a bare
@@ -1505,7 +1505,7 @@ VolatileCleared ==
     /\ upSpent' = FALSE
 
 \* EVERY boot runs ensure_seed, not just the one at the end of a reset:
-\* firmware/src/main.rs:629 and tools/emu/src/device.rs:264. A cut that stranded
+\* firmware/src/main.rs:679 and tools/emu/src/device.rs:264. A cut that stranded
 \* the device mid-wipe therefore comes back WITH a seed and can hold usable
 \* credentials again. Leaving it out made the model less permissive than the
 \* firmware -- the one direction a safety argument cannot absorb.

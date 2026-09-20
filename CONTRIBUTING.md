@@ -162,7 +162,7 @@ are Mermaid code blocks. Preview and check them from the dev shell:
 ```
 
 Keep the README short — it's the entry point; put detail in `docs/` and link to
-it. The site deploys on push to `main` via `.github/workflows/pages.yml`.
+it. The site deploys on push to `my_main` via `.github/workflows/pages.yml`.
 
 ## Commits and PRs
 
