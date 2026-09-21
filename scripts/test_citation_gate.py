@@ -93,8 +93,80 @@ def _page(name):
     return hits[0]
 
 
+#: A `scripts/` page: host tooling making the same model→code claim a proof
+#: header does. `security_trace.py` names the two predicates its recorder stands
+#: in for, and both of them were wrong the day this half was added.
+SCRIPT = """# SPDX-License-Identifier: AGPL-3.0-only
+# The gate this recorder stands in for (`clientpin.rs:4-6`).
+"""
+
+#: A KEYED table: rows with names, under comment lines that move. Both anchors a
+#: bundle can write — a line and a row key — point into this one file, which is
+#: what lets the two be measured against the same edit.
+FLOORS = """\\* WHAT EACH CONFIGURATION MUST PRODUCE, so a run nobody watched cannot
+\\* pass by getting smaller.
+\\* Columns: <config or glob>  <GREEN|RED>  <min distinct, or - >
+Shipped.cfg                          GREEN   25854624
+Solo_*.cfg                           RED     -
+"""
+
+#: The second KEYED table, and the harder one: its rows are named with SPACES in
+#: them and they move whenever a row lands above them — three did in one session.
+#: Both helpers that print a row are here, because both name it with `$1`.
+CHECK = """#!/usr/bin/env bash
+run() { echo; echo "== $1 =="; shift; "$@"; }
+# a comment line, which is where a relock once parked a citation
+run "formal citations"         python scripts/citation_gate.py
+run "comutants lint"           python scripts/comutate.py --lint
+run_tests "test (host)"        cargo test --workspace
+"""
+
+#: An evidence bundle: it cites code by line and the verdict table by ROW, which
+#: is the pair the six repaired citations are about. In the corpus because the
+#: directory holds it, not because a tuple names it. The second block writes the
+#: SAME row two ways — by key and by line — so one insertion measures both, and
+#: it writes the key TOML-escaped, which is how a basic string carries a quote.
+BUNDLE = """\
+[[method]]
+artifact = "Solo_Probe.cfg"
+reading = "the gate this row drives (`clientpin.rs:4-6`), and the verdict the runner holds\
+ it to: formal/floors.txt:Solo_*.cfg gives the family `RED -` with no invariant column"
+
+[[method]]
+artifact = "comutants"
+reading = "the row that lints the roster, by NAME because rows move: \
+scripts/check.sh:\\"comutants lint\\" runs on every gate, and the same row written \
+as a line is scripts/check.sh:5"
+"""
+
+#: An assurance REGISTRY, and the fourth derived half. It makes a bundle's kind
+#: of claim one directory up, which is the whole of the roster rule: the bundles
+#: are read by a half of their own, so a page read twice would report every rot
+#: in them twice and orphan nothing when one half stopped finding it.
+REGISTRY = """\
+[[record]]
+id = "PLAT-T-001"
+statement = "the platform half the model leans on"
+discharge = "the gate this row stands on (`clientpin.rs:4-6`), and the retry \
+budget it is priced against at clientpin.rs:2"
+"""
+
 #: The derived page every code-half case drives.
 PROOF_PAGE = "crates/rsk-fido/src/probe_kani.rs"
+
+#: The derived page every scripts-half case drives, and one the exemption covers.
+SCRIPT_PAGE = "scripts/probe_trace.py"
+EXEMPT_PAGE = "scripts/citation_gate.py"
+
+#: The derived page every bundle-half case drives, and the table it cites.
+BUNDLE_PAGE = "assurance/bundle/SEC-T-001.toml"
+FLOORS_PAGE = "formal/floors.txt"
+CHECK_PAGE = "scripts/check.sh"
+
+#: The derived page every registry-half case drives, and the registry that cites
+#: NOTHING — the control that separates this half's rule from the bundles'.
+REGISTRY_PAGE = "assurance/platform.toml"
+SILENT_REGISTRY = "assurance/properties.toml"
 
 MODEL_PAGE = _page("RSKeySecurityState.tla")
 PROSE_PAGE = _page("README.md")
@@ -109,6 +181,12 @@ class Tree:
         self.write("crates/rsk-fido/src/state.rs", UNTAGGED_CODE)
         self.write("crates/rsk-fido/src/lib.rs", UNTAGGED_CODE)
         self.write(PROOF_PAGE, PROOF)
+        self.write(SCRIPT_PAGE, SCRIPT)
+        self.write(EXEMPT_PAGE, SCRIPT)
+        self.write(FLOORS_PAGE, FLOORS)
+        self.write(CHECK_PAGE, CHECK)
+        self.write(BUNDLE_PAGE, BUNDLE)
+        self.write(REGISTRY_PAGE, REGISTRY)
         self.write("crates/rsk-device/src/ctap.rs", UNTAGGED_CODE)
         self.write("crates/rsk-usb/src/ctaphid.rs", UNTAGGED_CODE)
         self.write("crates/rsk-fs/src/lib.rs", UNTAGGED_CODE)
@@ -140,7 +218,21 @@ class Tree:
         """Lock the citations as they stand — the state a case then perturbs."""
         self.problems(relock=True)
 
-    def problems(self, floor=2, pending=None, relock=False):
+    def run(self, monkeypatch):
+        """The exit code `check.sh`'s row takes, not `audit`'s list.
+
+        A guard is falsified through the row that runs it: `main()` is what
+        `python scripts/citation_gate.py` calls, and a clause whose finding never
+        reaches an exit code is one the gate cannot go red on.
+        """
+        monkeypatch.setattr(citation_gate, "ROOT", self.root)
+        monkeypatch.setattr(citation_gate.sys, "argv", ["citation_gate.py"])
+        monkeypatch.setattr(citation_gate, "FLOOR", 2)
+        monkeypatch.setattr(citation_gate, "PENDING", {})
+        monkeypatch.setattr(citation_gate, "FLOOR_BY_PAGE", {})
+        return citation_gate.main()
+
+    def problems(self, floor=2, pending=None, relock=False, buried=False):
         """Audited with the floor lowered and no landing debt: the fixture is
         smaller than the tree and carries none of its history. A case that wants
         a debt passes one.
@@ -159,6 +251,8 @@ class Tree:
             {},
         )
         try:
+            if buried:
+                return citation_gate.relock_report(self.root)
             return citation_gate.audit(self.root, relock=relock)[0]
         finally:
             citation_gate.FLOOR, citation_gate.PENDING, citation_gate.FLOOR_BY_PAGE = (
@@ -389,7 +483,7 @@ def test_a_per_page_floor_is_honoured_and_is_lower_than_the_default():
 
 def test_check_sh_still_runs_the_guard():
     check = (citation_gate.ROOT / "scripts/check.sh").read_text()
-    assert "scripts/citation_gate.py" in check
+    assert gate_lines.runs(check, "scripts/citation_gate.py")
 
 
 def test_the_tests_are_named_after_the_guard():
@@ -529,8 +623,23 @@ def test_a_citation_that_trips_another_rule_is_not_also_an_orphaned_lock(tree):
 
 
 def code_pages_of(tree):
-    tracked = {str(rel) for rel in gate_lines.tree_files(tree.root) if rel.suffix == ".rs"}
+    """`audit`'s own `tracked` set, widened suffixes and all.
+
+    It filtered `.rs` here for a while, which is the set `code_pages` is supposed
+    to narrow — so the helper was doing the rule's job and hiding it. Measured:
+    deleting the suffix test inside `code_pages` left every case in this file
+    green.
+    """
+    tracked = {
+        str(rel)
+        for rel in gate_lines.tree_files(tree.root)
+        if rel.suffix.lstrip(".") in citation_gate.EXTS.split("|")
+    }
     return [str(page) for page in citation_gate.code_pages(tree.root, tracked)]
+
+
+def script_pages_of(tree):
+    return [str(page) for page in citation_gate.script_pages(tree.root)]
 
 
 def test_the_derivation_finds_a_proof_header_and_only_a_citing_file(tree):
@@ -550,6 +659,344 @@ def test_a_rotted_citation_in_a_proof_header_is_found(tree):
     assert only(tree.problems(), "cited line is blank")
 
 
+def test_relock_names_the_drift_it_is_about_to_bury(tree):
+    """`--relock` is the laundering step, and it used to print one line.
+
+    That is not a hypothetical: eight `RSKeyTransport.tla` citations were re-locked
+    at their new lines with the page left saying the old thing, and this row read
+    `ok` over it. The relock still succeeds — it is a record, not a judge — but it
+    now names what it buried. Drive both halves: the rewrite is silent, the report
+    is not.
+    """
+    tree.lock()
+    tree.edit(
+        "crates/rsk-fido/src/clientpin.rs",
+        "// SPDX-License-Identifier: AGPL-3.0-only\n",
+        "// SPDX-License-Identifier: AGPL-3.0-only\n// inserted\n// inserted\n",
+    )
+    assert only(tree.problems(), "has drifted"), "the fixture did not drift"
+    buried = tree.problems(buried=True)
+    assert only(buried, "has drifted"), buried
+    assert any(str(MODEL_PAGE) in problem for problem in buried), buried
+    # And the rewrite itself stays quiet, which is why the report has to exist.
+    assert tree.problems(relock=True) == []
+
+
+def test_relock_names_a_citation_the_lock_has_never_seen(tree):
+    """The second family `LAUNDERED` covers: a NEW citation is locked unread."""
+    tree.lock()
+    tree.edit(MODEL_PAGE, "NoDrift == TRUE", "\\* and one more (state.rs:2)\nNoDrift == TRUE")
+    buried = tree.problems(buried=True)
+    assert only(buried, "is not in"), buried
+
+
+# --- the evidence bundles: the third derived half ----------------------------
+
+
+def bundle_pages_of(tree):
+    return [str(page) for page in citation_gate.bundle_pages(tree.root)]
+
+
+def test_the_bundle_roster_is_the_directory(tree):
+    """A bundle is a page because the directory holds it. Named rosters are how
+    the twelfth bundle would arrive with every citation in it unread."""
+    tree.write("assurance/bundle/SEC-T-002.toml", BUNDLE)
+    found = bundle_pages_of(tree)
+    assert BUNDLE_PAGE in found and "assurance/bundle/SEC-T-002.toml" in found, found
+    # And a bundle that cites NOTHING is still a page: `bundle_gate.py` holds this
+    # directory to an evidence contract, so citing nothing is a finding, not an
+    # opt-out — unlike the `.rs` and `.py` halves, which are in the set BECAUSE
+    # they cite.
+    tree.write("assurance/bundle/SEC-T-003.toml", 'note = "no citation here"\n')
+    assert "assurance/bundle/SEC-T-003.toml" in bundle_pages_of(tree)
+
+
+def test_a_bundle_citation_past_the_end_of_the_file(tree):
+    """The whole class, before the widening: 517 citations over eleven bundles and
+    not one of them reachable from any gate."""
+    tree.edit(BUNDLE_PAGE, "clientpin.rs:4-6", "clientpin.rs:4-600")
+    assert only(tree.problems(), "which has 8 lines")
+
+
+def test_a_bundle_row_citation_that_names_a_comment(tree):
+    """The live defect, in its own shape: all six named a `\\*` COMMENT where the
+    sentence was about a data row. A key is looked up in the row column, and
+    comments are not in it."""
+    tree.edit(BUNDLE_PAGE, "formal/floors.txt:Solo_*.cfg", "formal/floors.txt:Columns")
+    assert only(tree.problems(), "names no row of formal/floors.txt")
+
+
+def test_a_keyed_tables_comment_lines_are_not_rows():
+    """`rows_of` reads the column `run-tlc.sh`'s own `expect_for` matches on, and
+    that reader skips `\\*` and `#`. Without the skip a comment's first word is a
+    row key, and a citation that names one reads as resolved."""
+    rows = citation_gate.rows_of(FLOORS, citation_gate.KEYED[FLOORS_PAGE])
+    assert rows == {"Shipped.cfg", "Solo_*.cfg"}, rows
+
+
+def test_a_bundle_row_citation_whose_row_was_renamed(tree):
+    tree.edit(FLOORS_PAGE, "Solo_*.cfg  ", "SoloWide_*.cfg  ")
+    assert only(tree.problems(), "names no row of formal/floors.txt")
+
+
+def test_a_row_citation_into_a_file_the_tree_does_not_have(tree):
+    (tree.root / FLOORS_PAGE).unlink()
+    assert only(tree.problems(), "no such file is in the tree")
+
+
+def test_the_line_form_cannot_tell_a_comment_from_a_data_row(tree):
+    """WHY the anchor is the key, measured rather than argued: the same wrong
+    target written as a LINE resolves, is in range and is not blank, so every rule
+    this guard has passes it. This is the arm that decided the repair."""
+    tree.edit(BUNDLE_PAGE, "formal/floors.txt:Solo_*.cfg", "formal/floors.txt:2")
+    assert tree.problems() == []
+
+
+def test_deleting_the_bundle_half_is_caught_by_its_own_floor(tree, monkeypatch):
+    """The derivation pointed somewhere the tree has nothing: a loop over an empty
+    set exits 0, which is the shape four guards in this tree shipped with."""
+    monkeypatch.setattr(citation_gate, "BUNDLE_ROOT", "assurance/no-bundles-here/")
+    assert only(tree.problems(), "under the floor of 1")
+
+
+def test_the_bundle_half_is_what_reads_a_bundles_citations(tree, monkeypatch):
+    """The guard-deletion arm: take the pages out AND the floor that notices, the
+    way a deletion actually happens, and the bad citation above is green again.
+    That is what says the widening is load-bearing rather than decorative."""
+    tree.edit(BUNDLE_PAGE, "clientpin.rs:4-6", "clientpin.rs:4-600")
+    assert only(tree.problems(), "which has 8 lines")
+    monkeypatch.setattr(citation_gate, "bundle_pages", lambda root: ())
+    monkeypatch.setattr(citation_gate, "BUNDLE_PAGES_FLOOR", 0)
+    assert tree.problems() == []
+
+
+# --- the assurance registries: the fourth derived half ------------------------
+
+
+def registry_pages_of(tree):
+    return [str(page) for page in citation_gate.assurance_pages(tree.root)]
+
+
+def test_the_registry_roster_is_the_directory_less_the_bundles(tree):
+    """A registry is a page because it CITES and the directory holds it, and the
+    bundles are excluded because a half of their own already reads them."""
+    tree.write("assurance/board/PLAT-T-002.toml", REGISTRY)
+    found = registry_pages_of(tree)
+    assert REGISTRY_PAGE in found, found
+    assert "assurance/board/PLAT-T-002.toml" in found, found
+    assert BUNDLE_PAGE not in found, found
+
+
+def test_a_registry_that_cites_nothing_is_not_a_page(tree):
+    """The rule the bundles one directory over do NOT have, and the reason the two
+    halves are separate. `bundle_gate.py` holds every bundle to a per-row evidence
+    contract, so a bundle citing nothing is a finding; a registry of property tags
+    names no line of Rust at all, and a floor over it would demand one."""
+    assert (tree.root / SILENT_REGISTRY).is_file()
+    assert SILENT_REGISTRY not in registry_pages_of(tree)
+
+
+def test_a_rotted_registry_citation_past_the_end_of_the_file(tree):
+    """The DEFECT arm, in the shape the widening actually found: three of the four
+    live findings were a span running off the end of the file it named."""
+    tree.edit(REGISTRY_PAGE, "clientpin.rs:4-6", "clientpin.rs:4-600")
+    assert only(tree.problems(), "which has 8 lines")
+
+
+def test_a_registry_citation_landing_on_a_blank_line(tree):
+    """The fourth live finding: `scripts/kani_gate.py:524-553` for a reader that
+    had moved, whose span now opens on a blank line. It is the drift signal that
+    costs nothing, and it is what a bounds check alone cannot see."""
+    tree.edit("crates/rsk-fido/src/clientpin.rs", "pub const RETRIES", "\npub const RETRIES")
+    assert only(tree.problems(), "whose cited line is blank")
+
+
+def test_a_bare_continuation_in_a_registry_binds_within_its_paragraph(tree):
+    """The rot this half found three times over, and the reason it is worth
+    gating: a bare `:824` written for a `.tla` module resolves against the last
+    `.rs` file its paragraph named, because the reader cannot see a `.tla` at all.
+    Nothing distinguishes a mis-bound continuation from a correct one except the
+    line it lands on, so the bound is the whole check."""
+    tree.edit(REGISTRY_PAGE, "at clientpin.rs:2", "at clientpin.rs:2 and `:900`")
+    assert only(tree.problems(), "which has 8 lines")
+
+
+def test_deleting_the_registry_half_is_caught_by_its_own_floor(tree, monkeypatch):
+    """The derivation pointed somewhere the tree has nothing: a loop over an empty
+    set exits 0, which is the shape four guards in this tree shipped with."""
+    monkeypatch.setattr(citation_gate, "ASSURANCE_ROOT", "assurance-no-registries/")
+    assert only(tree.problems(), "under the floor of 1")
+
+
+def test_the_registry_half_is_what_reads_a_registrys_citations(tree, monkeypatch):
+    """The REMOVAL arm: take the pages out AND the floor that notices, the way a
+    deletion actually happens, and the bad citation above is green again. That is
+    what says the widening is load-bearing rather than decorative."""
+    tree.edit(REGISTRY_PAGE, "clientpin.rs:4-6", "clientpin.rs:4-600")
+    assert only(tree.problems(), "which has 8 lines")
+    monkeypatch.setattr(citation_gate, "assurance_pages", lambda root: ())
+    monkeypatch.setattr(citation_gate, "ASSURANCE_PAGES_FLOOR", 0)
+    assert tree.problems() == []
+
+
+def test_the_registry_half_reaches_the_rows_exit_code(tree, monkeypatch):
+    """A guard is falsified through the row that runs it. `main()` is what
+    `python scripts/citation_gate.py` calls, and a half whose findings never reach
+    an exit code is one the gate cannot go red on."""
+    assert tree.run(monkeypatch) == 0
+    tree.edit(REGISTRY_PAGE, "clientpin.rs:4-6", "clientpin.rs:4-600")
+    assert tree.run(monkeypatch) == 1
+
+
+def test_a_drifted_registry_citation_is_named_at_its_new_line(tree):
+    """The failure the bounds rules cannot see, on the new half: a cited line that
+    MOVED is still in the file, in range and not blank, so every other rule passes
+    it. Only [`LOCK`] finds it, and 75 citations rotted exactly this way across
+    three commits while the row printed `ok`."""
+    tree.lock()
+    tree.edit("crates/rsk-fido/src/clientpin.rs", "pub fn judge", "// one line above\npub fn judge")
+    drifted = only(tree.problems(), "the citation has drifted")
+    assert [p for p in drifted if p.startswith(REGISTRY_PAGE)], drifted
+
+
+def test_the_summary_counts_the_registries_apart_from_the_bundles(tree):
+    """Two halves reported as one number cannot say which stopped finding — the
+    argument each derived floor is kept separate for, one line up."""
+    summary = citation_gate.audit(tree.root)[1]
+    assert "1 evidence bundles and 1 assurance registries resolve" in summary, summary
+
+
+# --- the control: the exact motion that rotted the six ------------------------
+
+
+def test_a_comment_inserted_above_a_cited_ROW_stays_green(tree):
+    """Two of the six were re-anchored by hand one morning and rotted again the
+    same day, because `floors.txt` gained three comment lines. A key does not
+    move, so this edit is a non-event — which is the point of the row form."""
+    tree.lock()
+    tree.edit(FLOORS_PAGE, "Shipped.cfg", "\\* one more comment line\nShipped.cfg")
+    assert tree.problems() == []
+
+
+def test_the_same_insertion_moves_a_LINE_citation(tree):
+    """The control's twin, and the measurement behind [`KEYED`]: written as a
+    line, that same comment turns the row red and buys a hand re-anchor. Both are
+    recorded because the choice between them is what this pair decides."""
+    tree.edit(BUNDLE_PAGE, "formal/floors.txt:Solo_*.cfg", "formal/floors.txt:5")
+    tree.lock()
+    tree.edit(FLOORS_PAGE, "Shipped.cfg", "\\* one more comment line\nShipped.cfg")
+    drift = only(tree.problems(), "has drifted")
+    assert drift, tree.problems()
+    assert "is now at :6" in drift[0], drift[0]
+
+
+# --- the second keyed table: rows whose names have spaces ---------------------
+
+
+def test_a_check_row_citation_resolves_by_its_name(tree):
+    """The control. A row is named by the first argument of either helper that
+    prints one, which is the string the runner puts in the log; the bundle writes
+    it TOML-escaped, because that is how a basic string carries a quote."""
+    rows = citation_gate.rows_of(CHECK, citation_gate.KEYED[CHECK_PAGE])
+    assert rows == {"formal citations", "comutants lint", "test (host)"}, rows
+    assert tree.problems() == []
+
+
+def test_a_check_row_citation_that_names_no_row(tree, monkeypatch):
+    """The first rule, driven through the ROW that runs it and not just the
+    function: a key nothing in the file answers to has to reach an exit code."""
+    tree.edit(BUNDLE_PAGE, 'check.sh:\\"comutants lint\\"', 'check.sh:\\"comutants lynt\\"')
+    assert only(tree.problems(), "names no row of scripts/check.sh")
+    assert tree.run(monkeypatch) == 1
+
+
+def test_two_rows_answering_to_the_same_name(tree, monkeypatch):
+    """The second rule, and it is asked of the TABLE rather than of the citations:
+    a key two rows answer to anchors nothing, the way a basename in two SEARCH
+    directories does. So it is a finding in a commit that cites neither."""
+    tree.edit(CHECK_PAGE, 'run "formal citations"', 'run "comutants lint"')
+    assert only(tree.problems(), "has 2 rows named `comutants lint`")
+    assert tree.run(monkeypatch) == 1
+
+
+def test_a_row_landing_above_a_cited_one_moves_only_the_LINE_form(tree):
+    """The measurement that bought this entry, in the motion that produced it: one
+    bundle's three citations of the `comutants lint` row went 725 → 772 → 785 over
+    two commits in a day, and the relock in between recorded a neighbouring
+    COMMENT for two of them. The same row is cited both ways here, so one
+    insertion measures both anchors against the same edit."""
+    tree.lock()
+    tree.edit(
+        CHECK_PAGE,
+        'run "comutants lint"',
+        'run "new row"                  true\nrun "comutants lint"',
+    )
+    drift = only(tree.problems(), "has drifted")
+    assert len(drift) == 1, tree.problems()
+    assert CHECK_PAGE in drift[0] and "is now at :6" in drift[0], drift[0]
+
+
+def test_the_line_form_into_a_keyed_file_is_not_weakened(tree):
+    """Adding a file to [`KEYED`] may not retire the line form into it, and the
+    tree has a citation that needs it: `assurance/platform.toml`'s
+    `scripts/check.sh:174-223` is a FUNCTION BODY, which is no row and has no key
+    to name."""
+    tree.edit(BUNDLE_PAGE, "scripts/check.sh:5", "scripts/check.sh:500")
+    assert only(tree.problems(), "which has 6 lines")
+
+
+def test_a_keyed_file_the_tree_no_longer_carries(tree, monkeypatch):
+    """The rule [`SEARCH`] already has, one table over. An entry pointing at
+    nothing checks nothing, and no citation has to exist for that to be true."""
+    (tree.root / CHECK_PAGE).unlink()
+    assert only(tree.problems(), "is in KEYED but the tree does not carry it")
+    assert tree.run(monkeypatch) == 1
+
+
+def test_deleting_the_entry_takes_both_of_its_findings_with_it(tree, monkeypatch):
+    """The guard-deletion arm, done the way a deletion actually happens: the entry
+    AND the pattern built from it. Both findings above go green, which is what
+    says the entry is load-bearing rather than decorative — and it is why [`ROW`]
+    is built by a function instead of written out beside the table."""
+    tree.edit(BUNDLE_PAGE, 'check.sh:\\"comutants lint\\"', 'check.sh:\\"comutants lynt\\"')
+    tree.edit(CHECK_PAGE, 'run "formal citations"', 'run "comutants lint"')
+    assert len(tree.problems()) == 2, tree.problems()
+    monkeypatch.setattr(
+        citation_gate, "KEYED", {FLOORS_PAGE: citation_gate.KEYED[FLOORS_PAGE]}
+    )
+    monkeypatch.setattr(citation_gate, "ROW", citation_gate.row_pattern(citation_gate.KEYED))
+    assert tree.problems() == []
+
+
+# --- the widened extension set ------------------------------------------------
+
+
+def test_a_shell_citation_is_read(tree):
+    """`.sh` beside `.rs`: the bundles cite the RUNNER as finely as the firmware,
+    and `formal/run-tlc.sh:231-234` is the derivation a reason-comparison argument
+    rests on. The `.rs`-only group saw none of them."""
+    tree.write("formal/run-tlc.sh", "#!/usr/bin/env bash\nderived_inv() { :; }\n")
+    tree.edit(BUNDLE_PAGE, "clientpin.rs:4-6", "formal/run-tlc.sh:2")
+    assert tree.problems() == []
+    tree.edit(BUNDLE_PAGE, "formal/run-tlc.sh:2", "formal/run-tlc.sh:20")
+    assert only(tree.problems(), "which has 2 lines")
+
+
+def test_a_shell_page_is_not_a_code_page(tree):
+    """`code_pages` asserts the `.rs` suffix itself rather than inheriting it from
+    `tracked`, which now carries every suffix `CITE` can NAME. Without that a
+    `tools/*.sh` that cites becomes a proof header by side effect."""
+    tree.write("tools/probe.sh", "# cites (`clientpin.rs:4-6`)\n")
+    assert "tools/probe.sh" not in code_pages_of(tree)
+
+
+def test_relock_on_an_unmoved_tree_buries_nothing(tree):
+    """The CONTROL. A report that fires on a quiet tree is one nobody reads."""
+    tree.lock()
+    assert tree.problems(buried=True) == []
+    assert tree.problems() == []
+
+
 def test_a_moved_citation_in_a_proof_header_is_found(tree):
     """The lock reaches the code half too, which is what ratchets it: a page that
     stops being read turns every entry it had into an orphan."""
@@ -561,6 +1008,33 @@ def test_a_moved_citation_in_a_proof_header_is_found(tree):
     )
     drifted = only(tree.problems(), "has drifted")
     assert any(PROOF_PAGE in problem for problem in drifted), drifted
+
+
+def test_the_derivation_reads_a_citing_script_and_only_a_citing_one(tree):
+    """`scripts/` was the last substantive citing surface no gate read, and the
+    round that added it found three more rotted citations across three files."""
+    tree.write("scripts/quiet.py", "# nothing is cited here\n")
+    found = script_pages_of(tree)
+    assert SCRIPT_PAGE in found, found
+    assert "scripts/quiet.py" not in found, found
+    assert tree.problems() == []
+
+
+def test_a_rotted_citation_in_a_script_is_found(tree):
+    """The measured hole: `security_trace.py` named `reset.rs:187` for a predicate
+    on `:211`, twice, while this row printed `ok`."""
+    tree.edit(SCRIPT_PAGE, "clientpin.rs:4-6", "clientpin.rs:3-6")
+    assert only(tree.problems(), "cited line is blank")
+
+
+def test_the_guards_own_fixtures_stay_exempt(tree):
+    """`SCRIPT_EXEMPT` is what keeps this row off the files whose citations are
+    deliberately broken — this guard's own prose and its mutation table. Without
+    it the row cannot be green on any checkout that contains itself."""
+    assert EXEMPT_PAGE in citation_gate.SCRIPT_EXEMPT
+    assert EXEMPT_PAGE not in script_pages_of(tree)
+    tree.edit(EXEMPT_PAGE, "clientpin.rs:4-6", "clientpin.rs:3-6")
+    assert tree.problems() == []
 
 
 def test_a_bare_name_on_a_code_page_resolves_to_its_sibling(tree):
@@ -658,6 +1132,16 @@ def test_a_derivation_that_finds_nothing_trips_the_floor_and_the_lock(tree, monk
     assert only(problems, "which no longer cites it"), problems
 
 
+def test_a_scripts_derivation_that_finds_nothing_trips_its_own_floor(tree, monkeypatch):
+    """The scripts half gets its own floor for the reason the case above states:
+    one number over the union cannot say WHICH finder stopped finding."""
+    tree.lock()
+    monkeypatch.setattr(citation_gate, "SCRIPT_ROOT", "no-such-root/")
+    problems = tree.problems()
+    assert only(problems, "the derivation stopped finding them"), problems
+    assert only(problems, "which no longer cites it"), problems
+
+
 def test_a_citing_file_outside_the_code_roots_is_not_read(tree):
     """A named limit, asserted so it stays a decision. `third_party/` is the one
     `.rs` directory left out — a vendored fork's citations are its author's — and
@@ -669,3 +1153,56 @@ def test_a_citing_file_outside_the_code_roots_is_not_read(tree):
     )
     assert "third_party/fork/src/probe.rs" not in code_pages_of(tree)
     assert tree.problems() == []
+
+
+# --- the fourth extension: the bundles cite the GATES, and by line ------------
+
+
+#: A `.py` citation target in the shape the rot actually took: a span that
+#: started inside the function it names and ran past its end onto the blank
+#: below. Six of the eight rotted `.py` citations in the tree were this.
+PY_TARGET = """# SPDX-License-Identifier: AGPL-3.0-only
+def check_rows(rows):
+    return sorted(rows)
+
+"""
+
+
+def test_a_rotted_py_citation_in_a_bundle_is_found(tree, monkeypatch):
+    """`EXTS` was `rs|sh|txt`, so the 32 `.py:NNN` occurrences the bundles carry
+    — 23 distinct, 17 of them naming code their sentence was not about — were not
+    parsed, not resolved, not locked and not drift-detectable. Driven through
+    `main()`: a finding that never reaches an exit code is one the row cannot go
+    red on. Only 6 of the 17 were catchable this mechanically; the rest took a
+    reading."""
+    tree.write("scripts/probe_gate.py", PY_TARGET)
+    tree.edit(BUNDLE_PAGE, "clientpin.rs:4-6", "scripts/probe_gate.py:2-4")
+    assert only(tree.problems(), "whose cited line is blank"), tree.problems()
+    assert tree.run(monkeypatch) == 1
+
+
+def test_taking_py_back_out_of_EXTS_stops_catching_it(tree, monkeypatch):
+    """The deletion arm, and what says the widening is load-bearing rather than
+    decorative: the same rotted citation over the same tree, with `py` out of
+    [`EXTS`] and the reader re-derived from it, is not parsed at all. Green, at
+    exit 0, over a bundle sending its reader to a blank line."""
+    tree.write("scripts/probe_gate.py", PY_TARGET)
+    tree.edit(BUNDLE_PAGE, "clientpin.rs:4-6", "scripts/probe_gate.py:2-4")
+    monkeypatch.setattr(citation_gate, "EXTS", "rs|sh|txt")
+    monkeypatch.setattr(
+        citation_gate, "CITE", citation_gate.cite_pattern(citation_gate.EXTS)
+    )
+    assert tree.problems() == []
+    assert tree.run(monkeypatch) == 0
+
+
+def test_every_extension_in_EXTS_is_read(tree):
+    """The non-weakening arm, derived from `EXTS` rather than transcribed: the
+    widening ADDS. An edit that swapped an extension out instead would leave
+    every citation of it unparsed, and this row green over all of them."""
+    for ext in citation_gate.EXTS.split("|"):
+        found = list(citation_gate.citations(f"the gate (`probe.{ext}:4-6`)"))
+        assert [(c[1], c[2], c[3]) for c in found] == [(f"probe.{ext}", 4, 6)], (
+            ext,
+            found,
+        )

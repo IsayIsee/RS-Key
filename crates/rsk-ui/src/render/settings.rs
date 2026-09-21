@@ -105,9 +105,10 @@ fn settings_display<D: DrawTarget<Color = Rgb565>>(t: &mut D) -> Result<(), D::E
     )
 }
 
-/// The Security sub-page: the PIN action (labelled by whether a PIN is set) above the
-/// danger-styled Factory reset. Both rows reuse the Root list geometry; the title-bar
-/// back chevron returns to the Root list.
+/// The Security sub-page: the three credential PINs (device and FIDO labelled by whether
+/// that PIN is set, PIV a drill-in), the scramble toggle, the audit log and the backup
+/// status, above the danger-styled Factory reset. Every row reuses the Root list geometry;
+/// the title-bar back chevron returns to the Root list.
 fn settings_security<D: DrawTarget<Color = Rgb565>>(
     t: &mut D,
     device_pin_set: bool,

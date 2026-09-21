@@ -231,10 +231,11 @@ where
     /// ([`Ui::run_delete`]) share one implementation.
     fn collect_pin_impl(&mut self, min_len: usize, out: &mut [u8]) -> rsk_sdk::PinEntry {
         // No up-front "N tries remaining" caption here, unlike the local unlock gate: the
-        // worker already holds the shared `fs` RefCell borrowed across this CTAP call
-        // (clientPIN 0x06 → get_uv_token), so re-reading the counter would double-borrow
-        // and panic. The placeholder dots (sized from `min_len`) still show; the host
-        // already exposes the retry count via getPINRetries / getUVRetries.
+        // worker holds `fs` *and* `rng` (and `presence`, and `fido_state`) borrowed across
+        // this CTAP call (clientPIN 0x06 → get_uv_token), so reading either from anything
+        // this reaches is a panic on the trusted display — #107 was the scrambled pad
+        // drawing its order from `rng`. The placeholder dots (sized from `min_len`) still
+        // show; the host already exposes the retry count via getPINRetries / getUVRetries.
         let expected = min_len.min(u8::MAX as usize) as u8;
         // The host built-in-UV PIN is the FIDO clientPIN — name it, so the user knows it
         // isn't the device-unlock or PIV PIN (the reported confusion behind a reset).
@@ -254,8 +255,10 @@ where
     /// The host is waiting on this exact PIN (its `PC_to_RDR_Secure` is in flight,
     /// the CCID transport streaming time-extensions), so it blocks to the presence
     /// timeout (`yield_to_host = false`), exactly like the FIDO built-in-UV path. The
-    /// worker holds `fs` borrowed across this call, so this — like `collect_pin_impl`
-    /// — must never read `fs` (it touches only the panel's `Ui` RefCell).
+    /// worker holds `fs`, `rng`, `presence` and `fido_state` borrowed across this call,
+    /// so this — like `collect_pin_impl` — must never read any of them (it touches only
+    /// the panel's `Ui` RefCell). `scripts/display_borrow_gate.py` holds the whole
+    /// reachable set to that; the `rng` half of it is #107.
     pub fn collect_pin_titled(
         &mut self,
         title: &'static str,

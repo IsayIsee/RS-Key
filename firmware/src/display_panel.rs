@@ -67,11 +67,13 @@ impl PioDisplayTx {
         config.shift_out.direction = ShiftDirection::Left;
         config.shift_out.threshold = 8;
         config.fifo_join = FifoJoin::TxOnly;
-        let divider = embassy_rp::clocks::clk_sys_freq() / (frequency * 2);
-        assert_eq!(divider * frequency * 2, embassy_rp::clocks::clk_sys_freq());
+        // One bit per two instructions at divider 1, so the wire rate is clk_sys/2.
+        // `BUILD_DISPLAY_SYS_CLOCK_HZ`'s const assert already refuses a board file
+        // that breaks the ratio; this is the backstop for a second caller.
         assert_eq!(
-            divider, 1,
-            "display PIO must run at one instruction per cycle"
+            embassy_rp::clocks::clk_sys_freq(),
+            frequency * 2,
+            "the display PIO clocks at half clk_sys and sets no divider"
         );
         config.clock_divider = 1u8.into();
         sm.set_config(&config);

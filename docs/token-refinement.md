@@ -23,8 +23,8 @@ verification, cross-reset refinement, or liveness.
 The TLA+ module owns `AStates`, `Ops`, `Outcomes`, and `AllowedRelation`.
 `scripts/export_token_relation.py` only captures TLA+-serialized values;
 `scripts/generate_token_edges.py` generates the Rust enums, `AState`, and exact
-bitset. The exhaustive host test checks all 63,888 tuples. The current export is
-44 states, 11 operations, 3 outcomes, and 871 allowed edges; these are printed
+bitset. The exhaustive host test checks all 69,696 tuples. The current export is
+44 states, 12 operations, 3 outcomes, and 1,039 allowed edges; these are printed
 facts, not hand-maintained requirements.
 
 ## Concrete domain and boot boundary
@@ -37,8 +37,10 @@ abstract token retired. `ValidBootInput` bounds the restored mismatch byte by
 to that range.
 
 `ValidPersistent` admits all four presence combinations of `EF_PIN` and
-`EF_PAUTHTOKEN`. This is intentional, including `grant && !pinSet`: firmware
-before 0x08BF and a torn reset could leave that shape. Because A observes only
+`EF_PAUTHTOKEN`. This is intentional, including `grant && !pinSet`: since 0x09CB
+`ensure_seed` writes the grant record with no PIN behind it, so that shape is the
+factory state and the state after every completed reset, and firmware before
+0x08BF or a torn reset could leave it too. Because A observes only
 record presence, not record contents, no older-firmware version assumption is
 needed for R0p. Every projected write and power cut remains inside those four
 states.
@@ -72,8 +74,25 @@ consensus: one singleton equal to δC. Multiple interpretations are
 
 `assurance/token_refinement.toml` and
 `scripts/token_refinement_gate.py` enforce the three completeness axes across
-the tree: volatile A-visible writers, persistent writers for the keys derived
-from `TokenPersistentView`, and authorization outcome producers.
+the tree: volatile writers of the token, persistent writers for the keys derived
+from `TokenPersistentView`, and authorization outcome producers. Every vocabulary
+the scan matches on is read out of the tree — the token's own field list, the
+`PERM_*` constants, the `Fs` methods that reach a storage mutation, the fields
+and permissions `abstract_token` really reads, and the crate's module graph — so
+a new field, permission or store method arrives as an unowned site rather than as
+silence. Each entry then carries its disposition: `step` names the abstract Step
+it implements, `stutter` moves security-visible state A does not observe,
+`out-of-scope` is a real gate outside A's vocabulary, and the gate derives which
+of those a site *can* be from what it writes.
+
+Three of them are configuration-conditional, and the `column` field names the
+`docs/assurance-matrix.md` column that makes them so. The panel's set-PIN and
+PIN-check doors onto `EF_PIN` exist only where `firmware-display` pulls in
+`rsk-display`; the `authenticatorLargeBlobs` write gate — the one authorization
+decision on a permission bit A has no word for — is dead in the `largeblob-ext`
+column, because CTAP 2.3 §12.4 forbids serving both large-blob designs and the
+dispatch is guarded on it.
+
 `assurance-trace` exposes verification artifacts to the host emulator and is
 never a firmware feature. `check.sh` poisons every assurance-only module in a
 throwaway tree, proves the poison reaches a host feature build but not firmware,

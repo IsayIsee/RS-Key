@@ -199,6 +199,53 @@ fn a_warm_reboot_is_not_a_power_cycle() {
     shut_down(path, jobs, device);
 }
 
+/// `main.rs` runs its boot block — the seal migrations, `ensure_seed`, `scan_files`
+/// — on every boot, cold or warm, and the emulator ran it once, at process start.
+/// The grant is what a re-entry visibly owes: setPIN revokes it and a boot mints it.
+#[test]
+fn every_boot_runs_the_boot_block() {
+    use crate::pin_client::{
+        CTAP2_OK, Platform, get_key_agreement_req, parse_key_agreement, set_pin_req,
+    };
+    use rsk_fido::consts::EF_PAUTHTOKEN;
+
+    let reboot = |jobs: &Jobs, warm: bool| {
+        if !warm {
+            ask(jobs, Job::Replug(Unplug::Operator));
+            return;
+        }
+        let mut select = vec![0x00, 0xA4, 0x04, 0x00, VENDOR_AID.len() as u8];
+        select.extend_from_slice(&VENDOR_AID);
+        ask(jobs, Job::Apdu(select));
+        let r = ask(jobs, Job::Apdu(vec![0x00, INS_REBOOT, 0x00, 0x00]));
+        assert_eq!(r[r.len() - 2..], SW_OK, "the reboot was accepted");
+        // It runs after the response is out, so one more round trip lands it.
+        ask(jobs, Job::OtpStatus);
+    };
+
+    for (name, warm) in [("replug", false), ("warm", true)] {
+        let (path, jobs, _signals, device) = bench(&format!("boot-block-{name}"));
+        let granted = || mount(&path).has_key(EF_PAUTHTOKEN);
+        let cbor = |data: Vec<u8>| ask(&jobs, Job::Cbor { cid: CID, data });
+
+        // Answering anything proves the boot block is behind us.
+        ask(&jobs, Job::OtpStatus);
+        let at_start = granted();
+        let (x, y) = parse_key_agreement(&cbor(get_key_agreement_req()));
+        let set = cbor(set_pin_req(&Platform::agree(&x, &y), b"1234"))[0];
+        let after_set_pin = granted();
+        reboot(&jobs, warm);
+        let after_reboot = granted();
+
+        assert_eq!(
+            (at_start, set, after_set_pin, after_reboot),
+            (true, CTAP2_OK, false, true),
+            "{name}: the grant a setPIN revoked must come back with the next boot"
+        );
+        shut_down(path, jobs, device);
+    }
+}
+
 /// Every [`Job`] variant, and whether a queued one is a request the parked worker
 /// is owed the executor for (`rsk_display::Hooks::host_request_pending`). The
 /// membership is the `REQ` set of `firmware/src/worker.rs` — get it wrong in

@@ -46,8 +46,14 @@ pub type DamageTag = u128;
 const DAMAGE_DOMAIN: &[u8; 8] = b"RSK-DMG1";
 
 // A complete scene lives in a Frame on the stack. Raster operations store their
-// geometry once, then one-byte palette/run tokens. The total stays below 16 KiB.
-const STREAM_CAPACITY: usize = 12 * 1024;
+// geometry once, then one-byte palette/run tokens.
+//
+// Sized against the worst GLYPH, not a plausible label: an RP picks the text in
+// a passkey list, and 48 `'j'`s cost `render_service` 14630 bytes where a mixed-
+// ASCII label costs 10683. 12 KiB cleared the mixed label by 42 bytes and two of
+// the 95 printable glyphs overflowed it — a panic on the trusted display, from
+// a name anyone can register. The census sweeps all 95 and holds this number.
+const STREAM_CAPACITY: usize = 16 * 1024;
 const OP_SOLID: u8 = 0;
 const OP_RASTER: u8 = 1;
 const OP_BACKGROUND: u8 = 2;
@@ -136,7 +142,25 @@ pub struct Scene {
     error: Option<SceneError>,
 }
 
-const _: () = assert!(core::mem::size_of::<Scene>() <= 16 * 1024);
+const _: () = assert!(core::mem::size_of::<Scene>() <= 20 * 1024);
+
+/// A ceiling on what one retained frame costs the stack: the `Scene` a `Frame` owns
+/// by value, the two alternating DMA bands `present_rect` rasterizes into, and the
+/// tag array `present_scene` diffs the panel against.
+///
+/// It is a compile-time bound because nothing else can see it. The gate's stack row
+/// measures the space *left over* after `.data`/`.bss`, so moving a buffer off the
+/// statics and onto the stack — which is what the retained compositor did — makes
+/// that number improve while the real peak grows. This is the half the linker
+/// cannot report; `scripts/check.sh`'s `display_stack_floor` spends it.
+pub const RETAINED_FRAME_STACK_BYTES: usize = 32 * 1024;
+
+const _: () = assert!(
+    core::mem::size_of::<Scene>()
+        + 2 * BAND_BYTES
+        + core::mem::size_of::<[DamageTag; DAMAGE_TILES]>()
+        <= RETAINED_FRAME_STACK_BYTES
+);
 
 impl Default for Scene {
     fn default() -> Self {

@@ -1,0 +1,9 @@
+=========== E5: comutate run BugCmWalkIgnoresChannel ===========
+  BugCmWalkIgnoresChannel            killed       NoAuthorizationBypass  (test result: FAILED. 617 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.37s; proof: Failed Checks: NoAuthorizationBypass/B1: the RP walk is servable to the wrong set of channels)
+E5-EXIT=0
+=========== E4b: verify_cm_token loses its PERM_CM conjunct ===========
+ ** 2 of 2 cover properties satisfied
+Failed Checks: NoAuthorizationBypass/D1: the Begin's gate admitted the wrong set of requests
+VERIFICATION:- FAILED
+Complete - 0 successfully verified harnesses, 1 failures, 1 total.
+E4B-RESTORED

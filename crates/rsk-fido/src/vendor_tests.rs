@@ -55,8 +55,8 @@ struct Host {
     aad: [u8; 65],
 }
 
-fn call(
-    fs: &mut Fs<RamStorage>,
+fn call<S: Storage>(
+    fs: &mut Fs<S>,
     rng: &mut SeqRng,
     state: &mut FidoState,
     presence: &mut dyn UserPresence,
@@ -120,7 +120,7 @@ fn build_mse_coords(buf: &mut [u8], hx: &[u8], hy: &[u8]) -> usize {
 }
 
 /// Run the MSE handshake host-side and return the derived channel.
-fn handshake(fs: &mut Fs<RamStorage>, rng: &mut SeqRng, state: &mut FidoState) -> Host {
+fn handshake<S: Storage>(fs: &mut Fs<S>, rng: &mut SeqRng, state: &mut FidoState) -> Host {
     let host_scalar = [0x42u8; 32];
     let (hx, hy) = P256Key::from_scalar(&host_scalar).unwrap().public_xy();
     let mut req = [0u8; 200];
@@ -959,7 +959,39 @@ fn backup_state_reports_flags() {
     let (mut fs, mut rng, mut st) = setup();
     assert_eq!(
         state_flags(&mut fs, &mut rng, &mut st),
-        (false, true, false, false) // not sealed, has seed, not locked, not unlocked
+        // not sealed, has seed, not locked, not unlocked, no refused re-arm
+        (false, true, false, false, false)
+    );
+}
+
+/// A refused at-rest re-arm leaves by a door other than the wipe's own answer.
+/// `authenticatorReset` re-arms best-effort and reports success whatever the medium
+/// said — a non-zero status there would teach a host to call a working reset failed
+/// — so the only place it can surface is this ungated status map.
+#[test]
+fn backup_state_reports_a_refused_re_arm_out_of_band() {
+    let (backend, medium) = rsk_fs::storage::faults::RemoveStuck::new();
+    let mut fs = Fs::new(backend);
+    let mut rng = SeqRng(1);
+    ensure_seed(&dev(), &mut fs, &mut rng).unwrap();
+    let mut st = FidoState::new();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    assert!(
+        !state_flags(&mut fs, &mut rng, &mut st).4,
+        "control: a latched marker is the steady state of every provisioned key, so \
+         it must not read as a fault"
+    );
+
+    // The persistent arm: the wipe sites' retry cannot recover it, and their answer
+    // is discarded, so without this key the host is told nothing at all.
+    medium.refuse(Some(rsk_fs::EF_HARDENED));
+    assert!(
+        rsk_fs::request_rescrub(&mut fs).is_err(),
+        "fixture: the medium refused the re-arm"
+    );
+    assert!(
+        state_flags(&mut fs, &mut rng, &mut st).4,
+        "the refusal never reached the host"
     );
 }
 
@@ -981,24 +1013,28 @@ fn backup_status_mirrors_the_host_flags() {
 
 // ---- soft-lock ----
 
-/// Read BACKUP_STATE and return `(sealed, has_seed, locked, unlocked)`.
-fn state_flags(
-    fs: &mut Fs<RamStorage>,
+/// Read BACKUP_STATE and return `(sealed, has_seed, locked, unlocked,
+/// rescrub_refused)`. Generic over the backend so the faulting media can drive it.
+fn state_flags<S: Storage>(
+    fs: &mut Fs<S>,
     rng: &mut SeqRng,
     st: &mut FidoState,
-) -> (bool, bool, bool, bool) {
+) -> (bool, bool, bool, bool, bool) {
     let mut req = [0u8; 16];
     let n = one_byte_req(&mut req, VENDOR_BACKUP_STATE);
     let mut out = [0u8; 64];
     let r = call(fs, rng, st, &mut AlwaysConfirm, &req[..n], &mut out).unwrap();
     let mut d = Decoder::new(&out[..r]);
-    assert_eq!(d.map().unwrap(), Some(4));
-    let mut flags = [false; 4];
-    for f in flags.iter_mut() {
-        d.u8().unwrap();
+    assert_eq!(d.map().unwrap(), Some(5));
+    let mut flags = [false; 5];
+    // The key numbers, not just the arity: read positionally, a map keyed 2..=6
+    // decodes as if it were 1..=5, so every assertion below still passes while the
+    // wire has moved under the host. Key 5 is the whole of `rescrub_refused`.
+    for (key, f) in (1u8..).zip(flags.iter_mut()) {
+        assert_eq!(d.u8().unwrap(), key, "BACKUP_STATE key {key}");
         *f = d.bool().unwrap();
     }
-    (flags[0], flags[1], flags[2], flags[3])
+    (flags[0], flags[1], flags[2], flags[3], flags[4])
 }
 
 /// Host side of the channel: wrap 32 bytes as nonce ‖ ct ‖ tag.
@@ -1142,7 +1178,7 @@ fn lock_enable_wraps_seed_and_drops_plain() {
     assert_eq!(load_keydev(&dev(), &mut fs), None);
     assert_eq!(
         state_flags(&mut fs, &mut rng, &mut st),
-        (false, false, true, false)
+        (false, false, true, false, false)
     );
 }
 
@@ -1165,7 +1201,7 @@ fn unlock_restores_operations_for_the_session() {
     assert!(!fs.has_data(EF_KEY_DEV.get()));
     assert_eq!(
         state_flags(&mut fs, &mut rng, &mut st),
-        (false, false, true, true)
+        (false, false, true, true, false)
     );
 }
 
@@ -1197,7 +1233,7 @@ fn disable_restores_plain_seed() {
     assert_eq!(load_keydev(&dev(), &mut fs), Some(seed));
     assert_eq!(
         state_flags(&mut fs, &mut rng, &mut st),
-        (false, true, false, false)
+        (false, true, false, false, false)
     );
 }
 
@@ -1784,7 +1820,7 @@ fn audit_config_rejects_unknown_target() {
 /// export: `(start, seq_next, head)`. An eviction moves `start`; a coalesced repeat
 /// moves only the head, since it rewrites the newest entry in place.
 fn journal_state(fs: &mut Fs<RamStorage>) -> (u32, u32, [u8; 32]) {
-    let (head, m) = crate::journal::chain_head(&dev(), fs);
+    let (head, m) = crate::journal::chain_head(&dev(), fs).unwrap();
     (m.start, m.seq_next, head)
 }
 
@@ -2164,4 +2200,477 @@ fn an_unsupported_protocol_is_judged_before_the_missing_token() {
             "protocol {proto}"
         );
     }
+}
+
+/// A provisioned card on a medium whose reads of one chosen record can be made to
+/// fault — the vendor twin of [`setup`].
+fn setup_stuck() -> (
+    Fs<rsk_fs::storage::faults::ProbeStuck>,
+    rsk_fs::storage::faults::ProbeMedium,
+    SeqRng,
+    FidoState,
+) {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    let mut rng = SeqRng(1);
+    ensure_seed(&dev(), &mut fs, &mut rng).unwrap();
+    (fs, medium, rng, FidoState::new())
+}
+
+/// R1: `pin_gate` is the ONLY PIN half of the vendor gate, and `VENDOR_MSE` is
+/// ungated — so a faulted `EF_PIN` probe reading as "no PIN configured" handed the
+/// master seed to any host that could take one touch (none at all on a no-touch
+/// build).
+#[cfg(not(feature = "fips-profile"))]
+#[test]
+fn a_faulted_pin_probe_does_not_waive_the_vendor_pin_gate() {
+    let (mut fs, medium, mut rng, mut st) = setup_stuck();
+    fs.put(EF_PIN, &[8, 4, 1]).unwrap();
+    let mut req = [0u8; 32];
+    let n = one_byte_req(&mut req, VENDOR_BACKUP_EXPORT);
+    let mut out = [0u8; 128];
+
+    let _ = handshake(&mut fs, &mut rng, &mut st);
+    assert_eq!(
+        call(
+            &mut fs,
+            &mut rng,
+            &mut st,
+            &mut AlwaysConfirm,
+            &req[..n],
+            &mut out
+        ),
+        Err(CtapError::PuatRequired),
+        "control: a PIN-protected card demands a pinUvAuthToken"
+    );
+
+    let _ = handshake(&mut fs, &mut rng, &mut st);
+    medium.stick(Some(EF_PIN));
+    assert_eq!(
+        call(
+            &mut fs,
+            &mut rng,
+            &mut st,
+            &mut AlwaysConfirm,
+            &req[..n],
+            &mut out
+        ),
+        Err(CtapError::Other),
+        "a faulted EF_PIN probe waived the gate and exported the master seed"
+    );
+}
+
+/// R2: `BACKUP_FINALIZE` is irreversible short of a reset, and one faulted
+/// `EF_BACKUP_SEALED` probe reopened the export window it closed.
+#[cfg(not(feature = "fips-profile"))]
+#[test]
+fn a_faulted_sealed_probe_does_not_reopen_the_export_window() {
+    let (mut fs, medium, mut rng, mut st) = setup_stuck();
+    let mut req = [0u8; 32];
+    let mut out = [0u8; 128];
+
+    let n = one_byte_req(&mut req, VENDOR_BACKUP_FINALIZE);
+    call(
+        &mut fs,
+        &mut rng,
+        &mut st,
+        &mut AlwaysConfirm,
+        &req[..n],
+        &mut out,
+    )
+    .unwrap();
+
+    let n = one_byte_req(&mut req, VENDOR_BACKUP_EXPORT);
+    let _ = handshake(&mut fs, &mut rng, &mut st);
+    assert_eq!(
+        call(
+            &mut fs,
+            &mut rng,
+            &mut st,
+            &mut AlwaysConfirm,
+            &req[..n],
+            &mut out
+        ),
+        Err(CtapError::NotAllowed),
+        "control: a sealed card refuses the export"
+    );
+
+    let _ = handshake(&mut fs, &mut rng, &mut st);
+    medium.stick(Some(EF_BACKUP_SEALED));
+    assert_eq!(
+        call(
+            &mut fs,
+            &mut rng,
+            &mut st,
+            &mut AlwaysConfirm,
+            &req[..n],
+            &mut out
+        ),
+        Err(CtapError::Other),
+        "a faulted EF_BACKUP_SEALED probe reopened the sealed export window"
+    );
+}
+
+/// A presence that offers built-in UV and declines the pad entry — the device-PIN
+/// half of [`pin_gate`] runs only when `uv_available`.
+struct UvDecline;
+impl UserPresence for UvDecline {
+    fn request(&mut self, _confirm: crate::Confirm<'_>) -> Presence {
+        Presence::Confirmed
+    }
+    fn uv_available(&self) -> bool {
+        true
+    }
+    fn collect_device_pin(&mut self, _min_len: usize, _out: &mut [u8]) -> crate::PinEntry {
+        crate::PinEntry::Declined
+    }
+}
+
+/// R1's second spelling: `pin_gate` reads TWO records, and a display build's owner
+/// often sets only the **device** PIN. A faulted `EF_DEVICE_PIN` probe waived the
+/// gate exactly as a faulted `EF_PIN` one did.
+#[cfg(not(feature = "fips-profile"))]
+#[test]
+fn a_faulted_device_pin_probe_does_not_waive_the_vendor_pin_gate() {
+    let (mut fs, medium, mut rng, mut st) = setup_stuck();
+    fs.put(crate::consts::EF_DEVICE_PIN, &[8, 4, 1]).unwrap();
+    let mut req = [0u8; 32];
+    let n = one_byte_req(&mut req, VENDOR_BACKUP_EXPORT);
+    let mut out = [0u8; 128];
+
+    let _ = handshake(&mut fs, &mut rng, &mut st);
+    assert_eq!(
+        call(
+            &mut fs,
+            &mut rng,
+            &mut st,
+            &mut UvDecline,
+            &req[..n],
+            &mut out
+        ),
+        Err(CtapError::OperationDenied),
+        "control: the device PIN is collected on the pad, and declining refuses"
+    );
+
+    let _ = handshake(&mut fs, &mut rng, &mut st);
+    medium.stick(Some(crate::consts::EF_DEVICE_PIN));
+    assert_eq!(
+        call(
+            &mut fs,
+            &mut rng,
+            &mut st,
+            &mut UvDecline,
+            &req[..n],
+            &mut out
+        ),
+        Err(CtapError::Other),
+        "a faulted EF_DEVICE_PIN probe waived the gate and exported the master seed"
+    );
+}
+
+/// R2's second spelling: the trusted display's Backup screen offers the on-device
+/// recovery-phrase reveal on `!sealed`, so the same faulted probe re-opened the
+/// reveal that `BACKUP_FINALIZE` shut. `backup_status` / `backup_sealed` resolve to
+/// SEALED now.
+#[test]
+fn a_faulted_sealed_probe_reads_as_sealed_on_the_display() {
+    let (mut fs, medium, _rng, _st) = setup_stuck();
+    fs.put(EF_BACKUP_SEALED, &[1]).unwrap();
+    assert!(backup_sealed(&mut fs));
+    assert!(backup_status(&mut fs).sealed);
+    medium.stick(Some(EF_BACKUP_SEALED));
+    assert!(
+        backup_sealed(&mut fs),
+        "a faulted probe re-opened the sealed export window for the Security row"
+    );
+    assert!(
+        backup_status(&mut fs).sealed,
+        "and for the Backup screen's recovery-phrase reveal"
+    );
+}
+
+/// `lock_engaged` resolves a probe it could not serve to ENGAGED, and `BACKUP_LOAD`
+/// is one of the gates that reads it: a restore next to a live wrapped blob leaves
+/// two competing seeds, and every credential is sealed under one of them. The two
+/// halves — `lock_state`'s probes and the `unwrap_or(true)` above them — are held
+/// here together, because either one collapsing lets the same load through.
+#[cfg(not(feature = "fips-profile"))]
+#[test]
+fn a_faulted_lock_probe_does_not_admit_a_load_over_a_wrapped_seed() {
+    let (mut fs, medium, mut rng, mut st) = setup_stuck();
+    // The soft-locked shape: the wrapped blob is what is on flash.
+    fs.put_key(
+        EF_KEY_DEV_ENC,
+        rsk_fs::Sealed::wrap(&[0x5Cu8; LOCK_BLOB_LEN]),
+    )
+    .unwrap();
+    fs.delete_key(EF_KEY_DEV).unwrap();
+    assert!(lock_engaged(&mut fs), "control: the device reads locked");
+    let wrapped = medium
+        .value(EF_KEY_DEV_ENC.get())
+        .expect("the wrapped blob is on the medium");
+
+    let host = handshake(&mut fs, &mut rng, &mut st);
+    let mut blob = [0u8; LOCK_BLOB_LEN];
+    let nonce = [0x07u8; 12];
+    let mut buf = [0x33u8; 32];
+    let tag = chacha20poly1305_encrypt(&host.key, &nonce, &host.aad, &mut buf);
+    blob[..12].copy_from_slice(&nonce);
+    blob[12..44].copy_from_slice(&buf);
+    blob[44..].copy_from_slice(&tag);
+    let mut req = [0u8; 128];
+    let n = load_req(&mut req, &blob);
+    let mut out = [0u8; 16];
+
+    medium.stick(Some(EF_KEY_DEV_ENC.get()));
+    let r = call(
+        &mut fs,
+        &mut rng,
+        &mut st,
+        &mut AlwaysConfirm,
+        &req[..n],
+        &mut out,
+    );
+    medium.stick(None);
+    assert_eq!(
+        medium.value(EF_KEY_DEV_ENC.get()).as_deref(),
+        Some(&wrapped[..]),
+        "a faulted lock probe let a LOAD land beside the wrapped seed"
+    );
+    assert!(
+        medium.value(EF_KEY_DEV.get()).is_none(),
+        "and left a second, plaintext seed competing with it"
+    );
+    assert_eq!(r, Err(CtapError::NotAllowed));
+}
+
+/// `CONFIG_READ` is the baseline `rsk hw` and `rsk led` read-modify-write ON THE
+/// HOST: they read this record, apply the flags the user asked for and send the
+/// result back. Answering a probe the flash could not complete with an empty record
+/// therefore hands the host a phantom baseline — and `rsk hw --get` prints
+/// "(build default)" for every field the owner actually set.
+///
+/// One row per target. The absent arm is unchanged and is what
+/// `config_read_returns_the_phy_record_ungated` and the `rsk led` length check
+/// stand on; only the faulted one moves.
+#[test]
+fn a_faulted_probe_does_not_report_a_config_record_as_empty() {
+    for (target, fid, plant) in [
+        (CONFIG_TARGET_PHY, rsk_phy::EF_PHY, true),
+        (CONFIG_TARGET_LED, EF_LED_CONF, false),
+    ] {
+        let (mut fs, medium, mut rng, mut st) = setup_stuck();
+        if plant {
+            rsk_phy::save(
+                &mut fs,
+                &rsk_phy::PhyData {
+                    vid_pid: Some((0x1234, 0x5678)),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        } else {
+            fs.put(fid, &[7u8; LED_CONF_LEN]).unwrap();
+        }
+        let mut rreq = [0u8; 32];
+        let rn = config_read_req(target, &mut rreq);
+        let mut rout = [0u8; 128];
+
+        // The healthy read first: the blob this command reports is the owner's, so
+        // the refusal below is measured against an answer that carries something
+        // rather than against a response the fixture never filled.
+        let r = call(
+            &mut fs,
+            &mut rng,
+            &mut st,
+            &mut Decline,
+            &rreq[..rn],
+            &mut rout,
+        )
+        .unwrap();
+        let mut d = Decoder::new(&rout[..r]);
+        d.map().unwrap();
+        assert_eq!(d.u8().unwrap(), 1);
+        assert!(
+            !d.bytes().unwrap().is_empty(),
+            "fixture: target {target:#x} reports nothing even without a fault"
+        );
+
+        medium.stick_once(fid);
+        assert_eq!(
+            call(
+                &mut fs,
+                &mut rng,
+                &mut st,
+                &mut Decline,
+                &rreq[..rn],
+                &mut rout,
+            ),
+            Err(CtapError::Other),
+            "CONFIG_READ target {target:#x} reported an unreadable record as an empty one"
+        );
+    }
+}
+
+/// The DEV_CONF merge guard's own row: FIDO `CONFIG_WRITE`, which is UNGATED on
+/// the default build and is the transport an attacker reaches without pcscd.
+///
+/// Two probes of the record run before the guard does — `dev_conf_unchanged` calls
+/// the same merge and then compares — so a suite that drives `persist_dev_conf`
+/// alone leaves the guard shadowed here. Both are aimed at: skip 0 lands on the
+/// short-circuit, which must NOT ack a write it could not decide, and skip 2 lands
+/// on the writer's own merge, which must refuse rather than replace.
+#[test]
+fn a_faulted_dev_conf_probe_over_fido_neither_acks_nor_replaces() {
+    use rsk_devconf::raw::{EF_DEV_CONF, TAG_AUTO_EJECT_TIMEOUT, TAG_USB_ENABLED};
+    // The owner's record: the applications mask plus a field the delta omits.
+    let owner: &[u8] = &[
+        TAG_USB_ENABLED,
+        2,
+        0x02,
+        0x00,
+        TAG_AUTO_EJECT_TIMEOUT,
+        2,
+        0,
+        0x1E,
+    ];
+    // `ykman config usb --enable OATH`: the one tag it changes.
+    let delta: &[u8] = &[TAG_USB_ENABLED, 2, 0x02, 0x20];
+
+    for (skip, want) in [(0u32, Ok(0)), (2, Err(CtapError::Other))] {
+        let (mut fs, medium, mut rng, mut st) = setup_stuck();
+        rsk_devconf::persist_dev_conf(&mut fs, owner).unwrap();
+        let before = medium.value(EF_DEV_CONF).expect("record written");
+
+        let mut req = [0u8; 96];
+        let n = config_write_req(CONFIG_TARGET_DEV_CONF, delta, false, &mut req);
+        let mut out = [0u8; 16];
+        medium.stick_after(EF_DEV_CONF, skip);
+        let got = call(
+            &mut fs,
+            &mut rng,
+            &mut st,
+            &mut AlwaysConfirm,
+            &req[..n],
+            &mut out,
+        );
+        medium.stick(None);
+        let after = medium.value(EF_DEV_CONF).expect("record present");
+
+        // The data first: whatever the status word, the field the delta omits is
+        // the thing a collapsed probe destroys.
+        assert!(
+            after.windows(4).any(|w| w == &owner[4..8]),
+            "skip {skip}: the auto-eject field the write never mentioned is gone \
+             ({} bytes stored, was {})",
+            after.len(),
+            before.len()
+        );
+        assert_eq!(got, want, "skip {skip}");
+        if want.is_err() {
+            assert_eq!(after, before, "a refused write must store nothing");
+        }
+    }
+}
+
+/// `Fs::read` answers the record's FULL length, not what it copied — the doc
+/// comment says so — and `ATT_STATE` sliced `chain[..n]` with no clamp. The record
+/// it reads is written under a cap that is not constant across builds:
+/// `cert::ATT_CHAIN_MAX` is a `min3` of a store cap, a MAC cap and a RESPONSE cap,
+/// and the response term moves with the PIN/PQC surface — this tree has already
+/// narrowed that cap once. So a key provisioned by a build with the larger cap and
+/// upgraded to one with the smaller has an `EF_ATT_CHAIN` longer than the reader's
+/// buffer, and `ATT_STATE` is UNGATED: no PIN, no touch, no channel.
+///
+/// The assertion is about the ANSWER, not the status word: a device that cannot
+/// hash the chain must still say whether a key is present.
+#[test]
+fn an_att_chain_stored_by_a_build_with_a_larger_cap_does_not_fault_the_state_probe() {
+    let mut fs = Fs::new(RamStorage::new());
+    let mut rng = SeqRng(7);
+    let mut st = FidoState::new();
+    let d = dev();
+    ensure_seed(&d, &mut fs, &mut rng).unwrap();
+
+    // The key has to be there: `att_state` only hashes the chain when one is,
+    // so a probe without it exercises the absent arm and proves nothing. The
+    // first version of this case did exactly that and passed.
+    crate::seed::store_att_key(&d, &mut fs, &[9u8; 32]).unwrap();
+    // One byte past this build's reader. Nothing in the store refuses it:
+    // `ATT_CHAIN_REC_MAX <= MAX_VALUE_BYTES` is asserted at compile time, so the
+    // larger record fits the medium it was written to.
+    let oversized = [0x5Au8; cert::ATT_CHAIN_REC_MAX + 1];
+    fs.put(EF_ATT_CHAIN, &oversized).unwrap();
+
+    let mut req = [0u8; 64];
+    let mut out = [0u8; 512];
+    let n = one_byte_req(&mut req, VENDOR_ATT_STATE);
+    let r = call(
+        &mut fs,
+        &mut rng,
+        &mut st,
+        &mut AlwaysConfirm,
+        &req[..n],
+        &mut out,
+    )
+    .unwrap();
+    // The answer, before the status word: the key is still reported present, and
+    // the chain hash — which this build cannot compute over a record it cannot
+    // hold — is OMITTED rather than published over a prefix.
+    let mut decoder = Decoder::new(&out[..r]);
+    assert_eq!(
+        decoder.map().unwrap(),
+        Some(1),
+        "no chain hash in the answer"
+    );
+    assert_eq!(decoder.u8().unwrap(), 1);
+    assert!(decoder.bool().unwrap(), "the attestation key is present");
+}
+
+/// `vendor::pin_gate` takes the device-PIN branch only when the presence backend
+/// can COLLECT one, and `uv_available()` is false on every backend but the
+/// trusted display (`crates/rsk-sdk/src/presence.rs:92`). `EF_DEVICE_PIN` is not a
+/// display-only record: `is_fido_fid` keeps it, so it survives a reflash from a
+/// display image to a screenless one — and then the branch that would ask for it
+/// cannot run, `EF_PIN` is absent, and the gate falls through to `Ok(())`.
+///
+/// The owner set a device PIN and the second factor silently became "a touch".
+/// The assertion is about the ANSWER, not the status word: an irreversible vendor
+/// operation must not complete.
+#[test]
+fn a_device_pin_no_pad_can_collect_is_not_a_gate_that_may_be_skipped() {
+    let mut fs = Fs::new(RamStorage::new());
+    let mut rng = SeqRng(11);
+    let mut st = FidoState::new();
+    let d = dev();
+    ensure_seed(&d, &mut fs, &mut rng).unwrap();
+    crate::seed::store_att_key(&d, &mut fs, &[3u8; 32]).unwrap();
+    assert!(fs.has_key(EF_ATT_KEY));
+
+    // The display build's record, on a build with no pad. No clientPIN: that is
+    // the configuration the device-PIN branch exists for.
+    crate::clientpin::store_device_pin(&d, &mut fs, b"123456").unwrap();
+    assert!(!fs.has_data(crate::consts::EF_PIN));
+
+    handshake(&mut fs, &mut rng, &mut st);
+    let mut req = [0u8; 64];
+    let mut out = [0u8; 512];
+    let n = one_byte_req(&mut req, VENDOR_ATT_CLEAR);
+    let r = call(
+        &mut fs,
+        &mut rng,
+        &mut st,
+        &mut AlwaysConfirm,
+        &req[..n],
+        &mut out,
+    );
+    assert!(
+        r.is_err(),
+        "an irreversible vendor op completed with a device PIN set and no way to ask for it"
+    );
+    assert!(
+        fs.has_key(EF_ATT_KEY),
+        "the attestation key was destroyed behind a gate nobody could answer"
+    );
 }

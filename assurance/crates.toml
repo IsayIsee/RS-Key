@@ -14,7 +14,10 @@
 #   state-unmodelled  holds security state no module covers yet; planned= names
 #                     the roadmap module so the hole is a plan, not an oversight
 #   pure              pure functions; evidence= names the differential/KAT/proof
-#                     files, and the gate checks they exist
+#                     files, and the gate holds them to that sentence: git's own
+#                     listing (so no directory and no miscased spelling), Rust
+#                     source, and this crate's own src/ or a fuzz target. It was
+#                     "checks they exist", which README.md satisfies
 #   out-of-scope      not part of the security argument; reason= says why
 #   embedded-binary   thumbv8m-only, not host-checkable; reason= names coverage
 #
@@ -72,17 +75,17 @@ gap = "ConfigOp/plat in the security model; the config-write pipeline it shares 
 [crate.rsk-display]
 class = "state-partial"
 model = "RSKeyTrustedDisplay"
-gap = "the confirm ceremony (WhatIsConfirmedIsWhatIsShown, decomposed as SEC-DISP-001..003) is modelled; the wait owner and the fourth PIN door stay in RSKeySecurityState. The menus, settings flows and the device-PIN screens are navigation over that same armed-touch chokepoint, not separate security state."
+gap = "the confirm ceremony (WhatIsConfirmedIsWhatIsShown, decomposed as SEC-DISP-001..003) is modelled; the wait owner and the fourth PIN door stay in RSKeySecurityState. The menus and settings flows are navigation over that same armed-touch chokepoint. The device-PIN SCREENS are too, but `EF_DEVICE_PIN` itself is not: it carries a second independent persistent retry ladder that `local_pin_gate` spends, and it is the PIN half of the host-side vendor gate as well — PLAT-MODEL-011 is where that scope obligation lives."
 
 [crate.rsk-ui]
 class = "state-partial"
 model = "RSKeyTrustedDisplay"
-gap = "hit_confirm's disjoint Allow/Deny zones are the modelled seam (OnlyAllowConfirms's Rust owner); rendering, fonts and the settings codec are pure functions under their own 12 Kani proofs and render tests — no screen-transition state lives in this crate (the ceremony state machine is rsk-display's)."
+gap = "hit_confirm's disjoint Allow/Deny zones are the modelled seam (OnlyAllowConfirms's Rust owner); rendering, fonts and the settings codec are pure functions under their own 14 Kani proofs and render tests — no screen-transition state lives in this crate (the ceremony state machine is rsk-display's)."
 
 [crate.rsk-usb]
 class = "state-partial"
 model = "RSKeyTransport"
-gap = "the CTAPHID reassembler's channel/sequence/length state machine is modelled (M8); the async transport loop's bounded-write liveness (the 0x075D wedge fix) is guarded by the FrameSink seam's own mutation-tested regression, and the CCID/keyboard framing and secure_pin codec are single-step, Kani-proved and unit-tested."
+gap = "the CTAPHID reassembler's channel/sequence/length state machine is modelled (M8), and SEC-TRANS-001..003 are tagged on feed and on the dispatcher that consumes its Outcome. The async transport loop's bounded-write liveness (the 0x075D wedge fix) is NOT proved: two host regressions cover write_frames, the response path, and no mutation record stands behind them. CCID framing and the secure_pin codec are single-step, Kani-proved and unit-tested; keyboard framing is unit-tested only — kbd.rs has no Kani harness."
 
 [crate.rsk-fs]
 class = "state-partial"
@@ -93,6 +96,15 @@ gap = "the committed store, the delete write-order and the present-cache soundne
 class = "state-partial"
 model = "RSKeyStore"
 gap = "the Storage contract it implements — atomic append, an enumeration-completeness flag — is taken as RSKeyStore's backend assumption; the two-partition counter/main ring, is_counter_fid routing, wear and page reclaim, and compact are backend mechanics the model abstracts."
+# Which of the six the `gap` sentence names are OBLIGATIONS, one candidate each
+# for scripts/platform_gate.py. The list is here and not there so that deleting a
+# `PLAT-STORE-*` row from assurance/platform.toml alone goes red instead of green;
+# a note that anchors nothing is what these were before fff3b38.
+# `wear-and-reclaim` and `compact` are named in the gap and deliberately absent:
+# both are liveness — a device that stops reclaiming fills up and refuses writes,
+# which is not a false answer about a committed record — and neither has the
+# vendored fork's measured falsification the other four have.
+abstracts = ["tear", "scan-completeness", "reboot-recovery", "partition-routing"]
 
 [crate.rsk-rescue]
 class = "state-partial"

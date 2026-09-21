@@ -42,7 +42,12 @@ failure stops UI input before an incomplete prompt can stay active.
 
 The display build runs the RP2350 at 160 MHz. A TX-only PIO program emits one
 serial bit every two cycles, for an 80 MHz panel clock. A complete 240×320
-RGB565 transfer has a 15.36 ms wire-time floor.
+RGB565 transfer has a 15.36 ms wire-time floor. Both of those numbers are past
+what the parts are rated for — the RP2350 is specified to 150 MHz and this
+project had recorded 62.5 MHz as the ST7789's write ceiling — so what that costs,
+and which of this repo's measurements stop covering this flavor, is written down
+in [limitations.md](../limitations.md). A key without a screen sets no clock and
+is unaffected.
 
 ## Try it without a board
 

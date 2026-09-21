@@ -75,7 +75,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.tag }}
 
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
       - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
         with:
@@ -236,7 +236,8 @@ jobs:
             $0 ~ "^## \\[" v "\\]" { f = 1; print; next }
             /^## \[/ { if (f) exit }
             f { print }
-          ' CHANGELOG.md > release-notes.md
+          ' CHANGELOG.md > release-notes-full.md
+          cp release-notes-full.md release-notes.md
           if [ ! -s release-notes.md ]; then
             echo "RS-Key ${{ steps.tag.outputs.tag }}" > release-notes.md
           fi
@@ -269,6 +270,21 @@ jobs:
               echo "_Shortened to fit GitHub's release-body limit._"
               echo "_Every entry is in [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ steps.tag.outputs.tag }}/CHANGELOG.md) at this tag._"
             } >> release-notes.md
+          fi
+          # The anti-rollback marker (docs/anti-rollback.md) is how a flasher tells
+          # the owner this release is a downgrade-fix and their floor is worth
+          # raising. It is written in the CHANGELOG section, but the shortening
+          # path above can cut the entry it sits in — so it is lifted out of the
+          # FULL section and re-appended when it did not survive, rather than left
+          # to depend on where in the section its author put it. `scripts/
+          # rollback_marker_gate.py` owns the pattern; this copy is held to it.
+          # No `|| true`: a release with no marker is the ordinary case, so the
+          # absence is asked as a CONDITION rather than as a swallowed failure.
+          if grep -qE '<!-- @increase-anti-rollback-epoch([^>]*)-->' release-notes-full.md; then
+            marker="$(grep -oE '<!-- @increase-anti-rollback-epoch([^>]*)-->' release-notes-full.md | head -n1)"
+            if ! grep -qF "$marker" release-notes.md; then
+              printf '\n%s\n' "$marker" >> release-notes.md
+            fi
           fi
           {
             echo

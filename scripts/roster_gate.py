@@ -129,14 +129,30 @@ QUOTING = frozenset({SELF, TESTS})
 #: the message guaranteed to be read as a false alarm.
 CARGO = gate_lines.invocation((r"[\w-]+", r"""["']?[$@{%]\S*"""))
 LITERAL = re.compile(r"[\w-]+")
+#: The one spelling this file's oracle is written in. Not in `gate_lines` with
+#: the rest: that module answers WHICH packages a command selects, and `--all`
+#: selects the same set as `--workspace` — this is a demand that the documented
+#: spelling be the one on the row.
 WORKSPACE = re.compile(r"(?<![\w-])--workspace(?![\w-])")
-EXCLUDE = re.compile(r"(?<![\w-])--exclude[=\s]+([\w-]+)(?![\w-])")
-#: The same flag with an operand a substitution fills in, so no reader can
-#: resolve it from the flag alone. A sigil, not "anything but a name", so that
-#: prose writing `--exclude …` stays prose.
-EXCLUDE_GENERATED = re.compile(r"""(?<![\w-])--exclude[=\s]+["']?[$@{%]""")
+#: `--exclude`, in both the readable and the generated form, from the one place
+#: that answers what a command selects. They were written here first and
+#: `matrix_gate` then needed the same two: a second copy is the drift
+#: `gate_lines` exists to stop, and this pair is where it would have started.
+EXCLUDE = gate_lines.EXCLUDE
+EXCLUDE_GENERATED = gate_lines.EXCLUDE_GENERATED
 #: `cargo kani`'s list is `kani_gate.py`'s: it names the crates carrying a
 #: `#[kani::proof]`, which is a claim about the harnesses, not about the tree.
+#: Demanding `--workspace` with the excludes of a Kani row would be the wrong
+#: oracle — that row selects the proof-carrying subset on purpose — so the verb
+#: is handed over rather than judged here. A hand-over is only worth what the
+#: other guard reads, and for the whole life of this line it read the workflows
+#: and docs/testing.md and not this file: a `cargo kani … -p …` row in
+#: `scripts/check.sh` was skipped here, unseen there, and both printed `ok` over
+#: the one thing both of them exist to forbid. Naming `scripts/check.sh` over
+#: there closed that file and left the same hand-off open on the next one: a
+#: roster in `nix/checks.nix` — which THIS file has read since the day it was
+#: written — was still green under both. `kani_gate.sources` walks the checkout
+#: now, so the verb goes to a reader that covers every file this one does.
 OTHER_GUARDS = ("kani",)
 #: What a row says when its list is deliberately not the tree. In the comment
 #: half of the line, so it is a shell comment wherever it is written.

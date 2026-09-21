@@ -219,7 +219,7 @@ impl rsk_display::Hooks for DisplayHooks {
 }
 
 /// Build and initialize the panel + touch from the raw peripherals, then hand them
-/// to the flow. Blocking (~200 ms of panel/touch reset) — `main` calls this *after*
+/// to the flow. Blocking (~370 ms of panel/touch reset) — `main` calls this *after*
 /// the USB task is spawned, so the interrupt executor keeps enumerating while these
 /// busy-waits run on the thread executor; enumeration is never delayed.
 pub fn build(

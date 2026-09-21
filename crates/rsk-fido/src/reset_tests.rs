@@ -3,10 +3,11 @@
 
 use super::*;
 use crate::FidoState;
-use crate::consts::{EF_CRED, EF_LARGEBLOB, EF_PIN, EF_RP, RESET_WINDOW_MS};
-use crate::seed::{bump_sign_counter, get_sign_counter, load_keydev};
+use crate::consts::{EF_BACKUP_SEALED, EF_CRED, EF_LARGEBLOB, EF_PIN, EF_RP, RESET_WINDOW_MS};
+use crate::seed::{bump_sign_counter, global_sign_counter, load_keydev};
 use rsk_crypto::Device;
 use rsk_fs::Fs;
+use rsk_fs::storage::faults::{Cut, CutMedium, MetaStuck, RemoveStuck, TruncatedWalk, Undead};
 use rsk_fs::storage::ram::RamStorage;
 
 struct SeqRng(u64);
@@ -50,10 +51,10 @@ fn reset_wipes_state_and_regenerates() {
     fs.put(0x1083, &[0xAB; 34]).unwrap();
     bump_sign_counter(&mut fs).unwrap();
     bump_sign_counter(&mut fs).unwrap();
-    assert_eq!(get_sign_counter(&mut fs), 2);
+    assert_eq!(global_sign_counter(&mut fs).unwrap(), 2);
     // A per-credential signature-counter entry must also be wiped by reset.
     crate::seed::set_cred_sign_counter(&mut fs, 0, 7).unwrap();
-    assert_eq!(crate::seed::cred_sign_counter(&mut fs, 0), Some(7));
+    assert_eq!(crate::seed::cred_sign_counter(&mut fs, 0), Ok(Some(7)));
 
     let mut state = FidoState::new();
     state.paut.permissions = 0x07;
@@ -83,8 +84,8 @@ fn reset_wipes_state_and_regenerates() {
         fs.has_data(0x1083),
         "OpenPGP files must survive a FIDO reset"
     );
-    assert_eq!(get_sign_counter(&mut fs), 0);
-    assert_eq!(crate::seed::cred_sign_counter(&mut fs, 0), None);
+    assert_eq!(global_sign_counter(&mut fs).unwrap(), 0);
+    assert_eq!(crate::seed::cred_sign_counter(&mut fs, 0), Ok(None));
     assert!(load_keydev(&dev(), &mut fs).is_some());
     // Large blob wiped and re-initialised to the CTAP2.1 default.
     let mut lb = [0u8; 64];
@@ -359,7 +360,7 @@ fn reset_sweep_de_dupes_stored_versions() {
         state: &mut state,
         now_ms: 0,
     };
-    assert_eq!(sweep(&mut ctx, is_fido_fid), Ok(()));
+    assert_eq!(sweep(&mut ctx, is_fido_fid), Ok(false));
     assert_eq!(
         fs.into_storage().removes,
         1,
@@ -403,6 +404,193 @@ fn reset_sweep_fails_when_storage_does_not_converge() {
         now_ms: 0,
     };
     assert_eq!(sweep(&mut ctx, is_fido_fid), Err(CtapError::Other));
+}
+
+/// The valve above it — `deleted > RESET_MAX_DELETES` — is the sweep's progress
+/// guard, and the batch it counts in decides whether that guard can be falsified
+/// at all. `deleted` rises a whole batch at a time, so `>` → `==` lets it step PAST
+/// the budget without ever equalling it and the valve stops guarding. But only
+/// when the batch does not DIVIDE the budget: `reset_sweep_fails_when_storage_does_not_converge`
+/// above re-yields ONE fid, and 1 divides everything, so the mutant trips at 1039
+/// instead of 1040 and that test passes it by construction. PIV's
+/// `reset_reports_failure_when_the_sweep_cannot_converge` is the same shape and the
+/// same blindness; OATH and OpenPGP had no runaway at all.
+///
+/// Five undead records instead — 5 divides none of the four budgets (1039 · 257 ·
+/// 768 · 512), so the mutant walks past its own and is stopped only by the
+/// fixture's ceiling. That ceiling is what makes the failure READABLE: without it
+/// the mutation hangs the suite instead of failing it.
+#[test]
+fn a_sweep_that_never_converges_stops_inside_its_delete_budget() {
+    const UNDEAD: u16 = 5;
+    // The premise, made checkable rather than argued: `deleted` rises a whole
+    // UNDEAD per pass, so a batch that DIVIDES the budget lets `==` fire on the
+    // nose and this test stops seeing the valve — silently, suite still green.
+    const _: () = assert!(
+        !RESET_MAX_DELETES.is_multiple_of(UNDEAD as u32),
+        "the batch divides the delete budget, so this test cannot falsify the valve"
+    );
+    let (backend, count) = Undead::new(2 * RESET_MAX_DELETES);
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    for i in 0..UNDEAD {
+        fs.put(EF_CRED + i, &[0xC0; 8]).unwrap();
+    }
+    let mut rng = SeqRng(5);
+    let mut state = FidoState::new();
+    let mut presence = crate::AlwaysConfirm;
+    let mut ctx = Ctx {
+        presence: &mut presence,
+        dev: dev(),
+        fs: &mut fs,
+        rng: &mut rng,
+        state: &mut state,
+        now_ms: 0,
+    };
+    assert_eq!(
+        sweep(&mut ctx, is_fido_fid),
+        Err(CtapError::Other),
+        "a sweep the medium never lets converge must fail, not run on"
+    );
+    assert!(
+        count.removals() <= RESET_MAX_DELETES,
+        "the valve let the sweep spend {} deletions on a budget of {RESET_MAX_DELETES}",
+        count.removals()
+    );
+}
+
+/// The `?` under the valve — a refused backend removal must STOP the sweep, because
+/// `for_each_key` re-yields the fid the medium kept. Nothing in any of the four
+/// applets could see it: swallow the `?` and the loop spins on that fid straight
+/// into the VALVE, which answers the SAME error, so `let _ = gone.value;` left
+/// 615 / 118 / 140 / 197 passing. The removal COUNT is the observation that
+/// separates them — one batch against a whole budget.
+#[test]
+fn a_refused_removal_stops_the_sweep_instead_of_spinning_into_the_valve() {
+    const LIVE: u16 = 5;
+    let (backend, medium) = RemoveStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    for i in 0..LIVE {
+        fs.put(EF_CRED + i, &[0xC0; 8]).unwrap();
+    }
+    // Which of the batch is reached first is a fresh HashMap order per run, so the
+    // stop lands anywhere in 1..=LIVE — the bound is what has to hold, not a count.
+    medium.refuse(Some(EF_CRED));
+    let mut rng = SeqRng(5);
+    let mut state = FidoState::new();
+    let mut presence = crate::AlwaysConfirm;
+    let mut ctx = Ctx {
+        presence: &mut presence,
+        dev: dev(),
+        fs: &mut fs,
+        rng: &mut rng,
+        state: &mut state,
+        now_ms: 0,
+    };
+    assert_eq!(
+        sweep(&mut ctx, is_fido_fid),
+        Err(CtapError::Other),
+        "a removal the medium refused must fail the sweep"
+    );
+    assert!(
+        medium.attempts() <= LIVE as u32,
+        "the sweep asked for {} removals over {LIVE} files: it carried on past the \
+         refusal and the delete budget, not the `?`, is what stopped it",
+        medium.attempts()
+    );
+}
+
+/// One sweep over five credentials, optionally with EF_META unreadable. Returns the
+/// answer and whether any of them is still live ON THE MEDIUM.
+fn sweep_with_ef_meta_stuck(stuck: bool) -> (Result<bool, CtapError>, bool) {
+    const LIVE: u16 = 5;
+    let (backend, medium) = MetaStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    for i in 0..LIVE {
+        fs.put(EF_CRED + i, &[0xC0; 8]).unwrap();
+    }
+    // A head keeps EF_META live, so the drops read the blob rather than short out
+    // on a known-absent one. `rsk-piv` mints the only heads; it is a bystander.
+    const PIV_SLOT_9A: u16 = 0x9A00;
+    fs.meta_add(PIV_SLOT_9A, &[0xAA, 0x01, 0x02, 0x03]).unwrap();
+
+    medium.stick(stuck);
+    let mut rng = SeqRng(5);
+    let mut state = FidoState::new();
+    let answered = {
+        let mut presence = crate::AlwaysConfirm;
+        let mut ctx = Ctx {
+            presence: &mut presence,
+            dev: dev(),
+            fs: &mut fs,
+            rng: &mut rng,
+            state: &mut state,
+            now_ms: 0,
+        };
+        sweep(&mut ctx, is_fido_fid)
+    };
+    medium.stick(false);
+    (answered, (0..LIVE).any(|i| medium.live(EF_CRED + i)))
+}
+
+/// The sweep's OWN metadata half — `orphaned |= gone.record.is_err()` inside
+/// `sweep`, not the copy in the seed loop above it. `|= false;` there leaves
+/// `615 passed; 0 failed`, because every `reset()`-level test reaches the sweeps
+/// with `orphaned` already true: the seed loop sets it for `EF_KEY_DEV` and
+/// `EF_KEY_DEV_ENC` first. OATH, PIV and OpenPGP own the same line; FIDO was the
+/// asymmetry inside a class the audit says it read by class.
+///
+/// Both halves are the assertion, as in the `reset()`-level test below: a faulted
+/// EF_META must be carried to the END of the range — the blob is shared by every
+/// applet, so stopping would end the wipe after one file, at the same fid on every
+/// retry — and it must still be answered for.
+#[test]
+fn a_faulted_metadata_drop_is_carried_to_the_end_of_the_sweep_and_still_answered_for() {
+    assert_eq!(
+        sweep_with_ef_meta_stuck(false),
+        (Ok(false), false),
+        "the control: nothing armed, so the sweep clears the range and says so"
+    );
+    assert_eq!(
+        sweep_with_ef_meta_stuck(true),
+        (Ok(true), false),
+        "a faulted EF_META still owes the WHOLE range, and the sweep still owes its \
+         caller the record it could not prove dropped"
+    );
+}
+
+/// An un-yielded fid is not an absent fid: a walk the medium truncated must fail the
+/// sweep rather than read the empty batch as "the range is clear" — which is a wipe
+/// answering success over key material it never looked at.
+///
+/// Forcing the `complete` arm true left 615 / 118 / 197 passing: PIV owned this guard
+/// and the other three did not, because the only fixture that truncates a walk was
+/// PIV's own local one. It is `rsk_fs::storage::faults::TruncatedWalk` now.
+#[test]
+fn a_truncated_enumeration_fails_the_sweep_instead_of_reading_it_as_clear() {
+    let mut fs = Fs::new(TruncatedWalk::new());
+    fs.scan();
+    fs.put(EF_CRED, &[0xC0; 8]).unwrap();
+    let mut rng = SeqRng(5);
+    let mut state = FidoState::new();
+    let mut presence = crate::AlwaysConfirm;
+    let mut ctx = Ctx {
+        presence: &mut presence,
+        dev: dev(),
+        fs: &mut fs,
+        rng: &mut rng,
+        state: &mut state,
+        now_ms: 0,
+    };
+    assert_eq!(sweep(&mut ctx, is_fido_fid), Err(CtapError::Other));
+    let mut buf = [0u8; 8];
+    assert_eq!(
+        fs.read(EF_CRED, &mut buf),
+        Some(8),
+        "the credential was never swept"
+    );
 }
 
 /// `RESET_MAX_DELETES` is written as `4 * MAX_RESIDENT_CREDENTIALS + 15`, and the
@@ -897,9 +1085,15 @@ fn provisioned_with_a_grant() -> TearAfter {
 /// wipe defers, its absence is the RESTRICTIVE state. Batched with `EF_PIN` it made
 /// both wipes producers of the torn state E77 closes at the consumer: a cut between
 /// the two leaves a live `pcmr` grant with no PIN behind it, and the holder goes on
-/// reading the credential directory of everything registered afterwards. `credmgmt`
-/// refusing it is one `if` on one build; no prefix of a wipe should be able to
-/// produce the state at all.
+/// reading the credential directory of everything registered afterwards.
+///
+/// The subject is the grant a platform was ISSUED. Provisioning now mints one at the
+/// end of a completed reset so getInfo can publish 0x19/0x1E, and that value has been
+/// handed to nobody — it is a *rotation*, which is what closes the old holder out,
+/// and it authorizes nothing until a PIN exists anyway
+/// (`credmgmt::authorized_by_ppuat`, held by
+/// `a_persistent_grant_does_not_outlive_its_pin`). So the tear points below compare
+/// against the original value rather than merely counting records.
 fn no_wipe_prefix_leaves_a_grant_without_its_pin(
     mut wipe: impl FnMut(&mut Fs<TearAfter>) -> bool,
     what: &str,
@@ -908,6 +1102,13 @@ fn no_wipe_prefix_leaves_a_grant_without_its_pin(
 
     let base = provisioned_with_a_grant();
     let live = base.items.len();
+    // The value a platform holds. Anything else in that record afterwards is a
+    // fresh mint, which is the rotation itself and grants nobody anything.
+    let issued = {
+        let mut f = Fs::new(base.clone());
+        f.scan();
+        crate::seed::load_ppuat(&dev(), &mut f).expect("the harness provisioned a grant")
+    };
 
     let mut saw_grant = false;
     // `reset`'s lead phase force-deletes both seed shapes whether or not they are
@@ -923,13 +1124,16 @@ fn no_wipe_prefix_leaves_a_grant_without_its_pin(
         if !fs.has_data(EF_PAUTHTOKEN.get()) {
             continue;
         }
+        if crate::seed::load_ppuat(&dev(), &mut fs) != Some(issued) {
+            continue; // rotated: the holder's value is gone, which is the point
+        }
         // Only a prefix that got as far as the lead delete counts as a tear point:
         // budget 0 leaves the store untouched and would satisfy the guard below
         // without proving the loop ever reached a partial wipe.
         saw_grant |= !fs.has_data(EF_KEY_DEV.get());
         assert!(
             fs.has_data(EF_PIN),
-            "{what}: tear at {budget} left a credMgmt grant standing over a deleted PIN"
+            "{what}: tear at {budget} left the ISSUED credMgmt grant over a deleted PIN"
         );
     }
     assert!(
@@ -947,9 +1151,10 @@ fn no_wipe_prefix_leaves_a_grant_without_its_pin(
     fs.scan();
     assert!(wipe(&mut fs), "the control run did not report success");
     assert!(!fs.has_data(EF_CRED), "the control run kept a credential");
-    assert!(
-        !fs.has_data(EF_PAUTHTOKEN.get()),
-        "the control run kept the grant"
+    assert_ne!(
+        crate::seed::load_ppuat(&dev(), &mut fs),
+        Some(issued),
+        "the control run kept the issued grant"
     );
     assert!(!fs.has_data(EF_PIN), "the control run never reached a gate");
 }
@@ -1041,15 +1246,20 @@ fn a_torn_reset_never_leaves_the_session_running_on_a_wiped_seed() {
 
 #[test]
 fn a_reset_sweeps_more_secrets_than_one_batch_holds() {
-    // `sweep` deletes in 64-key batches, and nothing drove it past the first
-    // one: the bound that keeps `keys[n]` in range was untested, and the
+    // `sweep` deletes in [`SWEEP_BATCH`] batches, and nothing drove it past the
+    // first one: the bound that keeps `keys[n]` in range was untested, and the
     // mutation that breaks it is an out-of-bounds index, not a wrong answer.
     // PIV has this test for its own reset (`reset_sweeps_more_files_than_one_batch`);
     // FIDO's sweep is the same shape and had none — sweep by class, not by site.
+    //
+    // Sized OFF the batch, not off a copy of it: a widened batch would otherwise
+    // swallow the whole fill in one pass and leave this green over the untested
+    // wrap it exists to cross.
+    const FILL: u16 = SWEEP_BATCH as u16 + 16;
     let mut fs = Fs::new(RamStorage::new());
     let mut rng = SeqRng(3);
     ensure_seed(&dev(), &mut fs, &mut rng).unwrap();
-    for i in 0..80u16 {
+    for i in 0..FILL {
         fs.put(EF_CRED + i, &[0xC0; 8]).unwrap();
     }
     let mut state = FidoState::new();
@@ -1065,11 +1275,425 @@ fn a_reset_sweeps_more_secrets_than_one_batch_holds() {
         };
         reset(&mut ctx).unwrap();
     }
-    for i in 0..80u16 {
+    for i in 0..FILL {
         assert!(
             !fs.has_data(EF_CRED + i),
             "0x{:04X} survived a reset that spans two batches",
             EF_CRED + i
         );
     }
+}
+
+/// One reset over a provisioned applet, optionally with EF_META unreadable. The
+/// head in it is `rsk-piv`'s, because that crate mints the only ones and EF_META is
+/// a single blob shared by every applet — it is a bystander here, and that is the
+/// point: it survives a FIDO reset in both arms, and all it does is make FIDO's
+/// metadata drops read a live blob. Returns the answer and the fixture records still
+/// live ON THE MEDIUM (the present cache is marked absent either way, so a
+/// cache-level read would pass with the backend `remove` never called).
+fn reset_with_ef_meta_stuck(stuck: bool) -> (CtapResult, Vec<&'static str>) {
+    let (backend, medium) = MetaStuck::new();
+    let mut fs = Fs::new(backend);
+    let mut rng = SeqRng(11);
+    ensure_seed(&dev(), &mut fs, &mut rng).unwrap();
+    fs.put(EF_KEY_DEV_ENC.get(), &[0x5A; 48]).unwrap();
+    fs.put(EF_CRED, &[0xC0; 100]).unwrap();
+    fs.put(EF_CRED + 1, &[0xC1; 100]).unwrap();
+    fs.put(EF_RP, &[0xAB; 40]).unwrap();
+    fs.put(EF_PIN, &[8, 4, 1, 0, 0]).unwrap();
+    const PIV_SLOT_9A: u16 = 0x9A00;
+    fs.meta_add(PIV_SLOT_9A, &[0xAA, 0x01, 0x02, 0x03]).unwrap();
+
+    medium.stick(stuck);
+    let mut state = FidoState::new();
+    let answered = {
+        let mut presence = crate::AlwaysConfirm;
+        let mut ctx = Ctx {
+            presence: &mut presence,
+            dev: dev(),
+            fs: &mut fs,
+            rng: &mut rng,
+            state: &mut state,
+            now_ms: 0,
+        };
+        reset(&mut ctx)
+    };
+    medium.stick(false);
+
+    // Not EF_KEY_DEV: `ensure_seed` mints a fresh one, so its presence says nothing.
+    let named: [(&'static str, u16); 5] = [
+        ("seed_enc", EF_KEY_DEV_ENC.get()),
+        ("cred0", EF_CRED),
+        ("cred1", EF_CRED + 1),
+        ("rp", EF_RP),
+        ("pin", EF_PIN),
+    ];
+    let survivors = named
+        .iter()
+        .filter(|&&(_, fid)| medium.live(fid))
+        .map(|&(name, _)| name)
+        .collect();
+    (answered, survivors)
+}
+
+/// A faulted EF_META must not end the wipe, and must not pass as a clean one.
+///
+/// `Fs::force_delete` folds the metadata drop into its answer, so the four sweeps
+/// `?`-ed a faulted drop straight out of their loops: `authenticatorReset` erased
+/// `EF_KEY_DEV` and stopped, leaving `EF_KEY_DEV_ENC` — the soft lock's wrapped copy
+/// of the seed — live together with every credential, defeating the reset's own
+/// ordering rule that what a cut leaves behind must at least be undecryptable. And
+/// retrying never made progress: the loop reaches the same fid first every time.
+///
+/// BOTH halves are the assertion. The status word alone passed the defect — the
+/// aborting tree answered `Err` too — and the survivor list alone passed the
+/// `let _ =` the whole audit started from.
+#[test]
+fn a_faulted_metadata_drop_never_stops_the_wipe_and_never_passes_as_clean() {
+    assert_eq!(
+        reset_with_ef_meta_stuck(false),
+        (Ok(0), vec![]),
+        "the control: nothing armed, so the wipe takes the range and says so"
+    );
+    assert_eq!(
+        reset_with_ef_meta_stuck(true),
+        (Err(CtapError::Other), vec![]),
+        "under a faulted EF_META the wipe still owes the WHOLE range — a survivor here \
+         is a secret the reset was asked to erase — and it still owes an error for the \
+         record it could not prove dropped"
+    );
+}
+
+/// `rounds` consecutive resets over a provisioned applet, with the medium refusing
+/// `remove` for one fid throughout. `force_delete_halves` removes UNCONDITIONALLY,
+/// so the refusal lands even at a fid that was never live — which is how a fixed
+/// two-element list can forfeit a whole wipe to a record that was already gone, and
+/// forfeit it identically on every retry. Returns each round's answer and the
+/// fixture records still live ON THE MEDIUM after it.
+fn reset_rounds_with_remove_refused(
+    fid: u16,
+    seed_live: bool,
+    rounds: usize,
+) -> Vec<(CtapResult, Vec<&'static str>)> {
+    let (backend, medium) = RemoveStuck::new();
+    let mut fs = Fs::new(backend);
+    let mut rng = SeqRng(11);
+    if seed_live {
+        ensure_seed(&dev(), &mut fs, &mut rng).unwrap();
+    }
+    fs.put(EF_CRED, &[0xC0; 100]).unwrap();
+    fs.put(EF_CRED + 1, &[0xC1; 100]).unwrap();
+    fs.put(EF_RP, &[0xAB; 40]).unwrap();
+    fs.put(EF_PIN, &[8, 4, 1, 0, 0]).unwrap();
+    fs.put(EF_BACKUP_SEALED, &[1]).unwrap();
+
+    medium.refuse(Some(fid));
+    let named: [(&'static str, u16); 5] = [
+        ("cred0", EF_CRED),
+        ("cred1", EF_CRED + 1),
+        ("rp", EF_RP),
+        ("pin", EF_PIN),
+        ("backup", EF_BACKUP_SEALED),
+    ];
+    let mut out = Vec::new();
+    for _ in 0..rounds {
+        let mut state = FidoState::new();
+        let answered = {
+            let mut presence = crate::AlwaysConfirm;
+            let mut ctx = Ctx {
+                presence: &mut presence,
+                dev: dev(),
+                fs: &mut fs,
+                rng: &mut rng,
+                state: &mut state,
+                now_ms: 0,
+            };
+            reset(&mut ctx)
+        };
+        let live = named
+            .iter()
+            .filter(|&&(_, f)| medium.live(f))
+            .map(|&(name, _)| name)
+            .collect();
+        out.push((answered, live));
+    }
+    medium.refuse(None);
+    out
+}
+
+/// A refused removal in the seed loop must not cost the rest of the wipe. The loop
+/// is a fixed two-element `for` — nothing re-yields the fid it could not remove, so
+/// the reason the enumerating sweeps stop does not reach it, and stopping here just
+/// leaves the credentials derived from the seed live. Measured at 0x0989: the exact
+/// end state the metadata repair exists to remove, reproduced on rounds 1, 2 and 3.
+///
+/// The answer stays `Err` — a removal that could not be proven is not a clean wipe.
+///
+/// It also goes red on the `BugSeedDoesNotLead` co-mutant, but for the ANSWER
+/// (`Ok(0)` where `Err` is owed, since that patch deletes the `refused` flag), not
+/// for the seed ordering. `a_torn_reset_never_starts_while_the_seed_is_still_readable`
+/// is the one that kills it on the ordering, and is what carries that verdict.
+#[test]
+fn a_refused_seed_removal_no_longer_forfeits_the_rest_of_the_wipe() {
+    let rounds = reset_rounds_with_remove_refused(EF_KEY_DEV_ENC.get(), false, 3);
+    assert_eq!(
+        rounds,
+        vec![
+            (Err(CtapError::Other), vec![]),
+            (Err(CtapError::Other), vec![]),
+            (Err(CtapError::Other), vec![]),
+        ],
+        "a seed fid the medium will not remove is unremovable on every retry, so \
+         stopping on it leaves the credentials live for good"
+    );
+}
+
+/// …and the reason carrying it is safe: the secret sweep's predicate covers the seed
+/// fids too, so a seed that is STILL LIVE is re-yielded there and stops the wipe
+/// before the gate phase — which is what would drop `EF_BACKUP_SEALED` and re-open
+/// the one-time seed-export window over that live seed (SEC-FIDO-006C).
+#[test]
+fn a_seed_the_medium_kept_stops_the_wipe_before_the_gates() {
+    for fid in FIDO_SEED_FIDS {
+        assert!(
+            is_fido_fid(fid) && !is_fido_gate_fid(fid),
+            "0x{fid:04X} must be inside the secret sweep, or a refused seed reaches \
+             the gate phase"
+        );
+    }
+    let rounds = reset_rounds_with_remove_refused(EF_KEY_DEV.get(), true, 1);
+    let (answered, live) = &rounds[0];
+    assert_eq!(*answered, Err(CtapError::Other));
+    assert!(
+        live.contains(&"pin") && live.contains(&"backup"),
+        "the gate phase must not run over a seed the medium would not remove: {live:?}"
+    );
+}
+
+/// A provisioned applet on a medium that logs the order of the appends it serves —
+/// the only place the re-arm of the at-rest lap can be seen to land BEFORE the
+/// tombstone it covers rather than after it.
+fn cut_fs_with_a_pin() -> (Fs<Cut>, CutMedium) {
+    let (cut, medium) = Cut::new();
+    let mut fs = Fs::new(cut);
+    fs.scan();
+    ensure_seed(&dev(), &mut fs, &mut SeqRng(1)).unwrap();
+    fs.put(EF_CRED, &[0xC0; 100]).unwrap();
+    fs.put(EF_PIN, &[8, 4, 1, 0, 0]).unwrap();
+    (fs, medium)
+}
+
+fn run_reset<S: rsk_fs::Storage>(fs: &mut Fs<S>) -> CtapResult {
+    let mut state = FidoState::new();
+    let mut presence = crate::AlwaysConfirm;
+    let mut rng = SeqRng(3);
+    let mut ctx = Ctx {
+        presence: &mut presence,
+        dev: dev(),
+        fs,
+        rng: &mut rng,
+        state: &mut state,
+        now_ms: 0,
+    };
+    reset(&mut ctx)
+}
+
+/// The reset path's own re-arm, which no applet wipe in the tree had: measured at
+/// five wipe-sweep delete sites across four applets, none re-armed. A tombstone
+/// appends like a re-seal, and `EF_PIN` migrates only on a successful verify — so a
+/// RESET can leave a chip-serial-rooted verifier dumpable under a marker the lap
+/// gates on. Best-effort, and that is the whole difference from the gated sites:
+/// refusing here would leave the passkeys live rather than in force.
+#[test]
+fn a_reset_re_arms_the_at_rest_lap_before_the_first_tombstone() {
+    let (mut fs, medium) = cut_fs_with_a_pin();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    assert!(
+        fs.has_data(rsk_fs::EF_HARDENED),
+        "fixture: an earlier boot latched the marker"
+    );
+
+    medium.clear_ops();
+    assert_eq!(run_reset(&mut fs), Ok(0));
+    medium.assert_re_armed_before(EF_PIN, |_| false, "FIDO RESET");
+    assert!(
+        !fs.has_data(rsk_fs::EF_HARDENED),
+        "the reset tombstoned a possibly chip-serial-rooted verifier, so the lap \
+         must run again"
+    );
+
+    // The best-effort half, and the direction that separates a wipe from every
+    // gated site: a medium refusing only `remove(EF_HARDENED)` must still WIPE.
+    let (backend, medium) = RemoveStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    ensure_seed(&dev(), &mut fs, &mut SeqRng(1)).unwrap();
+    fs.put(EF_PIN, &[8, 4, 1, 0, 0]).unwrap();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    medium.refuse(Some(rsk_fs::EF_HARDENED));
+    let answered = run_reset(&mut fs);
+    assert!(
+        !medium.live(EF_PIN),
+        "the refused re-arm stopped the wipe, which leaves the passkeys LIVE — the \
+         one direction a reset must never fail in"
+    );
+    assert_eq!(answered, Ok(0));
+    assert!(
+        medium.live(rsk_fs::EF_HARDENED),
+        "fixture: the refusal really left the marker on the medium"
+    );
+}
+
+/// The head re-arm is BEST-EFFORT, so its refusal leaves the marker latched over
+/// every tombstone the sweep then appends — the residual the gated sites do not
+/// carry. A single-shot refusal is the only kind the pass recovers from, and the
+/// retry after the sweep is what recovers it; a persistent one is still a residual.
+#[test]
+fn a_reset_retries_the_re_arm_after_the_sweep() {
+    let (backend, medium) = RemoveStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    ensure_seed(&dev(), &mut fs, &mut SeqRng(1)).unwrap();
+    fs.put(EF_PIN, &[8, 4, 1, 0, 0]).unwrap();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    assert!(
+        medium.live(rsk_fs::EF_HARDENED),
+        "fixture: an earlier boot latched the marker"
+    );
+    // Only the HEAD re-arm is refused; the medium serves every mutation after it.
+    medium.refuse_once(rsk_fs::EF_HARDENED);
+
+    let answered = run_reset(&mut fs);
+    assert!(
+        !medium.live(rsk_fs::EF_HARDENED),
+        "the head re-arm was refused and nothing retried it, so the marker stands \
+         over the verifier this reset just tombstoned and no later boot ever laps"
+    );
+    assert_eq!(answered, Ok(0));
+    assert!(!medium.live(EF_PIN), "the wipe still ran");
+
+    // The control on the same medium, with the refusal made PERSISTENT instead:
+    // the marker survives, so the assertion above is about the retry landing and
+    // not about a marker the fixture never latched.
+    fs.put(EF_PIN, &[8, 4, 1, 0, 0]).unwrap();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    medium.refuse(Some(rsk_fs::EF_HARDENED));
+    assert_eq!(run_reset(&mut fs), Ok(0));
+    assert!(
+        medium.live(rsk_fs::EF_HARDENED),
+        "fixture: a persistent refusal really does leave the marker standing"
+    );
+}
+
+/// Both faults of the residual in one medium, because neither alone reaches it: a
+/// SINGLE-SHOT refusal of `refuse_once`'s removal — the only kind a retry recovers
+/// — and a walk that truncates for good once `truncate_after` has been tombstoned.
+/// `RemoveStuck` and `TruncatedWalk` carry one each and cannot be composed.
+struct RefusedThenTruncated {
+    inner: RamStorage,
+    refuse_once: Option<u16>,
+    truncate_after: Option<u16>,
+    truncated: bool,
+}
+
+impl rsk_fs::Storage for RefusedThenTruncated {
+    fn read(&mut self, fid: u16, buf: &mut [u8]) -> Option<usize> {
+        self.inner.read(fid, buf)
+    }
+    fn write(&mut self, fid: u16, data: &[u8]) -> rsk_sdk::error::Result<()> {
+        self.inner.write(fid, data)
+    }
+    fn remove(&mut self, fid: u16) -> rsk_sdk::error::Result<()> {
+        if self.refuse_once == Some(fid) {
+            self.refuse_once = None;
+            return Err(rsk_sdk::error::Error::MemoryFatal);
+        }
+        self.inner.remove(fid)?;
+        self.truncated |= self.truncate_after == Some(fid);
+        Ok(())
+    }
+    fn size(&mut self, fid: u16) -> Option<usize> {
+        self.inner.size(fid)
+    }
+    fn for_each_key(&mut self, f: &mut dyn FnMut(u16)) -> bool {
+        if self.truncated {
+            return false;
+        }
+        self.inner.for_each_key(f)
+    }
+}
+
+/// What one arm of [`a_reset_that_faults_mid_sweep_still_re_arms_the_lap`] left
+/// behind: the host's answer, and what the MEDIUM kept — never `Fs::has_data`,
+/// since a refused removal is exactly where the present cache and the medium part.
+struct Residue {
+    answered: CtapResult,
+    marker: bool,
+    pin: bool,
+}
+
+fn reset_under(refuse_once: Option<u16>, truncate_after: Option<u16>) -> Residue {
+    let mut fs = Fs::new(RefusedThenTruncated {
+        inner: RamStorage::new(),
+        refuse_once,
+        truncate_after,
+        truncated: false,
+    });
+    fs.scan();
+    ensure_seed(&dev(), &mut fs, &mut SeqRng(1)).unwrap();
+    fs.put(EF_CRED, &[0xC0; 100]).unwrap();
+    fs.put(EF_PIN, &[8, 4, 1, 0, 0]).unwrap();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    // Neither fault fires during setup — it writes and never removes these two —
+    // so the arms differ only in what the RESET meets.
+    assert!(
+        fs.has_data(rsk_fs::EF_HARDENED) && fs.has_data(EF_PIN),
+        "fixture"
+    );
+    let answered = run_reset(&mut fs);
+    let mut medium = fs.into_storage();
+    Residue {
+        answered,
+        marker: medium.inner.exists(rsk_fs::EF_HARDENED),
+        pin: medium.inner.exists(EF_PIN),
+    }
+}
+
+/// The refusal the retry exists for, met by the wipe fault the retry stands below:
+/// the sweeps carry `?`, so an early return skips the retry, and the conjunction is
+/// exactly the case it was written for. Both controls run in this case rather than
+/// their own, so the claim is about the CONJUNCTION and not about either fault.
+#[test]
+fn a_reset_that_faults_mid_sweep_still_re_arms_the_lap() {
+    let subject = reset_under(Some(rsk_fs::EF_HARDENED), Some(EF_PIN));
+    assert!(
+        !subject.marker,
+        "the head re-arm was refused and the sweep then faulted, so the only retry \
+         left is one the fault returns past — the marker stands over a possibly \
+         chip-serial-rooted verifier this reset tombstoned and no boot ever laps"
+    );
+    assert!(
+        !subject.pin,
+        "fixture: the verifier really was tombstoned under that marker"
+    );
+    assert_eq!(
+        subject.answered,
+        Err(CtapError::Other),
+        "the faulted sweep is still reported, so the re-arm changed no answer"
+    );
+
+    // CONTROL A: the head refusal alone. The sweeps complete, so the retry is
+    // reached — the refusal is not by itself what leaves the marker.
+    let head_only = reset_under(Some(rsk_fs::EF_HARDENED), None);
+    assert!(!head_only.marker, "control: a refusal the retry recovers");
+    assert_eq!(head_only.answered, Ok(0));
+
+    // CONTROL B: the sweep fault alone. The head re-arm lands, so the fault has no
+    // latched marker to leave behind.
+    let sweep_only = reset_under(None, Some(EF_PIN));
+    assert!(
+        !sweep_only.marker,
+        "control: the head re-arm already landed"
+    );
+    assert_eq!(sweep_only.answered, Err(CtapError::Other));
 }

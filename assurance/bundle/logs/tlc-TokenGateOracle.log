@@ -1,0 +1,249 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 123 and seed -1060809788561763203 with 2 workers on 18 cores with 3641MB heap and 64MB offheap memory (Mac OS X 27.0 aarch64, Azul Systems, Inc. 1.8.0_492 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Users/maxmur/Code/RS-Key/formal/RSKeyTokenGate.tla
+Parsing file /Users/maxmur/Code/RS-Key/formal/RSKeyTokenAbstract.tla
+Parsing file /private/var/folders/gg/lgcg496924x384yd58t3b9180000gn/T/TLC.tla
+Parsing file /private/var/folders/gg/lgcg496924x384yd58t3b9180000gn/T/FiniteSets.tla
+Parsing file /private/var/folders/gg/lgcg496924x384yd58t3b9180000gn/T/Naturals.tla
+Parsing file /private/var/folders/gg/lgcg496924x384yd58t3b9180000gn/T/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module RSKeyTokenAbstract
+Semantic processing of module TLC
+Semantic processing of module RSKeyTokenGate
+Starting... (2026-08-27 03:04:50)
+Computing initial states...
+<< "DISAGREE",
+   [ pinSet |-> FALSE,
+     live |-> FALSE,
+     permissionMc |-> FALSE,
+     permissionGa |-> FALSE,
+     permissionCm |-> FALSE,
+     persistentGrant |-> FALSE,
+     permissionAcfg |-> FALSE,
+     rpBound |-> FALSE ],
+   {"ClearPin"} >>
+<< "DISAGREE",
+   [ pinSet |-> FALSE,
+     live |-> FALSE,
+     permissionMc |-> FALSE,
+     permissionGa |-> FALSE,
+     permissionCm |-> FALSE,
+     persistentGrant |-> TRUE,
+     permissionAcfg |-> FALSE,
+     rpBound |-> FALSE ],
+   {"ClearPin", "UseCm"} >>
+<< "DISAGREE",
+   [ pinSet |-> FALSE,
+     live |-> TRUE,
+     permissionMc |-> FALSE,
+     permissionGa |-> FALSE,
+     permissionCm |-> FALSE,
+     persistentGrant |-> FALSE,
+     permissionAcfg |-> FALSE,
+     rpBound |-> FALSE ],
+   {"ClearPin"} >>
+Computed 2 initial states...
+<< "DISAGREE",
+   [ pinSet |-> FALSE,
+     live |-> TRUE,
+     permissionMc |-> FALSE,
+     permissionGa |-> FALSE,
+     permissionCm |-> FALSE,
+     persistentGrant |-> FALSE,
+     permissionAcfg |-> FALSE,
+     rpBound |-> TRUE ],
+   {"ClearPin"} >>
+<< "DISAGREE",
+   [ pinSet |-> FALSE,
+     live |-> TRUE,
+     permissionMc |-> FALSE,
+     permissionGa |-> FALSE,
+     permissionCm |-> FALSE,
+     persistentGrant |-> FALSE,
+     permissionAcfg |-> TRUE,
+     rpBound |-> FALSE ],
+   {"ClearPin"} >>
+Computed 4 initial states...
+<< "DISAGREE",
+   [ pinSet |-> FALSE,
+     live |-> TRUE,
+     permissionMc |-> FALSE,
+     permissionGa |-> FALSE,
+     permissionCm |-> FALSE,
+     persistentGrant |-> FALSE,
+     permissionAcfg |-> TRUE,
+     rpBound |-> TRUE ],
+   {"ClearPin"} >>
+<< "DISAGREE",
+   [ pinSet |-> FALSE,
+     live |-> TRUE,
+     permissionMc |-> FALSE,
+     permissionGa |-> FALSE,
+     permissionCm |-> FALSE,
+     persistentGrant |-> TRUE,
+     permissionAcfg |-> FALSE,
+     rpBound |-> FALSE ],
+   {"ClearPin", "UseCm"} >>
+<< "DISAGREE",
+   [ pinSet |-> FALSE,
+     live |-> TRUE,
+     permissionMc |-> FALSE,
+     permissionGa |-> FALSE,
+     permissionCm |-> FALSE,
+     persistentGrant |-> TRUE,
+     permissionAcfg |-> FALSE,
+     rpBound |-> TRUE ],
+   {"ClearPin", "UseCm"} >>
+<< "DISAGREE",
+   [ pinSet |-> FALSE,
+     live |-> TRUE,
+     permissionMc |-> FALSE,
+     permissionGa |-> FALSE,
+     permissionCm |-> FALSE,
+     persistentGrant |-> TRUE,
+     permissionAcfg |-> TRUE,
+     rpBound |-> FALSE ],
+   {"ClearPin", "UseCm"} >>
+Computed 8 initial states...
+<< "DISAGREE",
+   [ pinSet |-> FALSE,
+     live |-> TRUE,
+     permissionMc |-> FALSE,
+     permissionGa |-> FALSE,
+     permissionCm |-> FALSE,
+     persistentGrant |-> TRUE,
+     permissionAcfg |-> TRUE,
+     rpBound |-> TRUE ],
+   {"ClearPin", "UseCm"} >>
+<< "DISAGREE",
+   [ pinSet |-> FALSE,
+     live |-> TRUE,
+     permissionMc |-> FALSE,
+     permissionGa |-> FALSE,
+     permissionCm |-> TRUE,
+     persistentGrant |-> FALSE,
+     permissionAcfg |-> FALSE,
+     rpBound |-> FALSE ],
+   {"ClearPin"} >>
+<< "DISAGREE",
+   [ pinSet |-> FALSE,
+     live |-> TRUE,
+     permissionMc |-> FALSE,
+     permissionGa |-> FALSE,
+     permissionCm |-> TRUE,
+     persistentGrant |-> FALSE,
+     permissionAcfg |-> FALSE,
+     rpBound |-> TRUE ],
+   {"ClearPin"} >>
+<< "DISAGREE",
+   [ pinSet |-> FALSE,
+     live |-> TRUE,
+     permissionMc |-> FALSE,
+     permissionGa |-> FALSE,
+     permissionCm |-> TRUE,
+     persistentGrant |-> TRUE,
+     permissionAcfg |-> FALSE,
+     rpBound |-> FALSE ],
+   {"ClearPin"} >>
+<< "DISAGREE",
+   [ pinSet |-> FALSE,
+     live |-> TRUE,
+     permissionMc |-> FALSE,
+     permissionGa |-> FALSE,
+     permissionCm |-> TRUE,
+     persistentGrant |-> TRUE,
+     permissionAcfg |-> FALSE,
+     rpBound |-> TRUE ],
+   {"ClearPin"} >>
+<< "DISAGREE",
+   [ pinSet |-> FALSE,
+     live |-> TRUE,
+     permissionMc |-> FALSE,
+     permissionGa |-> TRUE,
+     permissionCm |-> FALSE,
+     persistentGrant |-> FALSE,
+     permissionAcfg |-> TRUE,
+     rpBound |-> FALSE ],
+   {"ClearPin"} >>
+<< "DISAGREE",
+   [ pinSet |-> FALSE,
+     live |-> TRUE,
+     permissionMc |-> FALSE,
+     permissionGa |-> TRUE,
+     permissionCm |-> FALSE,
+     persistentGrant |-> FALSE,
+     permissionAcfg |-> TRUE,
+     rpBound |-> TRUE ],
+   {"ClearPin"} >>
+<< "DISAGREE",
+   [ pinSet |-> FALSE,
+     live |-> TRUE,
+     permissionMc |-> FALSE,
+     permissionGa |-> TRUE,
+     permissionCm |-> FALSE,
+     persistentGrant |-> TRUE,
+     permissionAcfg |-> TRUE,
+     rpBound |-> FALSE ],
+   {"ClearPin", "UseCm"} >>
+Computed 16 initial states...
+<< "DISAGREE",
+   [ pinSet |-> FALSE,
+     live |-> TRUE,
+     permissionMc |-> FALSE,
+     permissionGa |-> TRUE,
+     permissionCm |-> FALSE,
+     persistentGrant |-> TRUE,
+     permissionAcfg |-> TRUE,
+     rpBound |-> TRUE ],
+   {"ClearPin", "UseCm"} >>
+<< "DISAGREE",
+   [ pinSet |-> FALSE,
+     live |-> TRUE,
+     permissionMc |-> TRUE,
+     permissionGa |-> TRUE,
+     permissionCm |-> FALSE,
+     persistentGrant |-> FALSE,
+     permissionAcfg |-> FALSE,
+     rpBound |-> FALSE ],
+   {"ClearPin"} >>
+<< "DISAGREE",
+   [ pinSet |-> FALSE,
+     live |-> TRUE,
+     permissionMc |-> TRUE,
+     permissionGa |-> TRUE,
+     permissionCm |-> FALSE,
+     persistentGrant |-> FALSE,
+     permissionAcfg |-> FALSE,
+     rpBound |-> TRUE ],
+   {"ClearPin"} >>
+<< "DISAGREE",
+   [ pinSet |-> FALSE,
+     live |-> TRUE,
+     permissionMc |-> TRUE,
+     permissionGa |-> TRUE,
+     permissionCm |-> FALSE,
+     persistentGrant |-> TRUE,
+     permissionAcfg |-> FALSE,
+     rpBound |-> FALSE ],
+   {"ClearPin", "UseCm"} >>
+<< "DISAGREE",
+   [ pinSet |-> FALSE,
+     live |-> TRUE,
+     permissionMc |-> TRUE,
+     permissionGa |-> TRUE,
+     permissionCm |-> FALSE,
+     persistentGrant |-> TRUE,
+     permissionAcfg |-> FALSE,
+     rpBound |-> TRUE ],
+   {"ClearPin", "UseCm"} >>
+Finished computing initial states: 22 distinct states generated at 2026-08-27 03:04:50.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 5.8E-16
+506 states generated, 22 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 1.
+The average outdegree of the complete state graph is 0 (minimum is 0, the maximum 0 and the 95th percentile is 0).
+Finished in 00s at (2026-08-27 03:04:50)

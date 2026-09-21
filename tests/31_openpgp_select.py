@@ -22,7 +22,7 @@ except ImportError:
     sys.exit("missing dependency: pip install pyscard")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _device import find_reader, fw_version  # noqa: E402
+from _device import FW_VERSION_HINT, find_reader, fw_version  # noqa: E402
 
 OPENPGP_AID = [0xD2, 0x76, 0x00, 0x01, 0x24, 0x01]
 SELECT = [0x00, 0xA4, 0x04, 0x00, len(OPENPGP_AID)] + OPENPGP_AID + [0x00]
@@ -128,8 +128,7 @@ def main():
 
     ver = expect_ok(conn, VERSION, "VERSION (F1)")
     if ver != EXPECTED_FW_VERSION:
-        fail(f"version mismatch: {toHexString(ver)} != {toHexString(EXPECTED_FW_VERSION)} "
-             f"(an image built FW_VERSION=X.Y.Z needs the same value in the environment)")
+        fail(f"version mismatch: {toHexString(ver)} != {toHexString(EXPECTED_FW_VERSION)} {FW_VERSION_HINT}")
 
     print("PASS")
     return 0

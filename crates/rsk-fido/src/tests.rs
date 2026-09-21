@@ -49,8 +49,8 @@ fn dispatch_seeded(data: &[u8], out: &mut [u8], with_token: bool) -> usize {
 #[test]
 fn dispatch_get_info_ok() {
     // Sized well clear of the response: `advertise-pqc` adds two ML-DSA algorithm
-    // entries on top of the vendorPrototype id list, and `process_cbor` answers a
-    // short buffer with a status byte alone rather than a panic.
+    // entries to it, and `process_cbor` answers a short buffer with a status byte
+    // alone rather than a panic.
     let mut out = [0u8; 1024];
     let n = dispatch(&[consts::CTAP_GET_INFO], &mut out);
     assert!(n > 1);

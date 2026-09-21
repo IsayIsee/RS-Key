@@ -83,7 +83,7 @@ pub struct SeqStorage<
 /// churn never reclaims a credential/key page in the main partition. Values are
 /// `EF_COUNTER` (FIDO 0xC000), `EF_CRED_CTR` (FIDO per-credential signature counters,
 /// 0xC001 — rewritten on every getAssertion), `EF_SIG_COUNT` (OpenPGP 0x0093) and the
-/// vendor test counter (0xCC01).
+/// vendor test counter `COUNTER_FID` (0xCC01).
 pub fn is_counter_fid(fid: u16) -> bool {
     matches!(fid, 0xC000 | 0xC001 | 0x0093 | 0xCC01)
 }
@@ -232,9 +232,13 @@ impl<F: NorFlash + MultiwriteNorFlash + Clone, CM: CacheImpl<u16>, CC: CacheImpl
 /// Iterate every live key in one partition (used by `for_each_key` over both).
 /// Returns `true` iff the walk reached its natural `None` terminator, i.e. it
 /// enumerated every live key. `MapItemIter::next` reaches `None` only after
-/// cycling the full ring; the sole early exit is a genuine flash READ FAULT
-/// (`Err`), which a NOR power cut never produces (a torn write yields deterministic
-/// bytes, not a read error). A `false` return therefore flags a truncated
+/// cycling the full ring; the sole early exit is a read the backend could not
+/// serve. A torn write is not one — but not because a cut yields plausible bytes:
+/// at `WRITE_SIZE = 1` a cut leaves a half-programmed 8-byte item header whose
+/// length CRC cannot match (`crc16` clamps `0xFFFF` away, so no length wears the
+/// erased value) and `ItemHeader::read_new` answers `Error::Corrupted`. The walk
+/// survives that because `ItemHeaderIter::traverse` skips `Corrupted` on purpose,
+/// not because it never meets one. A `false` return therefore flags a truncated
 /// enumeration the caller must not read as "those keys are absent".
 fn for_each_in<F: NorFlash + MultiwriteNorFlash, C: CacheImpl<u16>>(
     map: &mut MapStorage<u16, F, C>,

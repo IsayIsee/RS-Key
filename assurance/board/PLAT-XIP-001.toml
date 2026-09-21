@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 RS-Key contributors
+#
+# The two `unsafe` sites in firmware/src/core1.rs rest on the PAUSE, and
+# docs/unsafe.md justifies them as Rust invariants — which is a different
+# question from whether the silicon behaves as the pause assumes.
+
+assumption = "PLAT-XIP-001"
+method = "Instrument the pause and run core 1 executing from XIP across a store erase and program: assert that no instruction is fetched from the flash array during either, and that the inter-core FIFO handshake releases the pause afterwards."
+boot_config = "The DEFAULT image; the display build is a separate column because it changes what core 1 is doing."
+expected = "Core 1 is halted for the whole of every erase and program, and resumes. PASS = no XIP fetch inside the window and a clean resume. FAIL = either a fetch during the array write — a hard fault or worse, silently wrong data — or a pause that is never released, which is a wedge."
+outcome = "planned"
+board = ""
+stepping = ""
+firmware_sha256 = ""
+first_boot_capture = ""
+actual = ""

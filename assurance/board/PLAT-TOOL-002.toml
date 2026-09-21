@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 RS-Key contributors
+#
+# The row every trace-linked claim rests on, and the one the class-keyed
+# version of this rule left out -- `tool-fidelity` is not a silicon class,
+# and its route is still a board recording.
+
+assumption = "PLAT-TOOL-002"
+method = """Record the same session on a board that formal/traces/security-phase4.jsonl was recorded from on the emulator, and compare boundary by boundary: every gate decision, every outcome and every field the schema carries."""
+boot_config = """Whatever image the emulator's applet stack corresponds to, named by hash here, because the comparison is only as good as the pairing."""
+expected = """The board's session agrees with the emulator's at every recorded boundary. PASS = no divergence. FAIL = any boundary where the board gates differently, which makes every trace-linked claim a claim about the emulator. INCONCLUSIVE = the session could not be driven to the same boundaries on the board."""
+outcome = "planned"
+board = ""
+stepping = ""
+firmware_sha256 = ""
+first_boot_capture = ""
+actual = ""
+note = """Until this is measured, SEC-REF-004, SEC-TRACE-001/002/004 and all six SEC-SEAM rows are claims about `tools/emu`. The registry says so in `failure_direction`; this record is where the run that would change it gets written down."""

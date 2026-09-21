@@ -108,7 +108,7 @@ pub const CAPFLAG_LOCK: u8 = 0x02;
 pub const CAPFLAG_CBOR: u8 = 0x04;
 
 // Device version reported in CTAPHID_INIT / CTAPHID_VERSION — the shared firmware
-// version (default 5.7.4). ykman/yubikit read these three bytes from the INIT
+// version (default 5.8.0). ykman/yubikit read these three bytes from the INIT
 // response as the device firmware version and require >= 4.1.0 before they will
 // read the YubiKey Management DeviceInfo over the FIDO interface.
 const VERSION_MAJOR: u8 = rsk_sdk::FIRMWARE_VERSION.0;
@@ -612,6 +612,12 @@ impl<'d, D: Driver<'d>, H: MsgHandler> CtapHid<'d, D, H> {
         }
     }
 
+    // Refines `RSKeyTransport!NoCrossChannelSplice` — SEC-TRANS-001.
+    // Refines `RSKeyTransport!NoSequenceGap` — SEC-TRANS-002.
+    // Refines `RSKeyTransport!NoBufferOverrun` — SEC-TRANS-003.
+    // The dispatcher half of the three: `feed`'s Outcome is acted on here and
+    // nowhere else IN THE IMAGE. The emulator has its own, `serve`
+    // (`tools/emu/src/hid.rs:52-87`), and it is what `tests/*.py` run against.
     async fn on_frame(&mut self, f: &[u8; HID_RPT_SIZE]) {
         match self.asm.feed(f) {
             Outcome::None => {}
@@ -627,6 +633,10 @@ impl<'d, D: Driver<'d>, H: MsgHandler> CtapHid<'d, D, H> {
         }
     }
 
+    // Refines `RSKeyTransport!NoCrossChannelSplice` — SEC-TRANS-001.
+    // Refines `RSKeyTransport!NoSequenceGap` — SEC-TRANS-002.
+    // Every arm below reads `self.asm.message()`, whose provenance is exactly
+    // what the two ghosts assert: one channel's frames, in the order it sent them.
     async fn dispatch(&mut self, cid: u32, cmd: u8) {
         match cmd {
             CTAPHID_INIT => {

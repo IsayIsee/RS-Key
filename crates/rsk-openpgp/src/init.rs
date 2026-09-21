@@ -41,6 +41,20 @@ fn put<S: Storage>(fs: &mut Fs<S>, fid: u16, data: &[u8]) -> Result<(), Error> {
     fs.put(fid, data).map_err(|_| Error::Storage)
 }
 
+/// Is `fid` provisioned? A probe the medium could not answer is a storage error
+/// here, never an absence: every guard in this module writes a FACTORY DEFAULT
+/// over the file it reads absent, and `Fs::has_data` answers the same `false` for
+/// both — so one faulted `EF_PW1` probe put `PW1_DEFAULT` back over the owner's
+/// verifier and handed `123456` the PW1 security status.
+fn provisioned<S: Storage>(fs: &mut Fs<S>, fid: u16) -> Result<bool, Error> {
+    fs.try_has_data(fid).map_err(|_| Error::Storage)
+}
+
+/// [`provisioned`] for the repairs that need the bytes as well.
+fn read_file<S: Storage>(fs: &mut Fs<S>, fid: u16, buf: &mut [u8]) -> Result<Option<usize>, Error> {
+    fs.try_read(fid, buf).map_err(|_| Error::Storage)
+}
+
 /// Build a PIN verifier record `[len, 0x01, verifier(32)]` and store it.
 fn put_pin_verifier<S: Storage>(
     fs: &mut Fs<S>,
@@ -69,12 +83,12 @@ pub fn scan_files<S: Storage>(
     // and a missing copy is a lost record rather than an interrupted first boot —
     // regenerating the DEK there would throw the keys away. Nothing can be lost in
     // the window this does cover: no key can exist before the first boot finishes.
-    let provisioning = !fs.has_data(EF_PW1) && !fs.has_data(EF_PW3);
+    let provisioning = !provisioned(fs, EF_PW1)? && !provisioned(fs, EF_PW3)?;
     let mut reset_dek = false;
     if provisioning
-        && (!fs.has_key(EF_DEK_PW1) || !fs.has_key(EF_DEK_PW3))
-        && !fs.has_key(EF_DEK_RC)
-        && !fs.has_data(EF_DEK)
+        && (!provisioned(fs, EF_DEK_PW1.get())? || !provisioned(fs, EF_DEK_PW3.get())?)
+        && !provisioned(fs, EF_DEK_RC.get())?
+        && !provisioned(fs, EF_DEK)?
     {
         let mut random_dek = [0u8; DEK_SIZE];
         rng.fill(&mut random_dek);
@@ -106,31 +120,31 @@ pub fn scan_files<S: Storage>(
         reset_dek = true;
     }
 
-    if reset_dek || !fs.has_data(EF_PW1) {
+    if reset_dek || !provisioned(fs, EF_PW1)? {
         put_pin_verifier(fs, dev, EF_PW1, PW1_DEFAULT)?;
     }
     // No EF_RC verifier at init: the resetting code stays unset until an admin
     // sets it via PUT DATA 0xD3. (Seeding it to PW3_DEFAULT made RESET RETRY P1=0
     // an unauthenticated PW1-reset backdoor.)
-    if reset_dek || !fs.has_data(EF_PW3) {
+    if reset_dek || !provisioned(fs, EF_PW3)? {
         put_pin_verifier(fs, dev, EF_PW3, PW3_DEFAULT)?;
     }
 
-    if !fs.has_data(EF_SIG_COUNT) {
+    if !provisioned(fs, EF_SIG_COUNT)? {
         put(fs, EF_SIG_COUNT, SIG_COUNT_ZERO)?;
     }
-    if !fs.has_data(EF_PW_PRIV) {
+    if !provisioned(fs, EF_PW_PRIV)? {
         put(fs, EF_PW_PRIV, PW_STATUS_DEFAULT)?;
     }
     for fid in [EF_UIF_SIG, EF_UIF_DEC, EF_UIF_AUT] {
-        if !fs.has_data(fid) {
+        if !provisioned(fs, fid)? {
             put(fs, fid, UIF_DEFAULT)?;
         }
     }
-    if !fs.has_data(EF_KDF) {
+    if !provisioned(fs, EF_KDF)? {
         put(fs, EF_KDF, KDF_DEFAULT)?;
     }
-    if !fs.has_data(EF_PW_RETRIES) {
+    if !provisioned(fs, EF_PW_RETRIES)? {
         put(fs, EF_PW_RETRIES, PW_RETRIES_INIT)?;
     }
     neutralize_default_reset_code(dev, fs)?;
@@ -151,7 +165,7 @@ pub fn scan_files<S: Storage>(
 fn neutralize_default_reset_code<S: Storage>(dev: &Device, fs: &mut Fs<S>) -> Result<(), Error> {
     let mut rec = [0u8; 64];
     // RC verifier record is [len, 0x01, verifier(32)].
-    let stored = match fs.read(EF_RC, &mut rec) {
+    let stored = match read_file(fs, EF_RC, &mut rec)? {
         Some(n) if n >= 34 && rec[0] != 0 => &rec[2..34],
         _ => return Ok(()),
     };
@@ -161,6 +175,14 @@ fn neutralize_default_reset_code<S: Storage>(dev: &Device, fs: &mut Fs<S>) -> Re
     if !is_default {
         return Ok(());
     }
+    // Both tombstones supersede chip-serial-rooted records when `is_default` matched
+    // the pre-OTP arm, and TERMINATE DF re-runs `scan_files` mid-session — after the
+    // lap, unlike boot — so the at-rest lap (rsk-fs `EF_HARDENED`) owes a re-arm here.
+    //
+    // The one re-arm whose failure does NOT stop the write: "leave the record in
+    // force" means, here, a live unauthenticated `RESET RETRY P1=0` path, and
+    // refusing would abort `scan_files` before `settle_rc_retry_counter` too.
+    let _ = rsk_fs::request_rescrub(fs);
     let _ = fs.delete(EF_RC);
     let _ = fs.delete_key(EF_DEK_RC);
     Ok(())
@@ -173,11 +195,11 @@ fn neutralize_default_reset_code<S: Storage>(dev: &Device, fs: &mut Fs<S>) -> Re
 /// have, and `neutralize_default_reset_code` never sees them (it keys on an RC
 /// that is already gone). Idempotent: the flash write happens only on repair.
 fn settle_rc_retry_counter<S: Storage>(fs: &mut Fs<S>) -> Result<(), Error> {
-    if fs.has_data(EF_RC) {
+    if provisioned(fs, EF_RC)? {
         return Ok(());
     }
     let mut pw = [0u8; 8];
-    let Some(n) = fs.read(EF_PW_PRIV, &mut pw) else {
+    let Some(n) = read_file(fs, EF_PW_PRIV, &mut pw)? else {
         return Ok(());
     };
     let n = n.min(pw.len());
@@ -198,7 +220,7 @@ fn settle_rc_retry_counter<S: Storage>(fs: &mut Fs<S>) -> Result<(), Error> {
 /// Idempotent: the flash write happens only on repair.
 fn settle_pw_status_maxima<S: Storage>(fs: &mut Fs<S>) -> Result<(), Error> {
     let mut pw = [0u8; 8];
-    let Some(n) = fs.read(EF_PW_PRIV, &mut pw) else {
+    let Some(n) = read_file(fs, EF_PW_PRIV, &mut pw)? else {
         return Ok(());
     };
     let n = n.min(pw.len());
@@ -228,11 +250,9 @@ fn settle_pw_status_maxima<S: Storage>(fs: &mut Fs<S>) -> Result<(), Error> {
 ///
 /// Runs LAST because it is the one write `scan_files` makes on an otherwise
 /// settled card, and a failing `put` must not skip the security repair above it.
-/// `Fs::read` cannot tell an absent file from a faulted read, so a transient fault
-/// reseeds the DO — the same trade every `has_data` seed here has always made.
 fn settle_sex_code<S: Storage>(fs: &mut Fs<S>) -> Result<(), Error> {
     let mut sex = [0u8; 1];
-    if fs.read(EF_SEX, &mut sex) != Some(1) || !SEX_VALUES.contains(&sex[0]) {
+    if read_file(fs, EF_SEX, &mut sex)? != Some(1) || !SEX_VALUES.contains(&sex[0]) {
         put(fs, EF_SEX, SEX_DEFAULT)?;
     }
     Ok(())

@@ -187,7 +187,7 @@ const fn hex_nibble(c: u8) -> u8 {
 }
 
 /// firmwareVersion reported by getInfo (CTAP `0x0E`): the shared
-/// [`rsk_sdk::FIRMWARE_VERSION`] (default 5.7.4, `FW_VERSION`-overridable) in
+/// [`rsk_sdk::FIRMWARE_VERSION`] (default 5.8.0, `FW_VERSION`-overridable) in
 /// Yubico's `(major << 16) | (minor << 8) | patch` form, so FIDO tooling
 /// (`ykman` / Yubico Authenticator) reads a current YubiKey 5 version
 /// consistent with the default YubiKey 5 VID/PID.
@@ -210,8 +210,12 @@ pub const PUBLIC_KEY_TYPE: &str = "public-key";
 
 /// The `AuthenticatorTransport` values the FIDO applet answers on: getInfo's
 /// `transports` (0x09) and `transportsForReset` (0x1A) are the same list, because a
-/// reset is reachable exactly where the applet is. No FIDO AID is routed onto CCID.
-pub const TRANSPORTS: [&str; 1] = ["usb"];
+/// reset is reachable exactly where the applet is — and it is reachable on both.
+/// [`FIDO_AID`] IS routed onto CCID (`rsk_device::ccid_fido`), which forwards every
+/// CTAP2 command to the same entry point the HID transport calls, so a platform
+/// reading 0x1A was being told a reset it can perform there is unavailable.
+/// No `nfc`: this device has no radio.
+pub const TRANSPORTS: [&str; 2] = ["usb", "smart-card"];
 
 /// The version string U2F 1.2 §3.1.1 fixes: the answer to the CTAP1 VERSION command
 /// and to a SELECT of [`FIDO_AID`]. A host reads it as "CTAP1 is served here" —
@@ -353,8 +357,8 @@ pub const RP_NICK_MAX_LEN: usize = 24;
 pub const EF_CRED_BLOB: u16 = 0xD500;
 pub const EF_PIN: u16 = 0x1080; // PIN: [retries, len, format, verifier(32)]
 /// The **persistent** pinUvAuthToken (CTAP 2.2 §6.5.2.2): a bearer secret the
-/// platform keeps across power cycles, so it is kbase-sealed like the seed. Its
-/// *presence* is the `pcmr` grant — written at the first pcmr issuance, dropped
+/// platform keeps across power cycles, so it is kbase-sealed like the seed. Minted
+/// at provisioning and by a pcmr request; HOLDING it is the grant. Dropped
 /// wherever the spec calls `resetPersistentPinUvAuthToken` (§6.5.4).
 pub const EF_PAUTHTOKEN: KeyFid = KeyFid::new(0x1091);
 pub const EF_MINPINLEN: u16 = 0x1100; // minimum PIN length policy

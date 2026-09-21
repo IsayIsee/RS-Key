@@ -122,6 +122,12 @@ pub struct CcidApplets<'a, S: Storage, R: rsk_sdk::Rng + 'static, VP: rsk_vendor
 /// makes a restored default PW1 useless — but its UIF flags and every other arm are
 /// load-bearing.
 ///
+/// OpenPGP's arm answers to a second reason as well, and it is why `EF_KDF`,
+/// `EF_SIG_COUNT` and `EF_SEX` joined it at 0x098C: the next boot's `scan_files`
+/// re-seeds each of them to a published default, so a prefix that took one early
+/// leaves a factory value beside a key still on the card — and for the KDF that is a
+/// lockout, since the PW verifiers are taken over its output.
+///
 /// `EF_DEV_CONF` is deliberately **not** here, though its absence also resolves to a
 /// published default ("every supported application enabled"). It gates which applets
 /// are reachable, not whether a surviving secret is protected: for FIDO, PIV, OATH

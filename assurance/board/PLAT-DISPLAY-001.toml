@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 RS-Key contributors
+#
+# The glass, and nothing in this repository can see it. `crates/rsk-ui`'s
+# render tests prove what the model would paint; whether the panel painted it
+# is a photograph.
+
+assumption = "PLAT-DISPLAY-001"
+method = """On a touch board: photograph the panel at the moment the ceremony arms, and drive each control at the coordinates the hit test claims. Both halves are needed — a correct picture at the wrong coordinates is a control the user did not aim at."""
+boot_config = """A display build, with the panel orientation the board is assembled in recorded here: the hit test is computed for one."""
+expected = """The photographed card is the one the ceremony armed, and every control responds at the coordinates the hit test claims. PASS = both. FAIL = either — a card the user did not see, or a control at coordinates they did not aim at, is a confirmation of an operation nobody read. INCONCLUSIVE = the panel could not be photographed at the arming instant."""
+outcome = "planned"
+board = ""
+stepping = ""
+firmware_sha256 = ""
+first_boot_capture = ""
+actual = ""

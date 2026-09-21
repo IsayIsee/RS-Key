@@ -80,6 +80,43 @@ admin PIN lives somewhere offline.
 - **Three wrong PW1** blocks the user PIN. This one *is* recoverable: unblock it
   with the admin PIN or the Reset Code (see [Unblocking PW1](#unblocking-pw1)).
 
+### KDF (`kdf-setup`) — hashing the PIN before it leaves the host
+
+The card supports the OpenPGP 3.4 **KDF-DO**, so `gpg` can salt-and-hash your
+PINs on the host and send the hash instead of the passphrase:
+
+```sh
+gpg --card-edit
+gpg/card> admin
+gpg/card> kdf-setup          # three salts (PW1, Reset Code, PW3)
+gpg/card> kdf-setup single   # or one salt shared by PW1 and PW3
+gpg/card> kdf-setup off      # back to sending the passphrase
+```
+
+`gpg` does not change the PINs afterwards — it just writes the DO and starts
+sending KDF output. The DO carries the hashes of the *factory* PINs so the card
+can follow, so **`kdf-setup` puts both PINs back to their defaults**: `123456`
+and `12345678`, hashed. Turning it off does the same thing in reverse. So:
+
+**Run `kdf-setup` first, then change your PINs.** In the other order you lose the
+PINs you chose. This is how a YubiKey and a Gnuk behave too.
+
+Two consequences worth knowing:
+
+- **A card that already holds a key refuses it**, with `6985` —
+  `gpg: error for setup KDF: Conditions of use not satisfied`. Otherwise the DO
+  would hand `123456` to whoever asked next, beside a key that is still there.
+  To change the setting on a provisioned card, factory-reset the applet first.
+- **An existing Reset Code is deactivated.** The DO has a salt for it but no
+  initial hash, so there is nothing to carry it across; set a new one with
+  `passwd` option 4 afterwards. (A YubiKey leaves the Reset Code in place here
+  and goes on advertising three tries for it, but the code itself stops working —
+  measured, `RESET RETRY` then answers `6A80` whatever you send it. RS-Key
+  deactivates it so the counter tells the truth.)
+
+Both PIN retry counters go back to 3 with the PINs, and an admin PIN entered
+before the command stays valid after it — as on a YubiKey.
+
 ## Generate keys on-card
 
 ```sh

@@ -1,0 +1,9 @@
+# How wide the window is that the manual arm asks a hand to hit. The manual arm
+# prints ">>> CUT POWER NOW <<<" only AFTER starting the RESET thread, so the
+# hittable window is the whole duration of authenticatorReset on the wire.
+# Same board and image as the powercut log beside this file.
+
+  status      : 0x00  (OK)
+  RESET took  : 487.2 ms   <-- the whole window a hand must hit
+  the test cuts at RSK_POWER_CUT_DELAY_MS = 25 ms by default
+  VERDICT: a hand may fit. 487 ms is reachable if the yank rides the Enter.

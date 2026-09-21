@@ -286,12 +286,12 @@ fn an_on_device_delete_moves_the_store_tag() {
 
     let (mut fs, seed) = provisioned();
     add(&mut fs, &seed, 1, "github.com", b"u", "n", "N", 0);
-    let before = cred_store_state(&mut fs);
+    let before = cred_store_state(&mut fs).unwrap();
 
     let gh = fids_under(&mut fs, "github.com");
     assert_eq!(gh.len(), 1);
     assert!(delete_cred(&mut fs, gh[0]));
-    assert_ne!(cred_store_state(&mut fs), before);
+    assert_ne!(cred_store_state(&mut fs).unwrap(), before);
 }
 
 /// A refused on-device delete must not move the tag either way it can be refused —
@@ -303,10 +303,10 @@ fn a_refused_on_device_delete_leaves_the_tag_alone() {
 
     let (mut fs, seed) = provisioned();
     add(&mut fs, &seed, 1, "github.com", b"u", "n", "N", 0);
-    let before = cred_store_state(&mut fs);
+    let before = cred_store_state(&mut fs).unwrap();
     assert!(!delete_cred(&mut fs, EF_CRED - 1));
     assert!(!delete_cred(&mut fs, EF_CRED + 200));
-    assert_eq!(cred_store_state(&mut fs), before);
+    assert_eq!(cred_store_state(&mut fs).unwrap(), before);
 }
 
 #[test]

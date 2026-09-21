@@ -20,14 +20,15 @@ except ImportError:
     sys.exit("missing dependency: pip install pyscard")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _device import find_reader  # noqa: E402
+from _device import FW_VERSION_HINT, find_reader, fw_version  # noqa: E402
 
 MGMT_AID = [0xA0, 0x00, 0x00, 0x05, 0x27, 0x47, 0x11, 0x17]
 SELECT = [0x00, 0xA4, 0x04, 0x00, len(MGMT_AID)] + MGMT_AID
 READ_CONFIG = [0x00, 0x1D, 0x00, 0x00, 0x00]  # case 2 (Le = 0 → 256)
 
-# Expected reported version (Yubico-encoded 5.7.4, matches getInfo 0x0E).
-WANT_VERSION = [5, 7, 4]
+# Expected reported version (matches getInfo 0x0E): FW_VERSION, through `fw_version()`.
+WANT_VERSION = list(fw_version())
+WANT_VERSION_STR = ".".join(map(str, WANT_VERSION))
 
 # Management config tags / capability bits.
 TAG_USB_SUPPORTED, TAG_SERIAL, TAG_FORM_FACTOR, TAG_VERSION = 0x01, 0x02, 0x04, 0x05
@@ -63,8 +64,8 @@ def main():
     print("SELECT mgmt AID -> %r %02X%02X" % (ver_str, sw1, sw2))
     if (sw1, sw2) != (0x90, 0x00):
         fail(f"SELECT not 9000 (got {sw1:02X}{sw2:02X})")
-    if ver_str != "5.7.4":
-        fail(f"SELECT version string {ver_str!r} != '5.7.4'")
+    if ver_str != WANT_VERSION_STR:
+        fail(f"SELECT version string {ver_str!r} != {WANT_VERSION_STR!r} {FW_VERSION_HINT}")
 
     data, sw1, sw2 = conn.transmit(READ_CONFIG)
     print("READ CONFIG -> %s %02X%02X" % (toHexString(data), sw1, sw2))
@@ -77,7 +78,7 @@ def main():
     ver = tlv.get(TAG_VERSION)
     print("  version:", ver)
     if ver != WANT_VERSION:
-        fail(f"TAG_VERSION {ver} != {WANT_VERSION}")
+        fail(f"TAG_VERSION {ver} != {WANT_VERSION} {FW_VERSION_HINT}")
 
     caps_b = tlv.get(TAG_USB_SUPPORTED)
     if not caps_b or len(caps_b) != 2:
@@ -100,7 +101,7 @@ def main():
     if tlv.get(TAG_FORM_FACTOR) != [0x01]:
         fail("TAG_FORM_FACTOR != 0x01")
 
-    print("\nPASS — management applet reports version 5.7.4 + FIDO2/U2F/OpenPGP/OATH/OTP/PIV caps.")
+    print(f"\nPASS — management applet reports version {WANT_VERSION_STR} + FIDO2/U2F/OpenPGP/OATH/OTP/PIV caps.")
 
 
 if __name__ == "__main__":

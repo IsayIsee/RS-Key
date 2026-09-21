@@ -23,6 +23,7 @@ import subprocess
 import pytest
 
 import bcd_gate
+import gate_lines
 
 MAIN = """#![no_std]
 
@@ -83,7 +84,7 @@ CHANGELOG = """# Changelog
 
 ## [Unreleased]
 
-- the first entry
+- the first entry. **bcdDevice \u2192 0x0100.**
 """
 
 
@@ -143,8 +144,9 @@ class Tree:
     def bump(self, to="0x0101"):
         self.edit("firmware/src/main.rs", "0x0100", to)
 
-    def note(self):
-        self.append("CHANGELOG.md", "- a second entry\n")
+    def note(self, names="0x0101"):
+        """An [Unreleased] entry that NAMES the value, the way every real one does."""
+        self.append("CHANGELOG.md", f"- a second entry. **bcdDevice \u2192 {names}.**\n")
 
     def problems(self, landed_over=("", "")):
         """Audited with no landing debt unless a case asks for one: the fixture
@@ -390,6 +392,22 @@ def test_a_cfg_attribute_over_shipped_code(tree):
     assert tree.problems() == []
 
 
+def test_a_line_inside_a_cfg_gated_region_is_not_excused(tree):
+    """The arm this file gives up, pinned so it stays given up rather than found again.
+
+    A cfg-gated FILE is excused off the module graph; a cfg-gated REGION inside an
+    ordinary file is not, because only the attribute line itself is read. So a
+    constant the image cannot reach still moves the counter — measured on the real
+    tree at 0x0994, and measured for cost too: over 250 commits the line filter
+    fires on 51 and exactly ONE of those is excusable this way. Closing it needs a
+    cfg-expression evaluator and an item-extent finder in Python, and their failure
+    direction is to excuse a line that ships. Wrong the safe way round at 1-in-51
+    beats right-with-a-parser that can be wrong the other way.
+    """
+    tree.append("crates/rsk-a/src/lib.rs", "\n#[cfg(kani)]\npub const SHRUNK: u8 = 3;\n")
+    assert only(tree.problems(), "pub const SHRUNK")
+
+
 # --- the span, across commits -------------------------------------------------
 
 
@@ -463,6 +481,60 @@ def test_a_bump_with_a_changelog_entry(tree):
     assert tree.problems() == []
 
 
+def test_a_changelog_entry_that_names_no_value(tree):
+    """The hole three shipped builds went through: the file MOVED and the row was
+    green, so `git diff --name-only` said yes to an entry that records nothing."""
+    tree.bump()
+    tree.append("CHANGELOG.md", "- a second entry\n")
+    assert only(tree.problems(), "no line it ADDS reads")
+
+
+def test_a_changelog_entry_that_names_the_wrong_value(tree):
+    """What an `any 0x…` reading of the same rule would pass: the entry names a
+    value, just not the one the counter now holds."""
+    tree.bump()
+    tree.note("0x0100")
+    assert only(tree.problems(), "no line it ADDS reads")
+
+
+def test_the_value_must_be_named_by_a_line_this_span_ADDS(tree):
+    """An older entry already spelling the value is not this bump's record — the
+    file is append-only, so a whole-file search is satisfied by history."""
+    tree.append("CHANGELOG.md", "- an older build. **bcdDevice \u2192 0x0101.**\n")
+    tree.commit("an entry that names a value nothing has reached yet")
+    tree.bump()
+    tree.append("CHANGELOG.md", "- a second entry\n")
+    assert only(tree.problems(), "no line it ADDS reads")
+
+
+def test_a_named_value_in_lower_case(tree):
+    """`0x010a` and `0x010A` are one build; only one of them may not be a red row."""
+    tree.bump("0x010A")
+    tree.note("0x010a")
+    assert tree.problems() == []
+
+
+def test_prose_that_merely_quotes_the_value_is_not_a_record_of_the_bump(tree):
+    """The hole the FIRST cut of this rule had, found by driving the row rather
+    than the function: an entry whose own bcd line was a placeholder passed,
+    because a sentence elsewhere in the same batch happened to mention the hex."""
+    tree.bump()
+    tree.append(
+        "CHANGELOG.md",
+        "- a second entry. **bcdDevice \u2192 the manager will fill this in.**\n"
+        "  The guard rejects `0x0101` when it stands alone in prose like this.\n",
+    )
+    assert only(tree.problems(), "no line it ADDS reads")
+
+
+def test_a_longer_hex_is_not_the_value(tree):
+    """`0x0101` is not named by an entry that says `0x01010` — the bound is on the
+    right, where a substring test has none."""
+    tree.bump()
+    tree.note("0x01010")
+    assert only(tree.problems(), "no line it ADDS reads")
+
+
 def test_the_entry_may_arrive_in_the_next_commit(tree):
     """Requiring the same commit would leave the row red until the next bump."""
     tree.bump()
@@ -530,7 +602,7 @@ def test_a_green_run_says_nothing_but_its_summary(tree, monkeypatch, capsys):
 
 def test_check_sh_still_runs_the_guard():
     check = (bcd_gate.ROOT / "scripts/check.sh").read_text()
-    assert "scripts/bcd_gate.py" in check
+    assert gate_lines.runs(check, "scripts/bcd_gate.py")
 
 
 def test_the_tests_are_named_after_the_guard():

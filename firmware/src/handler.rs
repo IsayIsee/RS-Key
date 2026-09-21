@@ -41,9 +41,9 @@ pub type Store = Fs<FlashStorage>;
 ///
 /// Per-operation randomness comes from the DRBG (a few HMAC-SHA256 ops, microseconds,
 /// uniform). The slow health-checked TRNG block is touched only to seed + periodically
-/// reseed — and only through a *working* ROSC config (`chain=0`): with the default
-/// `chain=One` the autocorrelation health test stalls catastrophically on this
-/// RP2350 (0 valid blocks, a reset storm).
+/// reseed. What makes that draw finish is `sample_count = 1000` (`main.rs`), spacing
+/// the ROSC samples far enough apart to clear the autocorrelation check; the inverter
+/// chain runs at the driver's default, and changing it was measured not to help (2cdcc28).
 pub struct FidoRng {
     trng: Trng<'static, TRNG>,
     drbg: HmacDrbg,
@@ -58,8 +58,8 @@ const RESEED_INTERVAL: usize = 1 << 16; // 64 KiB
 
 impl FidoRng {
     /// Seed the DRBG from 48 bytes of hardware entropy (32 B security strength + a
-    /// 16 B nonce, SP 800-90A 10.1.2.3), drawn through the working ROSC config the
-    /// caller set on the `Trng`.
+    /// 16 B nonce, SP 800-90A 10.1.2.3), drawn through the `Trng` the caller
+    /// configured — `sample_count` only; the ROSC settings are the driver's.
     pub fn new(mut trng: Trng<'static, TRNG>) -> Self {
         let mut seed = [0u8; 48];
         trng.blocking_fill_bytes(&mut seed);

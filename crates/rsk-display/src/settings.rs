@@ -304,9 +304,7 @@ where
         if save_presence {
             let secs = (self.hooks.presence_timeout_ms() / 1000) as u8;
             let mut fs = self.fs.borrow_mut();
-            let mut phy = rsk_phy::load(&mut fs).unwrap_or_default();
-            phy.presence_timeout = Some(secs);
-            let _ = rsk_phy::save(&mut fs, &phy);
+            let _ = rsk_phy::update(&mut fs, |phy| phy.presence_timeout = Some(secs));
         }
     }
 

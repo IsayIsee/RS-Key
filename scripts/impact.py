@@ -310,10 +310,38 @@ def post_lines(path, post, cache):
     return cache[path]
 
 
+def second_definition(name, lines, added, path):
+    """Whether `name` has an unindented definition in `lines` this change did not write.
+
+    "Added-only is new" reads a name off the diff and never asks what the file
+    already says. A `cfg` split writes one arm and leaves the other alone, so the
+    name is in `born`, absent from `gone`, and the whole audit is skipped:
+    `EF_META` gained a `#[cfg(kani)]` arm at `0x0017` beside its untouched
+    `0xE010` one and 246 sites in 39 files went unnamed. Two definitions is the
+    change; which of them the diff happened to write is not.
+
+    Column 0 on both sides — the anchor [`PY_DEF`] already carries, for the same
+    reason. Of the 48 names this tree defines twice in one file, the 7 unindented
+    groups are all `cfg`/feature splits of one item and all 26 indented ones are a
+    `const` re-declared in a second test fn, which no other function can see.
+
+    One file, not the tree: a namesake in another module is ordinary, and asking
+    `git grep` instead took the last 120 commits from 26 firing to 41 — every new
+    `scripts/` module fires on `def main(`, `def audit(`, `ROOT`. What that gives
+    up is a second definition landing in a *different* file from the first; a
+    guard that cries wolf is a guard someone deletes.
+    """
+    return any(
+        not line[:1].isspace() and num not in added and defined(line, path) == name
+        for num, line in enumerate(lines, 1)
+    )
+
+
 def redefinitions(touched, cut, gone, born, where, post):
     """{name: defining file} for every definition this change altered in place.
 
-    Added-only is new (nothing uses it yet) and removed-only is a deletion, which
+    Added-only is new — unless the name already had a definition, and then the
+    *pair* is the change ([`second_definition`]). Removed-only is a deletion, which
     every consumer's compiler already refuses. A definition line re-emitted
     identically on both sides is a block rewrite around it, not a change to it.
     """
@@ -326,7 +354,9 @@ def redefinitions(touched, cut, gone, born, where, post):
         for num in added | anchors:
             below = num not in added
             name = enclosing_def(lines, num - 1, path, below=below)
-            if not name or name in fresh or name in out:
+            if not name or name in out:
+                continue
+            if name in fresh and not second_definition(name, lines, added, path):
                 continue
             # The definition's own line, unchanged on both sides: a rewrite around
             # it, already excluded above. An anchor is not a written line, so the

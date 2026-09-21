@@ -275,22 +275,30 @@ pub fn put_pin_verifier<S: Storage>(
     r
 }
 
+/// Is `fid` provisioned? A probe the medium could not answer is a memory failure
+/// here, never an absence: every guard below writes a FACTORY DEFAULT over the
+/// file it reads absent, so one faulted `EF_PIN` probe replaced the owner's
+/// verifier and `VERIFY 123456` opened the card. `Fs::has_data` collapses the two.
+fn provisioned<S: Storage>(fs: &mut Fs<S>, fid: u16) -> Result<bool, Sw> {
+    fs.try_has_data(fid).map_err(|_| Sw::MEMORY_FAILURE)
+}
+
 /// Create the PIN/PUK/retry files, the default management key and the F9
 /// attestation key + its self-signed P-384 certificate on first use.
 /// Idempotent — every step is guarded by a has-data check.
 pub fn scan_files<S: Storage>(dev: &Device, fs: &mut Fs<S>, rng: &mut dyn Rng) -> Result<(), Sw> {
-    if !fs.has_data(EF_PIN) {
+    if !provisioned(fs, EF_PIN)? {
         put_pin_verifier(dev, fs, EF_PIN, &DEFAULT_PIN)?;
     }
-    if !fs.has_data(EF_PUK) {
+    if !provisioned(fs, EF_PUK)? {
         put_pin_verifier(dev, fs, EF_PUK, &DEFAULT_PUK)?;
     }
-    if !fs.has_data(EF_RETRIES) {
+    if !provisioned(fs, EF_RETRIES)? {
         let d = DEFAULT_RETRIES;
         fs.put(EF_RETRIES, &[d, d, d, d])
             .map_err(|_| Sw::MEMORY_FAILURE)?;
     }
-    let minted_mgm = !fs.has_key(key_fid(SLOT_CARDMGM));
+    let minted_mgm = !provisioned(fs, key_fid(SLOT_CARDMGM).get())?;
     if minted_mgm {
         let mut key = DEFAULT_MGM;
         let r = seal::seal_put(dev, fs, rng, key_fid(SLOT_CARDMGM), &key);
@@ -303,13 +311,14 @@ pub fn scan_files<S: Storage>(dev: &Device, fs: &mut Fs<S>, rng: &mut dyn Rng) -
     // goes in phase 1 of the device-wide wipe, so a tear between them leaves a live
     // key whose `meta_find` fails and `general_authenticate` answers
     // REFERENCE_NOT_FOUND for good. The other direction is `force_delete`, which
-    // drops the key even when its own `meta_delete` failed (`let _ =`): a stale
-    // AES-256 head left over a re-minted 24-byte DEFAULT_MGM wedges the slot on the
-    // length compare, and RESET runs this very path, so nothing would clear it. The
-    // mint arm is therefore an unconditional rewrite — `meta_add` replaces.
+    // drops the key whatever its own `meta_delete` did: a stale AES-256 head left
+    // over a re-minted 24-byte DEFAULT_MGM wedges the slot on the length compare,
+    // and RESET runs this very path, so nothing would clear it. The mint arm is
+    // therefore an unconditional rewrite — `meta_add` replaces.
     let have_meta = {
         let mut meta = [0u8; 8];
-        fs.meta_find(key_fid(SLOT_CARDMGM).get(), &mut meta)
+        fs.try_meta_find(key_fid(SLOT_CARDMGM).get(), &mut meta)
+            .map_err(|_| Sw::MEMORY_FAILURE)?
             .is_some()
     };
     if minted_mgm || !have_meta {
@@ -344,7 +353,7 @@ pub fn scan_files<S: Storage>(dev: &Device, fs: &mut Fs<S>, rng: &mut dyn Rng) -
                 .map_err(|_| Sw::MEMORY_FAILURE)?;
         }
     }
-    if !fs.has_key(key_fid(SLOT_ATTESTATION)) {
+    if !provisioned(fs, key_fid(SLOT_ATTESTATION).get())? {
         let key = PrivKey::generate(Curve::P384, &mut crate::EcRng(rng)).ok_or(Sw::EXEC_ERROR)?;
         seal::store_ec_key(dev, fs, rng, key_fid(SLOT_ATTESTATION), &key)?;
         let mut point = [0u8; MAX_EC_POINT];
@@ -407,6 +416,11 @@ fn is_piv_secret_fid(fid: u16) -> bool {
 /// each phase separately, which is strictly tighter than the old single sweep.
 const RESET_MAX_DELETES: u32 = 768;
 
+/// Fids one [`sweep`] pass collects before deleting them. Named because the wrap
+/// to a second pass is a code path, and the test that crosses it has to size its
+/// fixture off this rather than off a copy of the number.
+pub(crate) const SWEEP_BATCH: usize = 32;
+
 /// Factory-reset the applet: delete every PIV file and meta record
 /// (`is_piv_fid`), then re-create the defaults. Scoped to the PIV fid range —
 /// the other applets' data must survive a PIV reset.
@@ -420,26 +434,63 @@ pub fn reset_files<S: Storage>(dev: &Device, fs: &mut Fs<S>, rng: &mut dyn Rng) 
     wiped.and(ensured)
 }
 
-/// Delete every live PIV file and meta record.
+/// Delete every live PIV file and meta record, with the at-rest lap re-armed
+/// around the sweeps.
+fn wipe_piv<S: Storage>(fs: &mut Fs<S>) -> Result<(), Sw> {
+    // A tombstone appends like a re-seal, and EF_PIN / EF_PUK migrate only on their
+    // own verify — so this can supersede a chip-serial-rooted verifier and owes the
+    // at-rest lap (rsk-fs `EF_HARDENED`) a re-arm, ahead of the sweeps.
+    //
+    // The failure does NOT stop the write, unlike the gated sites: "leave the
+    // record in force" means, on a wipe, leave the secrets live.
+    let _ = rsk_fs::request_rescrub(fs);
+    let swept = sweep_phases(fs);
+    // Retry, BETWEEN the sweeps and their `?` rather than after their last one: a
+    // refused head leaves the marker latched over every tombstone [`sweep_phases`]
+    // appended, and a sweep that faults on the way is exactly when that is true and
+    // unrecoverable.
+    //
+    // A single-shot refusal is the only kind either call recovers from (`rsk_otp`'s
+    // BUMP_TRIES states the same), and where the head landed this costs no append at
+    // all — `Fs::delete` skips a backend it already marked absent.
+    let _ = rsk_fs::request_rescrub(fs);
+    swept
+}
+
+/// The delete half of [`wipe_piv`].
 ///
 /// Two phases, and the order carries the security property (the rule `wipe_oath`
 /// states, which this function is the sibling of): `for_each_key` yields in
 /// flash-ring order, not FID order, so one combined sweep can reach the PIN before
 /// the keys — and a power cut there lets `scan_files` re-seed the factory PIN over
 /// slot keys that are still live and, unlike OpenPGP's, not PIN-bound at rest.
-fn wipe_piv<S: Storage>(fs: &mut Fs<S>) -> Result<(), Sw> {
-    sweep(fs, is_piv_secret_fid)?;
-    sweep(fs, is_piv_gate_fid)
+///
+/// Its own function so the at-rest re-arm can stand between it and its caller's
+/// answer: every early return in here is one a re-arm written BELOW them would be
+/// skipped by, which is the case that re-arm exists for.
+fn sweep_phases<S: Storage>(fs: &mut Fs<S>) -> Result<(), Sw> {
+    let secrets = sweep(fs, is_piv_secret_fid)?;
+    let gates = sweep(fs, is_piv_gate_fid)?;
+    if secrets || gates {
+        return Err(Sw::MEMORY_FAILURE);
+    }
+    Ok(())
 }
 
 /// One phase of [`wipe_piv`]: delete every live fid matching `pred`. Batched
 /// because `for_each_key` cannot delete mid-iteration, and DE-DUPED because it
 /// yields one entry per stored *version*: a batch of superseded copies is not a
 /// batch of distinct fids.
-fn sweep<S: Storage>(fs: &mut Fs<S>, pred: fn(u16) -> bool) -> Result<(), Sw> {
+///
+/// `Ok(true)` is "the range is clear, and an EF_META head over it could not be
+/// PROVEN dropped" — PIV mints the only heads, so this is the phase where that half is not
+/// vacuous. Carried to the end of the wipe rather than stopped on, for the reason
+/// `Fs::force_delete_halves` states.
+fn sweep<S: Storage>(fs: &mut Fs<S>, pred: fn(u16) -> bool) -> Result<bool, Sw> {
     let mut deleted = 0u32;
+    let mut orphaned = false;
     loop {
-        let mut fids = [0u16; 32];
+        let mut fids = [0u16; SWEEP_BATCH];
         let mut n = 0;
         let complete = fs.for_each_key(&mut |fid| {
             if pred(fid) && n < fids.len() && !fids[..n].contains(&fid) {
@@ -451,7 +502,7 @@ fn sweep<S: Storage>(fs: &mut Fs<S>, pred: fn(u16) -> bool) -> Result<(), Sw> {
             // A truncated walk (flash read fault) can hide a live fid, so an empty
             // batch only proves the range is clear when the enumeration completed.
             return if complete {
-                Ok(())
+                Ok(orphaned)
             } else {
                 Err(Sw::MEMORY_FAILURE)
             };
@@ -466,7 +517,13 @@ fn sweep<S: Storage>(fs: &mut Fs<S>, pred: fn(u16) -> bool) -> Result<(), Sw> {
             // force_delete (unconditional, and it drops the meta record itself):
             // `delete` skips a false-absent file that `for_each_key` keeps
             // yielding, so the sweep would spin instead of converging.
-            fs.force_delete(fid).map_err(|_| Sw::MEMORY_FAILURE)?;
+            let gone = fs.force_delete_halves(fid);
+            gone.value.map_err(|_| Sw::MEMORY_FAILURE)?;
+            orphaned |= gone.record.is_err();
         }
     }
 }
+
+#[cfg(test)]
+#[path = "files_tests.rs"]
+mod tests;

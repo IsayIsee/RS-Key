@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 RS-Key contributors
+#
+# A board row whose CLASS is not a silicon class. It is here because the
+# obligation is keyed on who can discharge it, not on what it is about: the
+# route ends at a board and a PC/SC reader, so it ends where nobody in this
+# repository can follow it.
+
+assumption = "PLAT-INPUT-001"
+method = """`python tests/53_ccid_pinpad.py` against a DISPLAY board through a real PC/SC stack with a `FEATURE_VERIFY_PIN_DIRECT` reader. The standard build leaves `bPINSupport = 0x00` and refuses `PC_to_RDR_Secure`, so the row cannot be answered on the default image at all, and the emulator's socket has no reader layer to exercise."""
+boot_config = """A display build. Record which reader, because the claim is about that layer and not about the card."""
+expected = """The PIN entered at the reader's own pad reaches the card and spends the SAME persistent retry budget the CCID path spends. PASS = a wrong PIN at the pad decrements the counter and a correct one refills it. FAIL = a verify that does not reach the ladder, which is an unmetered guessing channel. INCONCLUSIVE = the reader does not advertise the feature, so nothing was exercised."""
+outcome = "planned"
+board = ""
+stepping = ""
+firmware_sha256 = ""
+first_boot_capture = ""
+actual = ""

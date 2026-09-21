@@ -58,20 +58,56 @@ ABSTRACT_FIELDS = {
     "persistent_grant": "persistentGrant",
 }
 
-MODEL_ACTIONS = {
-    "PressDown", "PressUp", "HostCancel", "HostCancelLatched", "TouchConfirm",
-    "TouchCancel", "TouchTimeout", "LocalCeremonyStart", "LocalCeremonyEnds",
-    "OtpCancelWait", "GetPinToken", "WrongPin", "MintPpuat", "LocalPinWrong",
-    "LocalPinOk", "SetPinStart", "SetPinClearPpuat", "SetPinWrite",
-    "ChangePinStart", "ChangePinClearPpuat", "ChangePinWrite",
-    "ChangePinRotateToken", "StopUsingToken", "RegisterStart", "RegisterTouched",
-    "RegisterRefused", "RegisterWriteA", "RegisterWriteB", "AssertStart",
-    "AssertFinish", "ConfigOp", "BackupFinalize", "DeviceUnlock",
-    "CmBeginViaToken", "CmBeginViaPpuat", "CmNext", "DeleteCredStart",
-    "DeleteCredWriteA", "DeleteCredWriteB", "ResetStart", "ResetRefused",
-    "ResetConfirmed", "ResetSweepSecrets", "ResetSweepGates", "ResetFinish",
-    "ResetAborts", "PowerCut", "WarmReset", "Tick", "WalkExpires",
-}
+#: A definition body that steps: it primes a variable or declares what does not
+#: move. What separates an ACTION from a set or a string constant, both of which
+#: `Next` also names.
+STEPS = re.compile(r"[A-Za-z0-9_\]]'|UNCHANGED")
+#: The floor under the derivation below, AT today's count the way `threat_gate`
+#: holds its own: a derivation that finds nothing satisfies "every action was
+#: reached" over an empty roster, which is the silent-green shape this file is
+#: against, and one that finds FEWER is a model that shrank. Either is a
+#: deliberate edit here, in the same change.
+MODEL_ACTION_FLOOR = 53
+
+
+def model_actions(module: Path | None = None, floor: int = MODEL_ACTION_FLOOR) -> set[str]:
+    """The security model's action roster, read out of the model.
+
+    Held by nothing before this: a 53-name set was written here by hand and read
+    in exactly one place — `unreached = MODEL_ACTIONS - reached` — so a name that
+    fell out of it silently shortened the list of actions nobody recorded. The
+    roadmap's own lesson names this file as one of two registries the tree does
+    not hold; measured before the change, the hand-written set and this derivation
+    agreed EXACTLY at 53, so nothing moves but the source.
+
+    The rule: a name disjuncted into `Next` whose own definition steps. Comments
+    are cut FIRST, and that is not tidiness — with them in, the derivation returns
+    54, because `Otp == "otp"` is a string constant and the comment block under it
+    carries an apostrophe that the prime test matches. Same trap
+    `verdict_gate.statements` carries, one file over.
+    """
+    text = (module or FORMAL / "RSKeySecurityState.tla").read_text(encoding="utf-8")
+    plain = "\n".join(line.split("\\*", 1)[0] for line in text.splitlines())
+    bodies: dict[str, str] = {}
+    for found in re.finditer(
+        r"^([A-Z][A-Za-z0-9_]*)(\([^)]*\))?\s*==([\s\S]*?)"
+        r"(?=^[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s*==|\Z)",
+        plain,
+        re.M,
+    ):
+        bodies.setdefault(found.group(1), found.group(3))
+    named = set(re.findall(r"\b([A-Z][A-Za-z0-9_]*)\b", bodies.get("Next", "")))
+    out = {n for n in named if n in bodies and STEPS.search(bodies[n])}
+    if len(out) < floor:
+        raise RuntimeError(
+            f"{module or 'RSKeySecurityState.tla'}: derived {len(out)} model actions,"
+            f" under the floor of {floor} — the derivation broke, or the model shrank;"
+            " an empty roster makes `unreached` empty for the wrong reason"
+        )
+    return out
+
+
+MODEL_ACTIONS = model_actions()
 
 OUTCOME_BY_ACTION = {
     "GetPinToken": "Authorized",
@@ -86,6 +122,16 @@ OUTCOME_BY_ACTION = {
     "DeleteCredStart": "Authorized",
     "RegisterRefused": "Rejected",
     "ResetRefused": "Rejected",
+    # The two the shrug audit below found missing, and they were the whole reason
+    # two boundaries with a live B interpretation still reached R4b with nothing
+    # to compare. `WrongPin` is only ever emitted where BOTH PIN counters moved,
+    # which is a comparison that failed and cannot answer 0x00; `ResetFinish` is
+    # only ever emitted by `reset_path`, which the in-window branch takes after
+    # asserting the store came back empty. Measured: 12 of the model's 53 actions
+    # were mapped, 20 of the recording's 40 boundaries shrugged, and these two
+    # cover 2 of them — the other 18 are the registered classes under this.
+    "WrongPin": "Rejected",
+    "ResetFinish": "Authorized",
 }
 
 AMBIGUOUS_RATCHET = "@TraceSecurityAmbiguousMax"
@@ -99,7 +145,7 @@ OUTCOMES_RATCHET = "@TraceSecurityOutcomesMin"
 # command space, so it cannot collide with a real command byte.
 POWER_CYCLE = 0xFF
 
-# `crates/rsk-fido/src/consts.rs:400`, applied at `crates/rsk-fido/src/reset.rs:187`
+# `crates/rsk-fido/src/consts.rs:404`, applied at `crates/rsk-fido/src/reset.rs:260`
 # as `!warm_boot && now_ms <= RESET_WINDOW_MS`. The model abstracts the clock to
 # `ResetWindow` plus a `Tick`; the mapper needs the real bound.
 RESET_WINDOW_MS = 10_000
@@ -130,6 +176,63 @@ RESET_GATE_CODES = {0x00, 0x30}  # served, or the window's own NOT_ALLOWED
 # permissions moves NO raw field, so without the subcommand it is a bare stutter
 # and B claims nothing at a boundary that is plainly an issuance.
 TOKEN_SUBCOMMANDS = {0x05, 0x06, 0x09}
+
+# --- the boundaries B is ENTITLED to say nothing at ---------------------------
+
+# Stage 4's "no `NO-OPINION` on P0-launch outcome boundaries" was DEGENERATE, and
+# the mechanism was one word: `generate` disposed of a NO-OPINION consensus with a
+# bare `pass` and appended an outcome boundary only in the `else` arm, so a shrug
+# was never counted as an outcome boundary and the criterion could only ever hold
+# vacuously. Measured on the committed recording before the rule below: 40 events,
+# 20 of them NO-OPINION, C naming an outcome on every one (18 Authorized, 2
+# Rejected) while B was never asked. `@TraceSecurityOutcomesMin` is a FLOOR and
+# floors here are deliberately loose (`floors.txt`'s own header: "an ORDER OF
+# MAGNITUDE, not a pin"), so a retreat that stays above it costs nothing — which
+# is exactly what dropping `WrongPin` from the mapping does, at 14 over a floor of
+# 13. The rule is therefore per-event and not another count: a shrug on a
+# non-gate boundary that carries a real response code DIES unless one of the
+# classes below excuses it, by a test on the event's OWN fields.
+#
+# Each class carries the reason it is entitled to silence and a cap EQUAL to what
+# the recording holds today -- equal and not an upper bound, for `run_count_gate`'s
+# measured reason: "a cap with headroom is a cap nothing has to move". Widening a
+# class is then an edit here, in the diff that needs it.
+NO_OPINION_EXEMPTIONS = {
+    "unmodelled-command": (
+        "the security model has no action for this command at all, so B's silence"
+        " is the MODEL's scope rather than the mapper retreating -- getInfo and"
+        " getNextAssertion move nothing this state space names",
+        10,
+    ),
+    "unmodelled-clientpin-subcommand": (
+        "getPinRetries and getKeyAgreement are read-only doors the model does not"
+        " give an action to, so the subcommand -- not the raw footprint they share"
+        " with a token re-issuance -- is what says B has nothing to claim here",
+        6,
+    ),
+    "refusal-is-a-disabled-action": (
+        "the model expresses a refusal by DISABLING an action, and a disabled"
+        " action reaches the replay as a stutter, which can be anything; the gate"
+        " rules are where a refusal IS predicted, and this is not one of them",
+        1,
+    ),
+    "pseudo-command": (
+        "a power cycle is not a CTAP command and has no response: `outcome_raw` is"
+        " the literal 0 that `tools/emu/src/device.rs:754-755` passes as the status,"
+        " so agreeing with `delta_c` of it would be agreeing with a placeholder",
+        1,
+    ),
+}
+
+# Commands the security model gives no action to. Read against `MODEL_ACTIONS` by
+# nothing, because there is nothing to read: the absence of an action is what the
+# class asserts, and only a human comparing `Next` with §6 can say so.
+MODEL_SILENT_COMMANDS = {0x04, 0x08}
+# `clientpin.rs:136`'s read-only arms, the complement of `TOKEN_SUBCOMMANDS` that
+# still reaches the mapper: getPinRetries and getKeyAgreement. setPIN (0x03) is
+# deliberately absent -- it IS modelled, and the one recorded boundary where it
+# answers an error lands in `refusal-is-a-disabled-action` instead.
+MODEL_SILENT_SUBCOMMANDS = {0x01, 0x02}
 
 
 def die(message: str) -> None:
@@ -200,8 +303,10 @@ def new_ledger() -> dict:
     relying party onto one model element, and the raw slot counters cannot say
     how many that is. Nothing here is read back from the trace.
     """
+    # `ppuat_rec` is B's `gate.ppuatRec`: `ensure_seed` mints the grant record with
+    # the seed, so a fresh store and a finished reset both hold one.
     return {"seed": True, "cred": set(), "rpent": set(), "pin_set": False,
-            "always_uv": False, "ppuat": False, "sealed": False, "clock": 0}
+            "always_uv": False, "ppuat_rec": True, "sealed": False, "clock": 0}
 
 
 def reset_path(ledger: dict) -> list[tuple[str, str]]:
@@ -224,7 +329,7 @@ def reset_path(ledger: dict) -> list[tuple[str, str]]:
         die("a store with records but no seed has no modelled sweep length")
     # `SealedIsASecret` needs `BugBackupSealedNotAGate`, which no trace
     # configuration sets, so the seal is counted with the gates below.
-    secrets = int(ledger["seed"]) + int(ledger["ppuat"])
+    secrets = int(ledger["seed"]) + int(ledger["ppuat_rec"])
     gates = int(ledger["pin_set"]) + int(ledger["always_uv"]) + int(ledger["sealed"])
     steps = [
         ("ResetStart", "ResetStart"),
@@ -290,7 +395,7 @@ def reset_gate(event: dict, ledger: dict) -> tuple[list[tuple[str, str]], tuple[
     A refused reset changes nothing, and over an already-empty store neither does
     a second successful one — so the raw footprint cannot tell them apart, and the
     mapper read the refusal that ends `27_reset_window` as a full successful wipe.
-    `now_ms` is what separates them (`reset.rs:187`); B's clock is advanced by
+    `now_ms` is what separates them (`reset.rs:260`); B's clock is advanced by
     `clock_ticks` before this runs, independently of the branch taken here.
     """
     before, after = event["pre"], event["post"]
@@ -326,6 +431,7 @@ def infer(event: dict, ledger: dict) -> tuple[list[tuple[str, str]], tuple[str, 
             ("SetPinWrite", "SetPinWrite"),
         ]
         ledger["pin_set"] = True
+        ledger["ppuat_rec"] = False
     elif (
         command == 0x06
         and after["token_in_use_raw"]
@@ -372,7 +478,7 @@ def infer(event: dict, ledger: dict) -> tuple[list[tuple[str, str]], tuple[str, 
         "always_uv_record_len", "always_uv_raw"
     }:
         # authenticatorConfig toggleAlwaysUv. The model's ConfigOp flips
-        # `gate.alwaysUv` and spends nothing (config.rs:243-247 marks the token
+        # `gate.alwaysUv` and spends nothing (config.rs:248 marks the token
         # used, which is not a raw field), so the record moving IS the signature.
         actions = [("ConfigOp", "ConfigOp")]
         ledger["always_uv"] = bool(after["always_uv_raw"])
@@ -393,11 +499,12 @@ def infer(event: dict, ledger: dict) -> tuple[list[tuple[str, str]], tuple[str, 
         perms = ISSUED_PERMS[after["token_permissions_raw"]]
         actions = [("GetPinToken", f"GetPinToken({perms}, NoRp)")]
     elif command == POWER_CYCLE:
-        # The event kind is the signature, not any state difference: the replayer
-        # is told a power cycle happened and R4a then checks that the raw state
-        # matches what `PowerCut` says one does.
-        actions = [("PowerCut", "PowerCut")]
+        # The event kind is the signature, not a state difference. B's boot MAY mint
+        # the grant record and an unlocked emulator's does, so the ledger predicts it
+        # and pins that branch; R4a then holds the raw state to what `PowerCut` does.
+        actions = [("PowerCut", "/\\ PowerCut /\\ gate'.ppuatRec = TRUE")]
         ledger["clock"] = 0
+        ledger["ppuat_rec"] = True
     elif not changed or changed == {"channel_raw"}:
         actions = [("Stutter", "TraceStutter")]
     else:
@@ -478,6 +585,84 @@ def event_consensus(event: dict, action_names: set[str]) -> str:
     if outcomes != {delta_c(event["outcome_raw"])}:
         return "VIOLATION"
     return "OK"
+
+
+def no_opinion_class(event: dict, action_names: set[str]) -> str | None:
+    """Which registered class excuses B's silence here, or `None` for a finding.
+
+    The order is narrow-first, and what it separates is measured rather than
+    obvious: a clientPIN answering 0x00 can never reach the refusal arm anyway, so
+    the ordering earns its keep only for a getPinRetries or getKeyAgreement that
+    answers an ERROR -- without the subcommand arm first, that lands in
+    `refusal-is-a-disabled-action`, the widest of the four.
+
+    Every arm but the first also requires a BARE stutter, and that coupling is
+    BELT, not the mechanism: deleting the check leaves the row green today, and
+    dropping `WrongPin` on top of it reddens at the CAP
+    (`refusal-is-a-disabled-action=2 > 1`), not at the unexcused list. The caps
+    are what catch an unmapped action now; the coupling is what would still catch
+    it if a cap were ever widened.
+    """
+    if event["command_raw"] == POWER_CYCLE:
+        # The class's whole reason is that `outcome_raw` here is the literal 0
+        # `tools/emu/src/device.rs:754-755` passes for a replug, not a response.
+        # Asserted rather than described: with this unchecked, a power cycle
+        # carrying 0x31 was excused and the row stayed green at 15/18.
+        if event["outcome_raw"] != 0x00:
+            die(
+                f"event {event['sequence']}: a power cycle answered "
+                f"0x{event['outcome_raw']:02x} — the recorder writes 0 there because"
+                " a replug has no response, so this is not the pseudo-command the"
+                " class excuses and B's silence at it is unexplained"
+            )
+        return "pseudo-command"
+    if action_names != {"Stutter"}:
+        return None
+    if event["command_raw"] in MODEL_SILENT_COMMANDS:
+        return "unmodelled-command"
+    if event["command_raw"] == 0x06 and event["subcommand"] in MODEL_SILENT_SUBCOMMANDS:
+        return "unmodelled-clientpin-subcommand"
+    if event["outcome_raw"] != 0x00:
+        return "refusal-is-a-disabled-action"
+    return None
+
+
+def audit_no_opinion(
+    shrugs: list[tuple[int, int, str | None]],
+    exemptions: dict[str, tuple[str, int]] = NO_OPINION_EXEMPTIONS,
+) -> None:
+    """Stage 4's criterion, in the form that can go red.
+
+    The CAPS are a parameter, so a case can drive a smaller registry without
+    monkeypatching the shipped ones downward -- which is how three ceilings one
+    file over shipped never having been exercised against the tree they ship with.
+    Only the caps: `no_opinion_class` still reads `MODEL_SILENT_*` off the module
+    and `validate`'s log line reads the registry off it, so a case that wants to
+    move a CLASS DERIVATION patches the source, which is what the mutation table
+    does. Threading a registry through `generate` as well would buy nothing the
+    table does not already measure.
+    """
+    unexcused = [(seq, raw) for seq, raw, excuse in shrugs if excuse is None]
+    if unexcused:
+        die(
+            "R4b-event no-opinion on "
+            + ", ".join(f"event {seq} (C={delta_c(raw)})" for seq, raw in unexcused)
+            + " — B claims nothing where the device answered; map the action in"
+            " OUTCOME_BY_ACTION, or register the class in NO_OPINION_EXEMPTIONS"
+        )
+    counted: dict[str, int] = {}
+    for _seq, _raw, excuse in shrugs:
+        counted[excuse] = counted.get(excuse, 0) + 1
+    unknown = sorted(set(counted) - set(exemptions))
+    if unknown:
+        die(f"no-opinion class {unknown} is not registered in NO_OPINION_EXEMPTIONS")
+    over = [
+        f"{name}={got} > {exemptions[name][1]}"
+        for name, got in sorted(counted.items())
+        if got > exemptions[name][1]
+    ]
+    if over:
+        die("no-opinion exemption grew: " + ", ".join(over))
 
 
 def trace_verdicts() -> dict[str, str]:
@@ -582,6 +767,7 @@ def generate(events: list[dict], output: Path) -> dict:
     alpha_boundary = None
     outcome_boundaries: list[tuple[int, str, str]] = []
     gates: list[tuple[int, str, bool, str]] = []
+    shrugs: list[tuple[int, int, str | None]] = []
     ambiguous = 0
     ledger = new_ledger()
     for event in events:
@@ -601,15 +787,15 @@ def generate(events: list[dict], output: Path) -> dict:
             if consensus == "AMBIGUOUS":
                 ambiguous += 1
             elif consensus == "NO-OPINION":
-                # B claims nothing here, so there is nothing to disagree with.
-                # B claims nothing here, so there is nothing to disagree with.
-                # What is left is genuinely state-free — `getKeyAgreement`,
-                # `getPinRetries`, a refused `setPIN`. The one shape that used to
-                # hide in this arm, a token RE-ISSUED with the permissions it
-                # already holds, is mapped above now that the recording carries
-                # the subcommand; `@TraceSecurityOutcomesMin` is what keeps it
-                # from quietly falling back here (12 without the rule, 13 with).
-                pass
+                # B claims nothing here — and that is a FINDING unless the event
+                # itself says why. Collected rather than judged in place, so the
+                # whole recording's shrugs reach one audit that can also hold the
+                # classes to their caps; a per-event `die` here would report the
+                # first and never count the rest. This arm was a bare `pass`.
+                shrugs.append(
+                    (event["sequence"], event["outcome_raw"],
+                     no_opinion_class(event, action_names))
+                )
             else:
                 if consensus != "OK":
                     die(
@@ -627,6 +813,7 @@ def generate(events: list[dict], output: Path) -> dict:
             alpha_boundary = pc
     if beta_boundary is None or alpha_boundary is None:
         die("trace must include setPIN and first token issuance for the two mutations")
+    audit_no_opinion(shrugs)
 
     raw_values = [(pc, tla_record(raw, RAW_FIELDS)) for pc, raw, _ in boundaries]
     abstract_values = [
@@ -648,6 +835,12 @@ def generate(events: list[dict], output: Path) -> dict:
         # floor here a mapping that quietly retreats to NO-OPINION -- which is
         # what every un-inferred clientPIN was until the subcommand joined the
         # recording -- costs nothing and reads exactly as green.
+        #
+        # LEFT SLACK ON PURPOSE, and `audit_no_opinion` is why: this is 13 against
+        # a measured 15 now, so a single retreat still clears it, and the per-event
+        # rule is what catches one. Kept as a floor rather than pinned because a
+        # floor here is a floor in the header's sense -- ordinary fidelity churn
+        # must not trip it -- while the EXEMPTION side is pinned exactly instead.
         ("outcome-boundaries", len(outcome_boundaries), ratchet(OUTCOMES_RATCHET)),
     ]
     short = [f"{what}={got} < {want}" for what, got, want in floors if got < want]
@@ -701,6 +894,12 @@ def generate(events: list[dict], output: Path) -> dict:
         "ambiguous": ambiguous,
         "gates": len(gates),
         "outcomes": len(outcome_boundaries),
+        # Per CLASS and not a total, because the caps are per class: a total would
+        # let one class shrink while another grew and read the same either way.
+        "no_opinion": {
+            name: sum(1 for _s, _r, excuse in shrugs if excuse == name)
+            for name in NO_OPINION_EXEMPTIONS
+        },
     }
 
 
@@ -782,8 +981,14 @@ def validate(
         print(
             f"security-trace: GREEN commands={report['commands']} steps={report['steps']} "
             f"distinct_actions={len(report['reached'])} gates={report['gates']} "
-            f"ambiguous={report['ambiguous']}"
+            f"ambiguous={report['ambiguous']} outcomes={report['outcomes']}"
         )
+        # Printed per class, so a reader of the log can see which exemption the
+        # recording is leaning on rather than only that it stayed under its cap.
+        print("security-trace: no-opinion: " + " ".join(
+            f"{name}={got}/{NO_OPINION_EXEMPTIONS[name][1]}"
+            for name, got in sorted(report["no_opinion"].items())
+        ))
         limit = ratchet(AMBIGUOUS_RATCHET)
         if report["ambiguous"] > limit:
             die(f"AMBIGUOUS ratchet missed: {report['ambiguous']} > {limit}")

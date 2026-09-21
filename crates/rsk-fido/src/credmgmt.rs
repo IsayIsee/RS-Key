@@ -257,9 +257,9 @@ fn authorized_by_ppuat<S: Storage, R: Rng>(
     payload: &[u8],
     param: &[u8],
 ) -> bool {
-    // Both issuance paths gate on `EF_PIN` (§6.5.5.7.2/.3), so a grant without one is
-    // a leftover from a build whose wipe deferred `EF_PAUTHTOKEN` past the PIN. The
-    // wipes revoke it with the secrets now; this refuses one already on flash.
+    // Both issuance paths gate on `EF_PIN` (§6.5.5.7.2/.3), but a record can stand
+    // without one: provisioning mints it before any PIN exists, and an older build's
+    // torn wipe could drop the PIN under a grant it had handed out. Neither authorizes.
     if !ctx.fs.has_data(EF_PIN) {
         return false;
     }

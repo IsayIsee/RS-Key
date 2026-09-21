@@ -5,12 +5,19 @@
 
 `cargo kani` is invoked with a hand-written `-p` list, and a crate that is not on
 it is not proven — but nothing says so. The row was named "prove every harness"
-and it was running 29 of 49. Never added: `rsk-ui` (12 proofs, the trusted
-display's touch-target geometry — the anti-phishing consent surface), `rsk-led`
-(5 over `EF_LED_CONF`, a persisted record with a published wire format),
-`rsk-slip39` and `rsk-bip39`. Green daily, asserting nothing about any of them. A
-harness in an unlisted crate is worse than no harness, because the reviewer
-believes it runs.
+and it was running 29 of 49. Never added: `rsk-ui` (the trusted display's
+touch-target geometry — the anti-phishing consent surface), `rsk-led`
+(`EF_LED_CONF`, a persisted record with a published wire format), `rsk-slip39`
+and `rsk-bip39`. Green daily, asserting nothing about any of them. A harness in
+an unlisted crate is worse than no harness, because the reviewer believes it
+runs.
+
+No per-crate count is written in that sentence any more, and the deletion is the
+point: it used to say "`rsk-ui` (12 proofs" and the crate carried 14, in the same
+words `assurance/crates.toml` and the `--write-readme` mirror of it in
+formal/README.md were also carrying. A count belongs where something derives it,
+so the ledger's is held to the tree by [`ledger_claims`] and this file states
+none.
 
 Third time a gate script has been the finding rather than the instrument (after
 the test filter that matched nothing and the fuzz row blind to `[[bin]]`
@@ -50,12 +57,25 @@ because two `*_kani.rs` files discuss `kani::cover!` in prose, and a spelling
 neither counter can see is refused by name rather than skipped: an uncounted
 harness is a floor set one too low, which is the drift, and it would be silent.
 
-Nothing outside `scripts/kani.sh` may write a `-p` roster into a workflow or into
-that page. That is the rule the old three-way string comparison was standing in
-for, and it is the one that stops a fifth copy from appearing the day someone
-wants a fifth tier. A `cargo kani -p <crate>` in a source file's doc comment is
-not in scope: it tells a reader how to run one crate, it does not claim to say
-what CI proves.
+Nothing outside `scripts/kani.sh` may write a `cargo kani` package selection into
+a file that runs one. That is the rule the old three-way string comparison was
+standing in for, and it is the one that stops a fifth copy from appearing the day
+someone wants a fifth tier. It used to be a rule about three NAMED files, and the
+list is what kept going wrong. `scripts/check.sh` arrived on it late, because it
+was in NEITHER guard's reach: this one read the workflows and the page, and
+`roster_gate.py` reads `check.sh` but hands the `kani` verb over by name —
+correctly, since its rule is "selects the whole tree" and a Kani row selects the
+proof-carrying subset on purpose. The hand-off went nowhere, and adding one file
+to the list left the same hand-off open one file over: `nix/checks.nix` runs
+`cargo`, `roster_gate` reads it and hands `kani` over, and a live
+`cargo kani -p rsk-sha512 -p rsk-ec` there measured GREEN under both guards after
+the fix. So is a roster in any other `scripts/*.sh`, one in a `.yaml` workflow
+(the glob was `*.yml`), and one an expansion fills in (`-p "$c"` matches no crate
+name). All four are closed by asking the CHECKOUT rather than a list — see
+[`sources`] — and all four were found latent, which is the state every guard hole
+in this tree has been found in. A `cargo kani -p <crate>` in a source file's doc
+comment or an evidence bundle is still not in scope: it tells a reader how one
+run was made, it does not claim to say what CI proves.
 
 Deliberately syntactic. It cannot say a harness proves anything worth proving —
 that is the harness's own business — only that the solver is pointed at it.
@@ -66,15 +86,34 @@ import pathlib
 import re
 import subprocess
 import sys
+import tomllib
 
 import gate_lines
+import roster_gate
+import toolchain_gate
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WORKFLOWS = pathlib.Path(".github/workflows")
 DOCS = pathlib.Path("docs/testing.md")
 RUNNER = pathlib.Path("scripts/kani.sh")
-#: Where the version CI installs is written down.
-PINNED_IN = pathlib.Path(".github/workflows/deep-checks.yml")
+#: The gate script. Not a workflow, so no pin is looked for in it — but a tier
+#: named on one of its rows is a tier CI runs, because the merge gate is a CI
+#: row, and that is the whole of what this constant now decides. Which files are
+#: read for a roster is [`sources`]' walk and no longer a list this could be
+#: missing from.
+CHECK = pathlib.Path("scripts/check.sh")
+#: The crate ledger. `assurance_gate.py --write-readme` mirrors its prose into
+#: formal/README.md, so a count stated here is stated twice and repaired once.
+LEDGER = pathlib.Path("assurance/crates.toml")
+
+#: A proof count claimed in the ledger's prose. Only this shape, and only inside a
+#: `[crate.X]` table, because that is what makes the number decidable: the section
+#: says which crate, and both spellings the ledger uses — a digit and the word
+#: `zero` — then count. A claim in ordinary prose elsewhere is not, and a rule
+#: that hunted for one would fire on every sentence about proofs — the shape a
+#: guard gets switched off for. Live claims when this landed: three, on `rsk-ui`,
+#: `rsk-ec` and `rsk-sha512`.
+CLAIM = re.compile(r"\b(?:(\d+)|zero|no) Kani proofs?\b")
 
 #: Crates with a harness the daily row deliberately does not run, each with the
 #: measured reason. An exclusion is a debt, so it is checked too: one naming a crate
@@ -90,9 +129,12 @@ EXCLUDED = {
 #: the one the coverage question is asked of.
 FULL = "all"
 
-#: The version the workflow pins and the docs tell a reader to install. Kani's
-#: verdicts are version-dependent, so an unpinned local install is a different tool.
-PINNED = re.compile(r'KANI_VERSION:\s*"([\d.]+)"')
+#: The name the workflows pin the prover with. Kani's verdicts are
+#: version-dependent, so an unpinned local install is a different tool.
+PIN_VAR = "KANI_VERSION"
+#: The shape a pin has to have. `latest` is an assignment, not a pin; the quotes
+#: the earlier spelling of this required are YAML's and not part of the value.
+PINNED = re.compile(r"[\d.]+")
 DOC_PIN = re.compile(r"kani-verifier --version ([\d.]+)")
 
 #: An invocation of the tier runner, with or without a `./` and whatever drives it.
@@ -155,13 +197,14 @@ def tiers(root):
     return out
 
 
-def statements(text, yaml):
-    """(line, is inside a step's `run:`) over a workflow or a page of prose."""
-    if yaml:
-        yield from gate_lines.yaml_runs(text)
-    else:
-        for _indent, body in gate_lines.logical_lines(text):
-            yield body, False
+def is_workflow(read):
+    """Whether a source is a workflow — the only shape with a matrix or a pin.
+
+    Asked of the reader it is walked with, not of a second list of paths: the
+    reader is what decides which lines of the file run, so one answer decides
+    both and a file cannot be a workflow to one clause and prose to the next.
+    """
+    return read is gate_lines.yaml_runs
 
 
 def matrices(text):
@@ -222,7 +265,7 @@ def referenced_keys(text):
     }
 
 
-def uses(rel, text, yaml):
+def uses(rel, text, read):
     """Every `scripts/kani.sh <tier>` on `text`, flagged executed or not.
 
     Executed means inside a step's `run:` scalar *and* left of the `#` — the only
@@ -233,8 +276,8 @@ def uses(rel, text, yaml):
     row proves one tier per runner, and which tiers those are is in the matrix,
     not on the `run:` line.
     """
-    table = matrices(text)[0] if yaml else {}
-    for body, in_run in statements(text, yaml):
+    table = matrices(text)[0] if is_workflow(read) else {}
+    for body, in_run in read(text):
         live, quoted = gate_lines.split_at_comment(body)
         for segment, executed in ((live, in_run), (quoted, False)):
             for found in INVOKED.finditer(segment):
@@ -246,19 +289,124 @@ def uses(rel, text, yaml):
                     yield Use(rel, value, executed)
 
 
-def handwritten(rel, text, yaml):
-    """Every hand-written `cargo kani … -p …` on `text` — there should be none."""
-    for body, _in_run in statements(text, yaml):
+def handwritten(rel, text, read):
+    """Every hand-written `cargo kani` package selection on `text` — there should be none.
+
+    A commented-out one counts, in the gate script as in a workflow header: a
+    roster nobody runs today is one somebody uncomments, and either way it is a
+    second list a reader copies. The carve-out is the FILE SET and not a rule
+    inside this loop — a source file's doc comment is never opened here.
+
+    All of `gate_lines.selection`, not `-p` alone. A `for c in rsk-a rsk-b; do
+    cargo kani -p "$c"; done` is a roster written in shell, and it was invisible
+    because the operand is not a crate name; a `--manifest-path` picks the crate
+    by its directory instead. Both are the list this file forbids, spelled so the
+    matcher walks past.
+    """
+    for body, _executed in read(text):
         for found in KANI.finditer(body):
-            if gate_lines.packages(body[found.start() :]):
-                yield rel
+            tail = body[found.start() :]
+            selected = gate_lines.selection(tail)
+            spelled = (
+                sorted(f"-p {crate}" for crate in selected.named)
+                + [f"--manifest-path {raw}" for raw in selected.manifests]
+                + [g for g in selected.generated if gate_lines.PKG_GENERATED.match(g)]
+            )
+            if spelled:
+                yield rel, " ".join(spelled)
+
+
+#: The suffixes of a file that RUNS a command, and so a file a roster can be
+#: written into. `.md`, `.toml` and `.rs` are deliberately out: they QUOTE one —
+#: `assurance/bundle/*.toml` records a real `cargo kani -p rsk-fido --harness …`
+#: run seven times over, and each is a record of what was done, not a claim about
+#: what CI proves.
+RUNS_CARGO = (".sh", ".nix")
+
+#: A file this guard reads, and whether a `scripts/kani.sh <tier>` written there
+#: says anything about which tiers exist and which CI runs. The flag is the
+#: difference between the walk's two questions and it is not cosmetic: measured
+#: with the walk and no flag, `scripts/reproduce.sh`'s two recipe strings name
+#: six tiers between them — so deleting a workflow's Kani row would have been
+#: covered by a string in a help table — while `formal/run-tlc.sh` names
+#: `scripts/kani.sh` twice in prose and both read as tiers that do not exist.
+#: Two findings in opposite directions off one widening, which is the shape a
+#: guard gets switched off for.
+Source = collections.namedtuple("Source", "path text read ci")
 
 
 def sources(root):
-    """The files that claim to say what CI proves: every workflow, and the page."""
-    for path in sorted((root / WORKFLOWS).glob("*.yml")):
-        yield path.relative_to(root), path.read_text(), True
-    yield DOCS, (root / DOCS).read_text(), False
+    """Every file that runs a command, with its reader and what its tiers mean.
+
+    Two questions off one walk. Whether a second `-p` roster exists is asked of
+    the whole checkout — every workflow, every `.sh`, every `.nix`, and the page
+    — because a named list of files is how this guard's last hole was shaped:
+    `nix/checks.nix` runs `cargo`, `roster_gate` has read it since the day it was
+    written and hands the `kani` verb over, and this file read the workflows,
+    the page and `scripts/check.sh`. A roster there was the second roster this
+    file exists to forbid and both guards printed `ok` — the identical
+    hand-off-to-nowhere `7ab2428` closed one file over, and it survived that
+    commit. The other three spellings measured green the same day: a roster in
+    any other `scripts/*.sh`, one in a `.yaml` workflow (the glob was `*.yml`),
+    and one an expansion fills in.
+
+    Which tiers CI proves is the narrower question, and only the four files that
+    ANSWER it are asked: a `./scripts/kani.sh pr` inside a help table is not a CI
+    row, and a `scripts/kani.sh` in a sentence is not a tier. The set is derived
+    from `gate_lines.tree_files` for the reason `roster_gate.stray_excludes`
+    derives its own: the copy that got away was invisible to a census that was
+    told where to look, and the walk costs 0.02 s over 1514 files.
+
+    `roster_gate.py`'s readers, not a second set of them, for the reason this
+    file already asks `toolchain_gate` what an `env:` block says. Which reader a
+    file gets decides one thing here and not the other: [`handwritten`] discards
+    the executed flag by design, so `shell` and `prose` give the roster rule
+    IDENTICAL line sets, while [`uses`] reads it — a `./scripts/kani.sh <tier>`
+    row in `check.sh` is a CI row under `shell` and a quotation under `prose`.
+    Measured both ways: on the shipped tree the choice is worth nothing in either
+    rule, because `check.sh` runs no tier at all; move `ci.yml`'s `state` row into
+    `check.sh` and `prose` goes red saying no CI row runs that tier while `shell`
+    stays green. `7ab2428` recorded that arm on the `all` tier, which the weekly
+    workflow row runs and `check.sh` never did, and it does not reproduce.
+    """
+    for rel in sorted(gate_lines.tree_files(root)):
+        if rel == RUNNER:
+            continue  # the tier table itself; every roster in it is the roster
+        if rel.parent == WORKFLOWS and rel.suffix in (".yml", ".yaml"):
+            read, ci = gate_lines.yaml_runs, True
+        elif rel == DOCS:
+            read, ci = roster_gate.prose, True
+        elif rel.suffix in RUNS_CARGO:
+            read, ci = roster_gate.shell, rel == CHECK
+        else:
+            continue
+        try:
+            yield Source(rel, (root / rel).read_text(), read, ci)
+        except (OSError, UnicodeDecodeError):
+            continue
+
+
+def workflow_pins(root):
+    """{workflow -> every value its `env:` blocks give [`PIN_VAR`]}.
+
+    EVERY workflow, because the name is assigned three times across two files —
+    ci.yml:155, deep-checks.yml:354 and :446 — and this read deep-checks.yml
+    alone. Measured before the change: moving ci.yml's literal alone was exit 0
+    here, and so was moving deep-checks.yml's SECOND assignment, which a
+    `search` for the first never reached.
+
+    `toolchain_gate.env_values` is the reader rather than a second regex, for the
+    reason `platform_gate` asks `claims_gate.is_generated` instead of re-reading
+    its mapping: it judges the `env:` block structurally, so a `with:` or
+    `inputs:` key of the same name is not taken for a pin, and one reading of a
+    workflow is one answer to what CI installs.
+    """
+    return {
+        str(source.path): values
+        for source in sources(root)
+        if is_workflow(source.read)
+        and (values := toolchain_gate.env_values(source.text, PIN_VAR))
+    }
 
 
 def blanked(chunk):
@@ -365,6 +513,40 @@ def crates_with_proofs(root):
     return harnesses, covers, sorted(orphans), unseen
 
 
+def ledger_claims(root, harnesses):
+    """Problems where `assurance/crates.toml` states a proof count the tree denies.
+
+    A stated count is a ratchet like `FLOOR_*` and fails in both directions for
+    the same reasons — under the tree it covers a harness that went away, over it
+    claims a proof nobody wrote. What made this one worth deriving is that it is
+    stated TWICE: `--write-readme` copies the sentence into formal/README.md, so
+    the pair drifted together and read as two sources agreeing.
+    """
+    path = root / LEDGER
+    if not path.is_file():
+        return [f"{LEDGER} is gone, so the proof counts it states are unchecked"]
+    with open(path, "rb") as fh:
+        ledger = tomllib.load(fh).get("crate", {})
+    problems = []
+    for crate, entry in sorted(ledger.items()):
+        for field, value in sorted(entry.items()):
+            if not isinstance(value, str):
+                continue
+            for found in CLAIM.finditer(value):
+                said = int(found[1]) if found[1] else 0
+                if not (root / "crates" / crate).is_dir():
+                    problems.append(
+                        f"{LEDGER} [crate.{crate}] {field} says `{found[0]}`, and"
+                        f" there is no crates/{crate} for this to count in"
+                    )
+                elif said != harnesses[crate]:
+                    problems.append(
+                        f"{LEDGER} [crate.{crate}] {field} says `{found[0]}`;"
+                        f" crates/{crate} carries {harnesses[crate]} #[kani::proof]"
+                    )
+    return problems
+
+
 def ratchets(root, table, harnesses, covers):
     """Problems where a floor, or a number the page prints, is not the tree's count.
 
@@ -422,20 +604,20 @@ def audit(root):  # noqa: C901 — one clause per failure mode, each named
     root = pathlib.Path(root)
     table = tiers(root)
     found = list(sources(root))
-    seen = [u for rel, text, yaml in found for u in uses(rel, text, yaml)]
-    loose = sorted({r for rel, text, yaml in found for r in handwritten(rel, text, yaml)})
+    seen = [u for s in found if s.ci for u in uses(s.path, s.text, s.read)]
+    loose = sorted({pair for s in found for pair in handwritten(s.path, s.text, s.read)})
     harnesses, covers, orphans, unseen = crates_with_proofs(root)
     proven = set(harnesses)
     problems = []
     # Only for a key a `scripts/kani.sh ${{ matrix.… }}` actually names: the fuzz,
     # miri and mutants rows all shard on a `matrix.shard` of their own, and their
     # differing lists say nothing about what Kani proves.
-    for rel, text, yaml in found:
-        if yaml:
-            conflicts = matrices(text)[1] & referenced_keys(text)
+    for source in found:
+        if is_workflow(source.read):
+            conflicts = matrices(source.text)[1] & referenced_keys(source.text)
             for key in sorted(conflicts):
                 problems.append(
-                    f"{rel} declares `matrix.{key}` twice with different values; "
+                    f"{source.path} declares `matrix.{key}` twice with different values; "
                     "which tiers a row proves would be a guess"
                 )
 
@@ -446,9 +628,9 @@ def audit(root):  # noqa: C901 — one clause per failure mode, each named
         )
     for crate in sorted(set(covers) - proven):
         problems.append(f"{crate} has a kani::cover! but no #[kani::proof] to reach it")
-    for rel in loose:
+    for rel, spelled in loose:
         problems.append(
-            f"{rel} writes its own `cargo kani … -p …` roster; scripts/kani.sh"
+            f"{rel} writes its own `cargo kani` roster (`{spelled}`); scripts/kani.sh"
             " owns the tiers, and a second copy is one nothing keeps in step"
         )
     for use in seen:
@@ -496,15 +678,38 @@ def audit(root):  # noqa: C901 — one clause per failure mode, each named
     for rel in orphans:
         problems.append(f"{rel} has a #[kani::proof] or kani::cover! no tier can reach")
     problems += ratchets(root, table, harnesses, covers)
+    problems += ledger_claims(root, harnesses)
 
-    want = PINNED.search((root / PINNED_IN).read_text())
+    pinned = workflow_pins(root)
+    said = sorted({value for values in pinned.values() for value in values})
+    loose = sorted(
+        f"{rel} ({value})"
+        for rel, values in pinned.items()
+        for value in values
+        if not PINNED.fullmatch(value)
+    )
     got = DOC_PIN.search((root / DOCS).read_text())
-    if not want:
-        problems.append("KANI_VERSION is not pinned in the workflow")
+    if not pinned or loose:
+        problems.append(
+            f"{PIN_VAR} is not pinned in the workflow"
+            + (f": {', '.join(loose)}" if loose else "")
+        )
+    elif len(said) > 1:
+        # The half a one-file read cannot have. Three literals agreeing is what
+        # makes any of them the version CI installs; two that disagree make the
+        # tier a reader copies and the tier CI runs different tools.
+        problems.append(
+            f"{PIN_VAR} is written {sum(len(v) for v in pinned.values())} time(s)"
+            f" across {len(pinned)} workflow file(s) and they disagree — "
+            + "; ".join(
+                f"{rel} pins {', '.join(sorted(set(values)))}"
+                for rel, values in sorted(pinned.items())
+            )
+        )
     elif not got:
         problems.append(f"{DOCS} installs kani-verifier without --version")
-    elif got.group(1) != want.group(1):
-        problems.append(f"{DOCS} installs kani {got.group(1)}, CI pins {want.group(1)}")
+    elif got.group(1) != said[0]:
+        problems.append(f"{DOCS} installs kani {got.group(1)}, CI pins {said[0]}")
 
     summary = (
         f"kani-gate: ok — {len(table)} tiers over {len(listed)} crates, "

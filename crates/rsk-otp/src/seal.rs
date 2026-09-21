@@ -19,6 +19,7 @@
 
 use rsk_crypto::{Device, aes256gcm_decrypt, aes256gcm_encrypt, hkdf_sha256};
 use rsk_fs::{Fs, KeyFid, Sealed, Storage};
+use rsk_sdk::error::Result;
 use zeroize::Zeroize;
 
 use crate::{CONFIG_SIZE, Rng, SLOT_SIZE};
@@ -84,22 +85,39 @@ pub fn seal_put<S: Storage>(
 /// Read and unseal `fid` into `out`; returns the plaintext length, or `None` if
 /// the slot is absent, malformed, or does not authenticate (e.g. legacy
 /// plaintext — the caller treats that as "needs migration").
+///
+/// A read the medium REFUSED folds into that same `None`; [`try_seal_read`] is
+/// the twin for the callers where it may not.
 pub fn seal_read<S: Storage>(
     dev: &Device,
     fs: &mut Fs<S>,
     fid: KeyFid,
     out: &mut [u8],
 ) -> Option<usize> {
+    try_seal_read(dev, fs, fid, out).ok().flatten()
+}
+
+/// [`seal_read`], fallible: `Err` is "the medium could not answer", `Ok(None)` a
+/// slot that is genuinely absent, malformed, or unauthenticated. The fold the
+/// plain one does is what lets a faulted read spell *unprogrammed* at a gate.
+pub fn try_seal_read<S: Storage>(
+    dev: &Device,
+    fs: &mut Fs<S>,
+    fid: KeyFid,
+    out: &mut [u8],
+) -> Result<Option<usize>> {
     let mut blob = [0u8; MAX_BLOB];
-    let n = fs.read_key(fid, &mut blob)?;
+    let Some(n) = fs.try_read_key(fid, &mut blob)? else {
+        return Ok(None);
+    };
     if !(NONCE_LEN + TAG_LEN..=MAX_BLOB).contains(&n) {
         blob.zeroize();
-        return None;
+        return Ok(None);
     }
     let pt_len = n - NONCE_LEN - TAG_LEN;
     if out.len() < pt_len {
         blob.zeroize();
-        return None;
+        return Ok(None);
     }
     let mut nonce = [0u8; NONCE_LEN];
     nonce.copy_from_slice(&blob[..NONCE_LEN]);
@@ -116,11 +134,11 @@ pub fn seal_read<S: Storage>(
     key.zeroize();
     if r.is_err() {
         blob.zeroize();
-        return None;
+        return Ok(None);
     }
     out[..pt_len].copy_from_slice(&blob[NONCE_LEN..NONCE_LEN + pt_len]);
     blob.zeroize();
-    Some(pt_len)
+    Ok(Some(pt_len))
 }
 
 #[cfg(test)]

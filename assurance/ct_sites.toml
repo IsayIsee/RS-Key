@@ -1,0 +1,145 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 RS-Key contributors
+#
+# The constant-time sites `scripts/ct_gate.py` reads out of the shipped ELF, and
+# what each first-party caller of one IS. HAND-WRITTEN FIELDS ONLY: a site's id,
+# symbol, class and statement, and a caller's symbol and the protocol surface it
+# stands for. Everything else — how many copies of a site the image carries,
+# which functions inline it, whether any branch inside one reads flags set from a
+# buffer load — is DERIVED from the image and printed, never stored.
+#
+# The caller list is held BOTH WAYS. A surface that stops routing through the
+# comparator vanishes from the image and reddens as a stale entry; one that starts
+# reddens as an unregistered inliner. That direction is the point: the finding
+# `docs/ct-audit.md` records twice is a compare that BYPASSED the comparator, and
+# a roster derived only from the registry could not see one appear.
+
+[[site]]
+id = "CT-CMP-001"
+symbol = "rsk_crypto::mac::ct_eq"
+class = "comparator"
+statement = "The canonical comparator's inlined copies lower to a loop whose only branch is governed by the public length counter, and its accumulator is reduced branchlessly."
+
+# --- the surfaces the image says inline it -------------------------------------
+# One line per first-party frame the DWARF inline chains name — EVERY frame, not
+# just the outermost. `surface` is the protocol operation a reader of
+# docs/ct-audit.md would recognise; it is the half no derivation can produce.
+#
+# Why every frame: keyed on the outermost, a bypass added BESIDE a surviving
+# call in the same enclosing function is invisible. Driven by an independent
+# review — `cmd_update` moved back to a slice `!=` over the access code while
+# `cmd_configure` kept the comparator, and the row stayed green with the page
+# still listing the surface as routing through it. The per-crate forwarders are
+# in the list for the same reason: they are frames the chains name.
+
+[[caller]]
+symbol = "rsk_crypto::pinproto::verify"
+surface = "CTAP pinUvAuthProtocol MAC verify"
+
+[[caller]]
+symbol = "rsk_fido::clientpin::pin_verifier_matches"
+surface = "FIDO device-local PIN verify"
+
+[[caller]]
+symbol = "rsk_fido::clientpin::pinproto_ct_eq"
+surface = "FIDO's forwarder onto the canonical comparator"
+
+[[caller]]
+symbol = "rsk_fido::clientpin::spend_and_verify_device_pin"
+surface = "FIDO device-PIN hash verify"
+
+[[caller]]
+symbol = "rsk_fido::clientpin::spend_and_verify_pin_at"
+surface = "FIDO clientPIN hash verify, panel path"
+
+[[caller]]
+symbol = "rsk_fido::clientpin::spend_and_verify_pin_hash"
+surface = "FIDO clientPIN hash verify"
+
+[[caller]]
+symbol = "rsk_fido::keyderiv::verify_key"
+surface = "FIDO credential key-handle verify"
+
+[[caller]]
+symbol = "rsk_fido::vendor::device_pin_gate"
+surface = "vendor device-PIN gate, pad path"
+
+[[caller]]
+symbol = "rsk_fido::vendor::pin_gate"
+surface = "vendor device-PIN gate"
+
+[[caller]]
+symbol = "rsk_oath::OathApplet::cmd_set_code"
+surface = "OATH SET CODE"
+
+[[caller]]
+symbol = "rsk_oath::OathApplet::cmd_validate"
+surface = "OATH VALIDATE"
+
+[[caller]]
+symbol = "rsk_oath::OathApplet::otp_pin_matches"
+surface = "OATH PIN match helper"
+
+[[caller]]
+symbol = "rsk_oath::OathApplet::spend_and_match_otp_pin"
+surface = "OATH PIN-gated code match"
+
+[[caller]]
+symbol = "rsk_oath::ct_eq"
+surface = "OATH's forwarder onto the canonical comparator"
+
+[[caller]]
+symbol = "rsk_openpgp::init::neutralize_default_reset_code"
+surface = "OpenPGP default reset-code neutralisation"
+
+[[caller]]
+symbol = "rsk_openpgp::pin::check_pin"
+surface = "OpenPGP PW1/PW3/RC verify"
+
+[[caller]]
+symbol = "rsk_openpgp::pin::ct_eq"
+surface = "OpenPGP's forwarder onto the canonical comparator"
+
+[[caller]]
+symbol = "rsk_otp::OtpApplet::cmd_configure"
+surface = "OTP slot configure access code"
+
+[[caller]]
+symbol = "rsk_otp::OtpApplet::cmd_otp"
+surface = "OTP command dispatch access code"
+
+[[caller]]
+symbol = "rsk_otp::OtpApplet::cmd_swap"
+surface = "OTP slot swap access code"
+
+[[caller]]
+symbol = "rsk_otp::OtpApplet::cmd_swap::_{{closure}}"
+surface = "OTP slot swap access code, inner"
+
+[[caller]]
+symbol = "rsk_otp::OtpApplet::cmd_update"
+surface = "OTP slot update access code"
+
+[[caller]]
+symbol = "rsk_otp::OtpApplet::code_clears_every_slot"
+surface = "OTP access-code sweep"
+
+[[caller]]
+symbol = "rsk_piv::PivApplet::get_metadata"
+surface = "PIV slot metadata default-value check"
+
+[[caller]]
+symbol = "rsk_piv::auth::GenAuth<S>::mutual_auth"
+surface = "PIV mutual authenticate"
+
+[[caller]]
+symbol = "rsk_piv::auth::GenAuth<S>::single_auth_verify"
+surface = "PIV single authenticate"
+
+[[caller]]
+symbol = "rsk_piv::check_ref"
+surface = "PIV PIN/PUK reference verify"
+
+[[caller]]
+symbol = "rsk_piv::ct_eq"
+surface = "PIV's forwarder onto the canonical comparator"

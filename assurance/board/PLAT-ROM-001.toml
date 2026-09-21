@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 RS-Key contributors
+#
+# M7-Q2, and it is the SECOND question about the same word: not whether a
+# power cycle clears it, but whether a drop to the bootloader preserves it.
+# A host that can reach the vendor AID would otherwise have a way to shed a
+# soft lock the retry ladder imposed.
+
+assumption = "PLAT-ROM-001"
+method = "The rig of PLAT-RESET-001 up to the point the word is written, then the vendor applet's reboot-to-BOOTSEL (P1=0x01) instead of the supply cut, and the read taken on the boot after the bootloader is left. Blocked on PLAT-ROM-002: the drop itself has no runner in this tree."
+boot_config = "The DEFAULT image, plus whatever UF2 is re-dragged to leave the bootloader — record which, because the boot that reads the word is a boot of THAT image."
+expected = "scratch2 reads back AS THE FIRMWARE LEFT IT. PASS = the tag and batch survive, so the bootloader is not a way out of the lock. FAIL = cleared, which is the security direction and would make the vendor reboot a lock-shedding channel. No datasheet clause states it either way; a vendor erratum settles it as well as a board does."
+outcome = "planned"
+board = ""
+stepping = ""
+firmware_sha256 = ""
+first_boot_capture = ""
+actual = ""

@@ -32,6 +32,21 @@ def _fw(v):
     return f"{(v >> 16) & 0xFF}.{(v >> 8) & 0xFF}.{v & 0xFF}" if isinstance(v, int) else None
 
 
+def backup_fields(m):
+    """The `status` fields carried by a decoded BACKUP_STATE map (protocol.md §9).
+
+    Split from `_fido` so the KEY NUMBERS are assertable: that function opens a HID
+    device, so no host test can reach this decode, and a wrong key here is silent —
+    every field is optional and a miss just drops it.
+    """
+    out = {"backup": {"sealed": bool(m.get(1)), "has_seed": bool(m.get(2))}}
+    if 3 in m:  # soft-lock state (bcdDevice >= 0x0742)
+        out["lock"] = {"locked": bool(m.get(3)), "unlocked": bool(m.get(4))}
+    if 5 in m:  # at-rest scrub re-arm health (bcdDevice >= 0x09C5)
+        out["rescrub_refused"] = bool(m.get(5))
+    return out
+
+
 def _fido():
     """getInfo + backup state over one HID session; {} if no FIDO device."""
     info = ctaphid.find()
@@ -53,10 +68,7 @@ def _fido():
             out["options"] = sorted(k for k, v in opts.items() if v)
         rb = ctaphid.send_cbor(dev, cid, bytes([CTAP_VENDOR]) + ctaphid.enc({1: VENDOR_STATE}))
         if rb[0] == 0:
-            m = ctaphid.decode(rb[1:])
-            out["backup"] = {"sealed": bool(m.get(1)), "has_seed": bool(m.get(2))}
-            if 3 in m:  # soft-lock state (bcdDevice >= 0x0742)
-                out["lock"] = {"locked": bool(m.get(3)), "unlocked": bool(m.get(4))}
+            out.update(backup_fields(ctaphid.decode(rb[1:])))
     except Exception as e:
         out["error"] = str(e)
     finally:
@@ -119,6 +131,11 @@ def run(args):
         if lk:
             state = "LOCKED" + (" (unlocked this session)" if lk["unlocked"] else " — FIDO ops disabled") if lk["locked"] else "off"
             print(f"  seed lock: {state}")
+        # Only on trouble: it says the flash refused a re-arm of the at-rest scrub
+        # this power cycle, which no other channel reports — a wipe answers success
+        # over it by design. It does NOT mean the hardening marker is wrong.
+        if f.get("rescrub_refused"):
+            print("  at-rest  : a scrub re-arm was REFUSED this power cycle (flash fault)")
     sb = s["secure_boot"]
     if not sb or not sb.get("available"):
         print("secure boot: (CCID unavailable)")

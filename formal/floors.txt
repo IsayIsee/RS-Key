@@ -28,20 +28,59 @@
 \* compared. The `Mut_*`/`Solo_*` families already name theirs through
 \* `gen-configs.sh`'s INVARIANTS block, so the column is for the rows that do not.
 \*
+\* The depths in the comments below are the WORKERS=1 reading, and they are the
+\* one number here that nothing compares. TLC reports the deepest BFS level its
+\* workers OPENED, which overshoots the diameter by one when a worker starts the
+\* next level early -- `Store.cfg` is 6 at one worker over six runs, 6 or 7 at the
+\* default two over thirteen, 7 at four and at eight. A ratchet on it would be red
+\* or green by scheduler, so there is none: re-measure by hand with
+\* `WORKERS=1 ./run-tlc.sh <cfg>`.
+\*
 \* Columns: <config or glob>  <GREEN|RED>  <min distinct, or - >  [heap]  [invariant]
 \* First match wins, so an exact name may precede its class glob.
 
-Shipped.cfg                          GREEN   20000000
+\* The tree as it stands. Its floor was a third of the count measured the day the
+\* column was written (7e96900) and was never moved again, while the model GREW
+\* -- the token-less non-discoverable registration -- so the same number had
+\* quietly fallen to about a QUARTER of the measurement. A ratchet drifting slack
+\* is the one failure nothing here reports: every gate stayed green through it.
+\* Re-derived to a third of the distinct count `runs.toml` recorded for the safety
+\* run at 9cafee7, and again when the grant record (c92bfb3) made it a quarter.
+Shipped.cfg                          GREEN   36206318
+\* AS-AUTH-2's other arm: its own nine invariants over a build that SHIPS
+\* alwaysUv, on a reduced (2 : 1) retry ladder -- the arm buys the reachability
+\* question, not the ladder -- so a third of its recorded distinct count is the
+\* floor, as its siblings'. Nine is counted in the cfg, not here.
+AlwaysUv.cfg                         GREEN   10483724
+\* `WidePerms`'s other arm: all sixteen permission subsets a host can obtain,
+\* against the five the model carries. One relying party, because the wide
+\* domain is what is being paid for, and two channels because scopes.txt holds
+\* that minimum for NoAuthorizationBypass, which this configuration checks --
+\* the counts are the results table's, not this comment's. A third of the
+\* measured distinct count is the floor, the same rule as its siblings; the
+\* narrow arm of the same scope was measured at 9 472 044 in 142 s and is not a
+\* recorded row, so it is here rather than there.
+PermWide.cfg                         GREEN   9728632
+\* `ForceChangeModelled`'s other arm: EF_MINPINLEN[1], the forced-PIN-change
+\* flag, which the module did not carry at all until PLAT-MODEL-010 measured the
+\* gap. PermWide.cfg's constants for the same reason -- the question is the gate,
+\* not the ladder -- and alwaysUv ON because with no PIN there is nothing to
+\* pend. A third of its recorded distinct count is the floor, the same rule as
+\* its siblings.
+ForceChange.cfg                      GREEN   4951108
 Seams.cfg                            GREEN   200
 \* The flash layer (RSKeyStore): a small exhaustive space -- 364 distinct at
 \* depth 6 -- so its floor is set near a third, the same rule as its siblings.
-Store.cfg                            GREEN   90
+Store.cfg                            GREEN   121
 \* The retry/recovery lattice (RSKeyRetryLattice): 243 distinct at depth 11, five
 \* budgeted references over a ceiling of two -- a third is the floor here too.
 Lattice.cfg                          GREEN   80
-\* Four-app operation policies (RSKeyAppletPolicies): 2268 distinct at depth 14;
-\* one third is the floor, separate from the real PIV/OpenPGP retry counters.
-Policies.cfg                         GREEN   750
+\* Four-app operation policies (RSKeyAppletPolicies), separate from the real
+\* PIV/OpenPGP retry counters. A third of the measured distinct count is the
+\* floor, the same rule as its siblings; the measurement itself is the results
+\* table's, and is not copied here because at this size a second copy of it is
+\* what the value rule of scripts/run_count_gate.py exists to refuse.
+Policies.cfg                         GREEN   110000
 \* The administrative surface (RSKeyAdminSurface): 8 distinct -- a 3-capability
 \* mask whose properties are step ghosts, so the space IS the mask's power set.
 \* A third rounds to 3; below it the mask itself has collapsed.
@@ -59,6 +98,43 @@ Boot.cfg                             GREEN   8
 \* and all three boot mutants still redden on the same invariant -- the
 \* assumption buys REACHABILITY, not safety, which is what running it says.
 BootCarry.cfg                        GREEN   6
+\* THE WRITE/RE-ARM ORDER, both arms. Every configuration above collapses the
+\* record write and the re-arm into ONE step, so a power cut between them has
+\* nowhere to sit and the order they ship in is unfalsifiable; these two split
+\* the pair around an in-flight flag and differ in nothing else. The RED row is
+\* the order the tree shipped until the re-arm was moved ahead of the write --
+\* write, then re-arm -- and its counterexample is a reset landing in the
+\* window: the marker stands over the copy the write just superseded, and the
+\* worker that owed the re-arm is gone, so no later boot runs the lap. The GREEN
+\* row re-arms first and pays at worst a lap that re-runs over nothing; it is
+\* the order the tree ships now.
+\* THE PAIR IS THE POINT, and it is why this is an ORDER switch rather than a
+\* free split of the action. A free split has no order to test -- its two halves
+\* fire either way round -- and it reddens Boot, BootCarry and BootInduction at
+\* depth 2 on the transient while collapsing every BugMarkerBeforeScrub row onto
+\* that same transient, all three still printing MarkerNeverLies. Measured.
+\* MarkerNeverLies is named although the RED row arms exactly one switch and the
+\* runner would derive the same name from its INVARIANTS block; what the column
+\* cannot see either way is DEPTH, so what separates this row from a kill on the
+\* transient is its GREEN twin, which no free split can produce.
+\* AND THE RED ROW HAS NO SIZE TO FLOOR, which is why its floor column is `-`
+\* rather than a third of something. A refuted run halts at the first violation,
+\* so states, distinct AND the depth the runner prints are all how far the
+\* search got before it stopped -- not facts about the model. Twenty runs at the
+\* default two workers: 25/14 eleven times and 31/16 nine, depth 4 throughout;
+\* one worker is deterministic at 13/9, depth 3. The counterexample under all of
+\* them is the same three states, and the GREEN twin's 141/38/7 is stable at
+\* either worker count, because an exhaustive search has nowhere to stop early.
+\* Quote this row for its verdict, its invariant and its trace; never for a
+\* number.
+\* They are `Historical_` because the RED one injects no defect -- it is an
+\* order the tree itself once had -- so it is hand-named in the runner's tier
+\* list rather than swept up by a family glob that would hand it a mutant's
+\* expectations. They sit here, beside the module's other arms, because that is
+\* what they are arms of. A third of the GREEN arm's measured distinct count is
+\* its floor, the same rule as its siblings.
+Historical_BootWriteThenRearm.cfg    RED     -       -       MarkerNeverLies
+Historical_BootRearmThenWrite.cfg    GREEN   12
 \* The CTAPHID reassembler (RSKeyTransport): 13 distinct at depth 4, the
 \* owner/seq/got/need product over two channels -- a third rounds to 4.
 Transport.cfg                        GREEN   4
@@ -69,18 +145,18 @@ Transport.cfg                        GREEN   4
 \* harness proven able to refuse a session at all.
 TraceSeams.cfg                       GREEN   5
 TraceSeamsBad.cfg                    RED     -
-\* Full RSKeySecurityState refinement replay: 49 inferred B micro-steps from
-\* 21 real CBOR boundaries across three suites and one replug. The α mutant's
-\* GREEN control, with R4b disabled, proves that the corresponding RED row is
-\* caught by R4b alone. The last two are R4c's, one per half of the gate rule,
+\* Full RSKeySecurityState refinement replay: the B micro-steps inferred from
+\* five suites' real CBOR boundaries and one replug, counted by the pins below.
+\* The α mutant's GREEN control, with R4b disabled, proves that the corresponding
+\* RED row is caught by R4b alone. The last two are R4c's, one per half of the gate rule,
 \* so a RED names which half was load-bearing rather than "a gate somewhere".
-\* The two GREEN rows are PINS, not thirds: a linear replay of 74 forced steps
-\* has exactly 75 states, so anything less is the model refusing to follow the
+\* The two GREEN rows are PINS, not thirds: a linear replay of 75 forced steps
+\* has exactly 76 states, so anything less is the model refusing to follow the
 \* recording. It reached 44 of 59 for three days and read as GREEN.
-TraceSecurity.cfg                    GREEN   75
+TraceSecurity.cfg                    GREEN   76
 TraceSecurityBadBeta.cfg             RED     -       -       R4aRawRefinesB
 TraceSecurityBadAlpha.cfg            RED     -       -       R4bAlphaMatchesGamma
-TraceSecurityBadAlphaNoR4b.cfg       GREEN   75
+TraceSecurityBadAlphaNoR4b.cfg       GREEN   76
 TraceSecurityBadOutcome.cfg          RED     -       -       R4bEventConsensus
 TraceSecurityBadUvNotRqd.cfg         RED     -       -       R4cGateAnswers
 TraceSecurityBadResetWindow.cfg      RED     -       -       R4cGateAnswers
@@ -100,7 +176,9 @@ TraceSecurityBadPinSet.cfg           RED     -       -       R4cGateAnswers
 \* seed arm empties `cred` and `rpent` with it, so the phase is two steps however
 \* many credentials B holds. The model had been refusing the surplus since the
 \* three-suite recording landed, and TLC was run with `-deadlock`.
-@TraceSecurityStepsMin 74
+\* 74 until the replug ran the boot block (ea63a56's grant): the record it mints
+\* is one more live secret for the sweep of the reset that follows it.
+@TraceSecurityStepsMin 75
 @TraceSecurityActionsMin 22
 \* Boundaries whose outcome B answers from a GATE rule rather than from the
 \* actions -- there are none to read, both sides of each gate being a stutter.
@@ -117,10 +195,31 @@ TraceSecurityBadPinSet.cfg           RED     -       -       R4cGateAnswers
 \* 12 until the recording carried the clientPIN SUBCOMMAND: a token re-issued with
 \* the permissions it already holds moves no raw field, so it arrived as a bare
 \* stutter and was indistinguishable from the `getKeyAgreement` that shares that
-\* footprint. Measured both ways -- with the rule 13, with `TOKEN_SUBCOMMANDS`
-\* emptied 12 -- because a mapping that retreats to NO-OPINION costs nothing and
-\* reads exactly as green without a floor here.
+\* footprint. Measured both ways at the time -- with the rule 13, with
+\* `TOKEN_SUBCOMMANDS` emptied 12.
+\* IT IS 15 NOW (`WrongPin` and `ResetFinish` joined `OUTCOME_BY_ACTION`) and this
+\* number is deliberately NOT moved with it. Measured: drop ONE and the count is
+\* 14, drop BOTH and it is exactly 13 -- green either way. So a floor here is not
+\* what makes a retreat to NO-OPINION cost something; `audit_no_opinion`'s
+\* per-event rule is, and this stays a floor in this file's own sense.
 @TraceSecurityOutcomesMin 13
+\* Tier A's requirement half (RSKeyTokenGate). The first floor is a PIN at 44
+\* and not a third: NoAuthorizationBypassA is asserted over the relation's SLICE
+\* at the current state, so it covers AllowedRelation only if every A state is
+\* reachable -- and 44 is the whole domain. Lose one and the invariant quietly
+\* stops being about the edges out of it.
+TokenGate.cfg                        GREEN   44
+\* The oracle's non-degeneracy, run as a probe rather than a behaviour: every
+\* state on which the requirement and the relation disagree is an INITIAL state,
+\* so the distinct count IS the size of that set and 22 is a PIN too. An oracle
+\* transcribed from the relation empties it, and TLC refuses an empty INIT.
+TokenGateOracle.cfg                  GREEN   22
+\* E4a. The two are not one predicate, and this row is what says so; a GREEN
+\* here is the refuted per-FID projection repeating itself one tier up.
+TokenGateDisagreement.cfg            RED     -       -       RequiredGateAgreesWithRelation
+\* One Authorized edge the requirement forbids, so the invariant above is known
+\* able to fail rather than assumed to be.
+TokenGateMut_BugUnauthorizedEdge.cfg RED     -       -       NoAuthorizationBypassA
 \* Phase 5. Reduced constants keep the labelled action check separate from the
 \* 60-million-state shipped safety row. Floors are calibrated after the first
 \* successful run; the non-vacuity guard still requires at least two states.
@@ -132,21 +231,92 @@ TokenRefinementDeadToken.cfg         RED     -
 \* million nodes at these constants -- and runs out of memory at the 4 GB
 \* default after the state search has already completed (E172). The heap column
 \* is that one-line fix, kept beside the number that motivates it.
-Liveness.cfg                         GREEN   2000000   12g
+Liveness.cfg                         GREEN   4838141   12g
 Liveness_Full.cfg                    GREEN   2000000   24g
 \* The fairness-shape check: the same reduced constants, `Spec` rather than
-\* `FairSpec`, and eighteen ENABLED evaluations per state for about 5% more wall
-\* clock than the plain safety run.
-Fairness.cfg                         GREEN   2000000
+\* `FairSpec`. When it went in (c749779) that was eighteen ENABLED evaluations per
+\* state, for about 5% more wall clock than the plain safety run.
+Fairness.cfg                         GREEN   4838141
 
 \* Every mutant must FIRE. A counterexample search halts at the first violation,
 \* so its state count is worker-scheduling dependent and carries no floor.
-Historical_*.cfg                     RED     -
+\*
+\* The reason is compared too, and where these rows say nothing the runner derives
+\* it -- see `run-tlc.sh`. Registering an exception here for the one configuration
+\* the derivation cannot predict was tried and REFUSED: an exact row in front of
+\* its class glob is exactly what `scripts/verdict_gate.py` rejects, because
+\* nothing in this tree can tell first-match from last-match. The header above
+\* advertises that mechanism; the gate forbids it, and the gate wins.
+\* THE HISTORICAL FAMILY IS SPELT OUT AND NOT A GLOB, because its members no
+\* longer owe the same verdict. `Historical_E77.cfg` is E77's tree with both ends
+\* of the fix out and it is RED. `Historical_E76.cfg` is not the pre-0x08BF tree
+\* any more: that file was BYTE-IDENTICAL to `Mut_BugSeedDoesNotLead.cfg` from
+\* 301c53a -- one experiment under two names, and every derived `cfgs`
+\* denominator counting it twice -- so it carries the COUNTERFACTUAL now, the
+\* pre-0x08BF tree with `FixSweepDropsCredsBeforeRpEntries` applied. That is the
+\* repair the model proposed and 0x08BF did not take, and until this row nothing
+\* in the tree ever passed the constant TRUE: every configuration that assigned
+\* it assigned it FALSE, so the conjunct it guards could be deleted with every
+\* recorded verdict unchanged. GREEN here is what makes it load-bearing -- delete the
+\* conjunct at RSKeySecurityState.tla:1412 and this file behaves as
+\* `Mut_BugSeedDoesNotLead.cfg` does, which is RED.
+\*
+\* THE FLOOR WAS ARGUED, NOT MEASURED, AND NOTHING HERE COULD CHECK THAT. Driven
+\* at the time: the verdict column flipped to RED, the floor as it stood, and the
+\* same floor with a dozen more digits on it ALL passed the merge gate; only a
+\* GREEN with no floor is refused, so the number was an ASSERTION about a run
+\* nobody had made. That run has since happened -- `runs.toml`'s safety tier,
+\* recorded at 9cafee7 and again since -- and the floor below is a third of what
+\* it last found, the way every other GREEN row in this file was set.
+\*
+\* It is Shipped.cfg's own number because that is the one thing about this
+\* configuration that could be known before running it: its transition relation
+\* is Shipped.cfg's with the seed-lead guards REMOVED and one conjunct added to a
+\* disjunct that is DEAD on the shipped tree, so the reachable set is a superset.
+\* The dead-disjunct half rests on `ram = FALSE` through the whole sweep, and
+\* that is not a property of `KeepOpen` -- it holds because `BugStateResetAfterWipe`
+\* is FALSE here, which is what lets ResetConfirmed's `ram' = FALSE` stand
+\* (RSKeySecurityState.tla:1317). With the RAM copy gone, the seed's delete
+\* empties `store.rpent`, so `\E r \in store.rpent` can never fire on Shipped and
+\* the added conjunct removes nothing it had. Arm that switch and the argument
+\* goes with it.
+\* The recording settles that argument rather than repeating it: this row came
+\* back at Shipped.cfg's distinct count TO THE STATE and at Shipped.cfg's depth,
+\* a superset that added nothing, so both rows carry one number for one reason.
+Historical_E76.cfg                   GREEN   36206318
+Historical_E77.cfg                   RED     -
 Mut_*.cfg                            RED     -
 Solo_*.cfg                           RED     -
 SoloClause_*.cfg                     RED     -
+\* The wide permission domain's own falsifiability. `PermWide.cfg` came back
+\* GREEN and nothing in the tree could make that arm RED -- which says a run
+\* finished, not that it watched anything. Each of these arms ONE switch at that
+\* configuration's own constants, solo-style, and solo is not a preference here:
+\* the runner derives the expected reason only where a single switch is armed,
+\* and scripts/verdict_gate.py otherwise falls back to a TWIN search that would
+\* find the NARROW `Solo_` sibling of the same switch and attribute a run at this
+\* scope to a run at that one. The BootCarryMut_* row below records the same
+\* reasoning for the same shape. There is deliberately no narrow twin at these
+\* constants: both arms would be RED, a RED row gets no floor, and nothing in
+\* the tree would compare them. What the family buys is that the wide arm's
+\* observers can fail -- NOT that the widening is load-bearing; no switch in the
+\* roster is killed only under it, and PLAT-MODEL-001 records why the alphabet,
+\* not the domain, is the route to the stronger claim.
+PermWideMut_*.cfg                    RED     -
 SeamMut_*.cfg                        RED     -
 SeamSolo_*.cfg                       RED     -
+\* WHAT THESE TWO FAMILIES DERIVE, said here because the metadata-WRITE pair is
+\* where reading the column literally goes wrong. Each store mutant arms exactly
+\* ONE switch, so `run-tlc.sh` takes the expected invariant off the
+\* configuration's own INVARIANTS block and the `-` is a derivation, not a
+\* blank: `BugMetaWriteTearsBlob` and `BugMetaDeleteTearsBlob` -- `meta_add`'s
+\* rewrite and `meta_delete`'s -- both owe RED at NoRecordLostToMetaWrite, and
+\* neither may be satisfied by TypeOK, which every row here also checks.
+\* Spelling that in an EXACT row is refused rather than redundant:
+\* `verdict_gate.check_conflicts` reads (RED, no floor, NoRecordLostToMetaWrite)
+\* against the family's (RED, no floor, -) as an exact row and a family
+\* disagreeing over one configuration, which is the shape it exists to refuse.
+\* Measured, not argued: adding that row makes the gate say so and exit 1.
 StoreMut_*.cfg                       RED     -
 StoreSolo_*.cfg                      RED     -
 \* The store's induction probe, and it is the one that FOUND something.

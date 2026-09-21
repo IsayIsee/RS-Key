@@ -273,8 +273,14 @@ impl<'a> RescueApplet<'a> {
         }
         match apdu.p1 {
             0x01 => {
-                // A never-written phy serializes to just the zeroed OPTS TLV.
-                let data = rsk_phy::load(fs).unwrap_or_default();
+                // A never-written phy serializes to just the zeroed OPTS TLV. A
+                // record the flash could not answer for must NOT synthesise that:
+                // `rsk hw` read-modify-writes on the host, so a default reported
+                // here is the baseline it edits and writes back.
+                let Ok(stored) = rsk_phy::try_load(fs) else {
+                    return Sw::MEMORY_FAILURE;
+                };
+                let data = stored.unwrap_or_default();
                 let mut buf = [0u8; rsk_phy::PHY_MAX_SIZE];
                 match data.serialize(&mut buf) {
                     Some(n) => {

@@ -1,0 +1,22 @@
+rs-key devshell
+  rustc:    rustc 1.96.0 (ac68faa20 2026-05-25)
+  target:   thumbv8m.main-none-eabihf
+  picotool: picotool v2.2.0-a4 (Darwin, Clang-21.1.8, Release)
+
+Build:  cargo build --release -p firmware   # pick the target crate
+  (or:  nix build .#firmware                 # hermetic → result/firmware.uf2)
+PT:     scripts/pt.sh target/thumbv8m.main-none-eabihf/release/firmware fw-pt.elf   # fence the KV store
+UF2:    picotool uf2 convert fw-pt.elf -t elf firmware.uf2
+Flash:  hold BOOTSEL, plug in the RP2350, drag firmware.uf2 to the RP2350 drive
+Check:  ./scripts/check.sh        # fmt + clippy + test + audit + deny + gitleaks
+Fuzz:   nix develop .#fuzz -c cargo fuzz run <target>
+CLI:    rsk status | rsk backup … | rsk secure-boot … | rsk otp … (rsk --help)
+TUI:    rsk-tui                    # live device dashboard
+Docs:   ./scripts/docs.sh serve    # preview the docs site (build|check)
+reader: RS-Key RS-Key Security Key
+SELECT vendor AID -> 9000
+REBOOT (P1=0x01) -> 9000
+
+Device is rebooting to BOOTSEL — the RP2350 mass-storage drive should appear.
+Reflash a firmware UF2 to restore it.
+secure-reboot PASS (BOOTSEL requested)

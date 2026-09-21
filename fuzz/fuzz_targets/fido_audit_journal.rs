@@ -66,7 +66,9 @@ fuzz_target!(|data: &[u8]| {
 
     // The fail-closed oracle: a window wider than the ring MUST clamp to genesis.
     let raw_window = seq_next.wrapping_sub(start);
-    let (_, m) = chain_head(&dev, &mut fs);
+    // `RamStorage` never faults, so the fallible head always answers here; the
+    // `expect` is the oracle for that, not a swallowed error.
+    let (_, m) = chain_head(&dev, &mut fs).expect("a RAM medium serves every probe");
     if raw_window > AUDIT_RING_SLOTS {
         assert_eq!((m.start, m.seq_next), (0, 0));
     } else {

@@ -110,3 +110,614 @@ pub mod ram {
         }
     }
 }
+
+/// Backends that fail on purpose, shared by the applet crates' tests. One flash
+/// fault shape per type, narrow enough that the setup and the observation cannot
+/// be what fails.
+#[cfg(any(test, feature = "test-util"))]
+pub mod faults {
+    use super::ram::RamStorage;
+    use super::*;
+    use crate::EF_META;
+    use rsk_sdk::error::Error;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    /// A RAM medium whose EF_META reads fail on demand while every other value
+    /// still reads. Deleting anything then leaves "a record may stand over what I
+    /// erased" undecidable — and EF_META is ONE blob shared by every applet, so
+    /// that answer arrives at fids which carry no record of their own. It is the
+    /// fault all four applet reset sweeps must carry to the end of their range
+    /// instead of stopping on it.
+    pub struct MetaStuck {
+        inner: Rc<RefCell<RamStorage>>,
+        stuck: Rc<Cell<bool>>,
+        err: bool,
+    }
+
+    /// The other end of a [`MetaStuck`]: arms the fault, and reads the medium
+    /// past `Fs`'s present cache — which a delete marks absent whether or not the
+    /// backend `remove` ran, so a cache-level check would pass over a wipe that
+    /// never happened.
+    pub struct Medium {
+        inner: Rc<RefCell<RamStorage>>,
+        stuck: Rc<Cell<bool>>,
+    }
+
+    impl MetaStuck {
+        pub fn new() -> (Self, Medium) {
+            let inner = Rc::new(RefCell::new(RamStorage::new()));
+            let stuck = Rc::new(Cell::new(false));
+            (
+                Self {
+                    inner: inner.clone(),
+                    stuck: stuck.clone(),
+                    err: false,
+                },
+                Medium { inner, stuck },
+            )
+        }
+    }
+
+    impl Medium {
+        /// Start (`true`) or stop refusing EF_META.
+        pub fn stick(&self, on: bool) {
+            self.stuck.set(on);
+        }
+        /// Whether `fid` still has a value ON THE MEDIUM.
+        pub fn live(&self, fid: u16) -> bool {
+            self.inner.borrow_mut().exists(fid)
+        }
+    }
+
+    impl Storage for MetaStuck {
+        fn read(&mut self, fid: u16, buf: &mut [u8]) -> Option<usize> {
+            if fid == EF_META && self.stuck.get() {
+                self.err = true;
+                return None;
+            }
+            self.err = false;
+            self.inner.borrow_mut().read(fid, buf)
+        }
+        fn write(&mut self, fid: u16, data: &[u8]) -> Result<()> {
+            self.inner.borrow_mut().write(fid, data)
+        }
+        fn remove(&mut self, fid: u16) -> Result<()> {
+            self.inner.borrow_mut().remove(fid)
+        }
+        fn size(&mut self, fid: u16) -> Option<usize> {
+            if fid == EF_META && self.stuck.get() {
+                self.err = true;
+                return None;
+            }
+            self.err = false;
+            self.inner.borrow_mut().size(fid)
+        }
+        fn for_each_key(&mut self, f: &mut dyn FnMut(u16)) -> bool {
+            self.inner.borrow_mut().for_each_key(f)
+        }
+        /// The whole point: a FAILED read must not be memoised as absence.
+        fn last_error(&self) -> bool {
+            self.err
+        }
+    }
+
+    /// A RAM medium whose `read`/`size` of ONE chosen fid fail while every other
+    /// value still reads: the single faulted probe, aimed at the record a caller is
+    /// about to make a decision about.
+    ///
+    /// [`Storage::read`] answers `None` for that and for an absent key alike, and an
+    /// absent record is how this firmware spells *not provisioned* — so this is the
+    /// medium that separates "no PIN configured" from "I could not look". It reports
+    /// through [`Storage::last_error`] exactly as the device's `SeqStorage` does.
+    pub struct ProbeStuck {
+        inner: Rc<RefCell<RamStorage>>,
+        stuck: Rc<Cell<Option<u16>>>,
+        once: Rc<Cell<bool>>,
+        /// Reads of the stuck fid to let through before the fault lands. A guard
+        /// shadowed by an EARLIER probe of the same record is otherwise
+        /// unfalsifiable: the first one catches every fault and the later one
+        /// never runs.
+        skip: Rc<Cell<u32>>,
+        refused: Rc<Cell<Option<u16>>>,
+        truncate: Rc<Cell<bool>>,
+        err: bool,
+    }
+
+    /// The other end of a [`ProbeStuck`]: arms the fault, and reads the medium past
+    /// `Fs`'s present cache — the only place a re-seed that really landed can be
+    /// told from one the cache merely reports.
+    pub struct ProbeMedium {
+        inner: Rc<RefCell<RamStorage>>,
+        stuck: Rc<Cell<Option<u16>>>,
+        once: Rc<Cell<bool>>,
+        skip: Rc<Cell<u32>>,
+        refused: Rc<Cell<Option<u16>>>,
+        truncate: Rc<Cell<bool>>,
+    }
+
+    impl ProbeStuck {
+        pub fn new() -> (Self, ProbeMedium) {
+            let inner = Rc::new(RefCell::new(RamStorage::new()));
+            let stuck = Rc::new(Cell::new(None));
+            let once = Rc::new(Cell::new(false));
+            let skip = Rc::new(Cell::new(0));
+            let refused = Rc::new(Cell::new(None));
+            let truncate = Rc::new(Cell::new(false));
+            (
+                Self {
+                    inner: inner.clone(),
+                    stuck: stuck.clone(),
+                    once: once.clone(),
+                    skip: skip.clone(),
+                    refused: refused.clone(),
+                    truncate: truncate.clone(),
+                    err: false,
+                },
+                ProbeMedium {
+                    inner,
+                    stuck,
+                    once,
+                    skip,
+                    refused,
+                    truncate,
+                },
+            )
+        }
+    }
+
+    impl ProbeMedium {
+        /// Fail every read of `fid` (`None` clears the fault).
+        pub fn stick(&self, fid: Option<u16>) {
+            self.stuck.set(fid);
+            self.once.set(false);
+            self.skip.set(0);
+        }
+        /// Fail the NEXT read of `fid` and then recover. A persistent fault is
+        /// caught by whichever guard reads the record first, so it cannot falsify
+        /// the ones further down the same command — the transient one can.
+        pub fn stick_once(&self, fid: u16) {
+            self.stick_after(fid, 0);
+        }
+        /// Let `skip` reads of `fid` through, fail the one after, then recover.
+        /// [`stick_once`](Self::stick_once) is `skip = 0`. This is what reaches a
+        /// guard standing BEHIND another probe of the same record — the shadowed
+        /// ones a whole-suite run leaves unfalsifiable.
+        pub fn stick_after(&self, fid: u16, skip: u32) {
+            self.stuck.set(Some(fid));
+            self.once.set(true);
+            self.skip.set(skip);
+        }
+        /// Refuse `remove` for `fid` (`None` clears it), so a test can drive a
+        /// failed delete and a faulted read-back probe on ONE medium — which is
+        /// what the guards that check their own delete are made of.
+        pub fn refuse_remove(&self, fid: Option<u16>) {
+            self.refused.set(fid);
+        }
+        /// Cut every `for_each_key` walk short before it yields anything, as
+        /// [`TruncatedWalk`] does permanently. Switchable, because the state that
+        /// matters is what the cache still believes AFTER the medium recovers.
+        pub fn truncate_walk(&self, on: bool) {
+            self.truncate.set(on);
+        }
+        /// The bytes stored for `fid` ON THE MEDIUM, fault or no fault.
+        pub fn value(&self, fid: u16) -> Option<Vec<u8>> {
+            let mut buf = [0u8; crate::MAX_VALUE_BYTES];
+            let n = self.inner.borrow_mut().read(fid, &mut buf)?;
+            Some(buf[..n.min(buf.len())].to_vec())
+        }
+    }
+
+    impl ProbeStuck {
+        /// Whether this probe of `fid` is the one that faults, consuming a skip
+        /// credit or the one-shot arming as it decides.
+        fn faults(&self, fid: u16) -> bool {
+            if self.stuck.get() != Some(fid) {
+                return false;
+            }
+            if self.skip.get() > 0 {
+                self.skip.set(self.skip.get() - 1);
+                return false;
+            }
+            if self.once.get() {
+                self.stuck.set(None);
+            }
+            true
+        }
+    }
+
+    impl Storage for ProbeStuck {
+        fn read(&mut self, fid: u16, buf: &mut [u8]) -> Option<usize> {
+            if self.faults(fid) {
+                self.err = true;
+                return None;
+            }
+            self.err = false;
+            self.inner.borrow_mut().read(fid, buf)
+        }
+        fn write(&mut self, fid: u16, data: &[u8]) -> Result<()> {
+            self.inner.borrow_mut().write(fid, data)
+        }
+        fn remove(&mut self, fid: u16) -> Result<()> {
+            if self.refused.get() == Some(fid) {
+                return Err(Error::MemoryFatal);
+            }
+            self.inner.borrow_mut().remove(fid)
+        }
+        fn size(&mut self, fid: u16) -> Option<usize> {
+            if self.faults(fid) {
+                self.err = true;
+                return None;
+            }
+            self.err = false;
+            self.inner.borrow_mut().size(fid)
+        }
+        fn for_each_key(&mut self, f: &mut dyn FnMut(u16)) -> bool {
+            if self.truncate.get() {
+                return false;
+            }
+            self.inner.borrow_mut().for_each_key(f)
+        }
+        fn last_error(&self) -> bool {
+            self.err
+        }
+    }
+
+    /// A RAM medium whose `remove` refuses one chosen fid while every other value
+    /// still deletes — the other half of a [`MetaStuck`], and the one a sweep must
+    /// stop on. [`crate::Fs::force_delete_halves`] removes UNCONDITIONALLY, so the
+    /// refusal reaches a delete loop even at a fid that was never live.
+    pub struct RemoveStuck {
+        inner: Rc<RefCell<RamStorage>>,
+        refused: Rc<Cell<Option<u16>>>,
+        once: Rc<Cell<bool>>,
+        attempts: Rc<Cell<u32>>,
+    }
+
+    /// The other end of a [`RemoveStuck`]: arms the fault, and reads the medium
+    /// past `Fs`'s present cache, which a delete marks absent whether or not the
+    /// backend `remove` ran.
+    pub struct RemoveMedium {
+        inner: Rc<RefCell<RamStorage>>,
+        refused: Rc<Cell<Option<u16>>>,
+        once: Rc<Cell<bool>>,
+        attempts: Rc<Cell<u32>>,
+    }
+
+    impl RemoveStuck {
+        pub fn new() -> (Self, RemoveMedium) {
+            let inner = Rc::new(RefCell::new(RamStorage::new()));
+            let refused = Rc::new(Cell::new(None));
+            let once = Rc::new(Cell::new(false));
+            let attempts = Rc::new(Cell::new(0));
+            (
+                Self {
+                    inner: inner.clone(),
+                    refused: refused.clone(),
+                    once: once.clone(),
+                    attempts: attempts.clone(),
+                },
+                RemoveMedium {
+                    inner,
+                    refused,
+                    once,
+                    attempts,
+                },
+            )
+        }
+    }
+
+    impl RemoveMedium {
+        /// Refuse `remove` for `fid` (`None` clears the fault).
+        pub fn refuse(&self, fid: Option<u16>) {
+            self.refused.set(fid);
+            self.once.set(false);
+        }
+        /// Refuse the NEXT `remove` of `fid` and then recover — the remove twin of
+        /// [`ProbeMedium::stick_once`]. A persistent refusal is caught by whichever
+        /// caller asks first, so it cannot tell a RETRY further down the same
+        /// command from a caller that never retried: both leave the record live.
+        /// The single-shot one can.
+        pub fn refuse_once(&self, fid: u16) {
+            self.refused.set(Some(fid));
+            self.once.set(true);
+        }
+        /// Whether `fid` still has a value ON THE MEDIUM.
+        pub fn live(&self, fid: u16) -> bool {
+            self.inner.borrow_mut().exists(fid)
+        }
+        /// Removals the medium was asked for. The refusal alone cannot tell a sweep
+        /// that STOPPED on it from one that swallowed it: the second spins on the
+        /// re-yielded fid into the delete budget, which answers the SAME error. The
+        /// COUNT separates them — one batch against a whole budget.
+        pub fn attempts(&self) -> u32 {
+            self.attempts.get()
+        }
+    }
+
+    impl Storage for RemoveStuck {
+        fn read(&mut self, fid: u16, buf: &mut [u8]) -> Option<usize> {
+            self.inner.borrow_mut().read(fid, buf)
+        }
+        fn write(&mut self, fid: u16, data: &[u8]) -> Result<()> {
+            self.inner.borrow_mut().write(fid, data)
+        }
+        fn remove(&mut self, fid: u16) -> Result<()> {
+            self.attempts.set(self.attempts.get() + 1);
+            if self.refused.get() == Some(fid) {
+                if self.once.get() {
+                    self.refused.set(None);
+                }
+                return Err(Error::MemoryFatal);
+            }
+            self.inner.borrow_mut().remove(fid)
+        }
+        fn size(&mut self, fid: u16) -> Option<usize> {
+            self.inner.borrow_mut().size(fid)
+        }
+        fn for_each_key(&mut self, f: &mut dyn FnMut(u16)) -> bool {
+            self.inner.borrow_mut().for_each_key(f)
+        }
+    }
+
+    /// A RAM medium whose `for_each_key` faults before it yields anything, so the
+    /// walk answers `false` over records that are still live. An un-yielded fid is
+    /// not an absent one: the four applet sweeps must fail rather than read the
+    /// empty batch as "the range is clear", which is a wipe reporting success over
+    /// key material it never looked at.
+    ///
+    /// It was PIV's local `TruncatedWalk` for a release, and PIV was the only applet
+    /// whose truncation guard anything could falsify — forcing the `complete` arm
+    /// true left FIDO, OATH and OpenPGP at 615 / 118 / 197 passing.
+    #[derive(Default)]
+    pub struct TruncatedWalk(RamStorage);
+
+    impl TruncatedWalk {
+        pub fn new() -> Self {
+            Self::default()
+        }
+    }
+
+    impl Storage for TruncatedWalk {
+        fn read(&mut self, fid: u16, buf: &mut [u8]) -> Option<usize> {
+            self.0.read(fid, buf)
+        }
+        fn write(&mut self, fid: u16, data: &[u8]) -> Result<()> {
+            self.0.write(fid, data)
+        }
+        fn remove(&mut self, fid: u16) -> Result<()> {
+            self.0.remove(fid)
+        }
+        fn size(&mut self, fid: u16) -> Option<usize> {
+            self.0.size(fid)
+        }
+        fn for_each_key(&mut self, _f: &mut dyn FnMut(u16)) -> bool {
+            false
+        }
+    }
+
+    /// A RAM medium whose `remove` ANSWERS `Ok` and leaves the record standing, so
+    /// `for_each_key` keeps yielding what the sweep just deleted. This is the fault
+    /// the four applet wipes' delete budget exists for, and the one a REFUSED
+    /// removal cannot produce: [`RemoveStuck`] errors, which stops a sweep at its
+    /// `?` before the budget is ever consulted.
+    ///
+    /// The records really die once `ceiling` removals have been served, and that is
+    /// what makes the budget's failure READABLE rather than a timeout: a sweep whose
+    /// backstop has stopped guarding converges there and reports success over a
+    /// range it never cleared, instead of spinning until the suite is killed.
+    pub struct Undead {
+        inner: RamStorage,
+        served: Rc<Cell<u32>>,
+        ceiling: u32,
+    }
+
+    /// The other end of an [`Undead`]: how much of its budget the sweep spent.
+    pub struct UndeadCount {
+        served: Rc<Cell<u32>>,
+    }
+
+    impl Undead {
+        pub fn new(ceiling: u32) -> (Self, UndeadCount) {
+            let served = Rc::new(Cell::new(0));
+            (
+                Self {
+                    inner: RamStorage::new(),
+                    served: served.clone(),
+                    ceiling,
+                },
+                UndeadCount { served },
+            )
+        }
+    }
+
+    impl UndeadCount {
+        /// Removals the medium was asked for.
+        pub fn removals(&self) -> u32 {
+            self.served.get()
+        }
+    }
+
+    impl Storage for Undead {
+        fn read(&mut self, fid: u16, buf: &mut [u8]) -> Option<usize> {
+            self.inner.read(fid, buf)
+        }
+        fn write(&mut self, fid: u16, data: &[u8]) -> Result<()> {
+            self.inner.write(fid, data)
+        }
+        fn remove(&mut self, fid: u16) -> Result<()> {
+            self.served.set(self.served.get() + 1);
+            if self.served.get() > self.ceiling {
+                return self.inner.remove(fid);
+            }
+            Ok(())
+        }
+        fn size(&mut self, fid: u16) -> Option<usize> {
+            self.inner.size(fid)
+        }
+        fn for_each_key(&mut self, f: &mut dyn FnMut(u16)) -> bool {
+            self.inner.for_each_key(f)
+        }
+    }
+    /// One mutation a [`Cut`] medium served, in the order it served it.
+    #[derive(Clone, PartialEq, Eq)]
+    pub enum Op {
+        Write(u16, Vec<u8>),
+        Remove(u16),
+    }
+
+    impl core::fmt::Debug for Op {
+        // Values run to hundreds of bytes; a failing order is read off the fids.
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            match self {
+                Op::Write(fid, v) => write!(f, "Write({fid:#06x}, {}B)", v.len()),
+                Op::Remove(fid) => write!(f, "Remove({fid:#06x})"),
+            }
+        }
+    }
+
+    /// A RAM medium that serves a budget of mutations and then refuses every one
+    /// after it, keeping the ordered log of those that landed.
+    ///
+    /// This is the shape of a reset landing between two flash appends: the first
+    /// lands, nothing after it ever does. It is the only fault here that can tell
+    /// the two orderings of a lazy re-key and its `crate::request_rescrub` apart —
+    /// a backend that refuses one chosen fid refuses it under either order, so the
+    /// end state it produces is the same one twice.
+    pub struct Cut {
+        inner: Rc<RefCell<RamStorage>>,
+        budget: Rc<Cell<u32>>,
+        log: Rc<RefCell<Vec<Op>>>,
+    }
+
+    /// The other end of a [`Cut`]: arms the cut, and reads the log and the medium
+    /// past `crate::Fs`'s present cache — the only place a write that really landed
+    /// can be told from one the cache merely reports.
+    pub struct CutMedium {
+        inner: Rc<RefCell<RamStorage>>,
+        budget: Rc<Cell<u32>>,
+        log: Rc<RefCell<Vec<Op>>>,
+    }
+
+    impl Cut {
+        /// A healthy medium: unlimited budget, empty log. [`CutMedium::arm`] cuts it.
+        pub fn new() -> (Self, CutMedium) {
+            let inner = Rc::new(RefCell::new(RamStorage::new()));
+            let budget = Rc::new(Cell::new(u32::MAX));
+            let log = Rc::new(RefCell::new(Vec::new()));
+            (
+                Self {
+                    inner: inner.clone(),
+                    budget: budget.clone(),
+                    log: log.clone(),
+                },
+                CutMedium { inner, budget, log },
+            )
+        }
+
+        /// Spend a mutation from the budget; `false` once the reset has landed.
+        fn serve(&self) -> bool {
+            let left = self.budget.get();
+            if left == 0 {
+                return false;
+            }
+            self.budget.set(left - 1);
+            true
+        }
+    }
+
+    impl CutMedium {
+        /// Serve `budget` more mutations and refuse every one after — the reset.
+        /// `u32::MAX` restores a healthy medium.
+        pub fn arm(&self, budget: u32) {
+            self.budget.set(budget);
+        }
+        /// The mutations that LANDED, in order.
+        pub fn ops(&self) -> Vec<Op> {
+            self.log.borrow().clone()
+        }
+        /// Drop the log, so a fixture's own writes do not sit in front of the ones
+        /// the command under test makes.
+        pub fn clear_ops(&self) {
+            self.log.borrow_mut().clear();
+        }
+        /// The bytes stored for `fid` ON THE MEDIUM, cut or no cut.
+        pub fn value(&self, fid: u16) -> Option<Vec<u8>> {
+            let mut buf = [0u8; crate::MAX_VALUE_BYTES];
+            let n = self.inner.borrow_mut().read(fid, &mut buf)?;
+            Some(buf[..n.min(buf.len())].to_vec())
+        }
+        /// The whole of a lazy re-key's ordering, read off the log: the
+        /// `crate::request_rescrub` reached the medium BEFORE the append that
+        /// superseded `fid`. A reset in that window can then only take the write —
+        /// an idempotent lap over a record still in force — and never leave
+        /// [`crate::EF_HARDENED`] standing over the copy the write displaced.
+        ///
+        /// `still_weak` names the writes of `fid` that are NOT that supersession: a
+        /// verify spends its retry counter by rewriting the record, and that append
+        /// re-keys nothing. Pass `|_| false` where the window writes `fid` once.
+        ///
+        /// Both halves must be in the log. An order nothing performed is held
+        /// vacuously, and an absent marker is this store's DEFAULT state, so the two
+        /// panics are the assertion and not decoration. Call
+        /// [`clear_ops`](Self::clear_ops) first when an earlier command in the same
+        /// fixture already re-armed.
+        #[track_caller]
+        pub fn assert_re_armed_before(
+            &self,
+            fid: u16,
+            still_weak: impl Fn(&[u8]) -> bool,
+            what: &str,
+        ) {
+            let ops = self.ops();
+            let rekey = ops
+                .iter()
+                .position(|op| match op {
+                    Op::Write(f, v) => *f == fid && !still_weak(v),
+                    // A tombstone appends like a re-seal, so a delete supersedes too.
+                    Op::Remove(f) => *f == fid,
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{what}: nothing superseded {fid:#06x}, so the order is unobserved rather than held — {ops:?}"
+                    )
+                });
+            let rearm = ops
+                .iter()
+                .position(|op| matches!(op, Op::Remove(f) if *f == crate::EF_HARDENED))
+                .unwrap_or_else(|| {
+                    panic!("{what}: nothing re-armed the at-rest lap at all — {ops:?}")
+                });
+            assert!(
+                rearm < rekey,
+                "{what}: {fid:#06x} was superseded BEFORE the lap was re-armed, so a reset between the two appends leaves the marker standing over the copy it superseded and no later boot ever scrubs it — {ops:?}"
+            );
+        }
+    }
+
+    impl Storage for Cut {
+        fn read(&mut self, fid: u16, buf: &mut [u8]) -> Option<usize> {
+            self.inner.borrow_mut().read(fid, buf)
+        }
+        fn write(&mut self, fid: u16, data: &[u8]) -> Result<()> {
+            if !self.serve() {
+                return Err(Error::MemoryFatal);
+            }
+            self.log.borrow_mut().push(Op::Write(fid, data.to_vec()));
+            self.inner.borrow_mut().write(fid, data)
+        }
+        fn remove(&mut self, fid: u16) -> Result<()> {
+            if !self.serve() {
+                return Err(Error::MemoryFatal);
+            }
+            self.log.borrow_mut().push(Op::Remove(fid));
+            self.inner.borrow_mut().remove(fid)
+        }
+        fn size(&mut self, fid: u16) -> Option<usize> {
+            self.inner.borrow_mut().size(fid)
+        }
+        fn for_each_key(&mut self, f: &mut dyn FnMut(u16)) -> bool {
+            self.inner.borrow_mut().for_each_key(f)
+        }
+    }
+}

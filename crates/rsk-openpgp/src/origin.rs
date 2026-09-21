@@ -56,8 +56,12 @@ pub fn of<S: Storage>(fs: &mut Fs<S>, pk: KeyFid) -> u8 {
 pub fn mark<S: Storage>(fs: &mut Fs<S>, pk: KeyFid, origin: u8) -> Result<(), Sw> {
     let mut rec = [0u8; KEY_SLOTS];
     // A short record from an older build leaves the slots it did not cover at 0,
-    // which `of` already reads as imported.
-    let _ = fs.read(EF_KEY_ORIGIN, &mut rec);
+    // which `of` already reads as imported. A FAILED read is not that: the zeroed
+    // buffer is written straight back, so it resets every OTHER slot's origin to
+    // imported — the one claim this DO exists to make.
+    if fs.try_read(EF_KEY_ORIGIN, &mut rec).is_err() {
+        return Err(Sw::MEMORY_FAILURE);
+    }
     rec[slot_idx(pk)] = origin;
     fs.put(EF_KEY_ORIGIN, &rec).map_err(|_| Sw::MEMORY_FAILURE)
 }

@@ -13,6 +13,7 @@ use rsk_crypto::{Device, FusedKey, FusedRead, aes128_encrypt_block, ct_eq, hmac_
 use rsk_fs::{Fs, KeyFid, Storage};
 // The at-rest seal nonces' randomness and the `CHAL_BTN_TRIG` touch check are
 // `rsk-sdk`'s seams, shared with every sibling applet.
+use rsk_sdk::error::Result;
 pub use rsk_sdk::{AlwaysConfirm, Confirm, Presence, Rng, UserPresence};
 use rsk_sdk::{Apdu, Applet, ResBuf, Sw};
 use zeroize::Zeroize;
@@ -25,8 +26,8 @@ pub mod ticket;
 #[cfg(test)]
 mod tests_support;
 
-/// OTP applet AID.
-pub const OTP_AID: &[u8] = &[0xA0, 0x00, 0x00, 0x05, 0x27, 0x20, 0x01];
+/// OTP instance AID, all 8 bytes: YubiKit selects by the whole of it, ykman by 7.
+pub const OTP_AID: &[u8] = &[0xA0, 0x00, 0x00, 0x05, 0x27, 0x20, 0x01, 0x01];
 
 /// Version reported in the status record — the shared
 /// [`rsk_sdk::FIRMWARE_VERSION`].
@@ -208,7 +209,8 @@ pub struct OtpApplet<'a> {
     /// SELECT to 1/0 depending on whether any slot is programmed.
     config_seq: u8,
     /// Per-slot RAM session-use counter mixed into a typed Yubico-OTP token;
-    /// resets each power cycle. One entry per slot (1–4).
+    /// resets each power cycle. One entry per slot (1–4). It belongs to the
+    /// slot's RECORD, not to the index: `cmd_swap` moves it with the record.
     session_counter: [u8; SLOT_COUNT],
 }
 
@@ -242,14 +244,45 @@ impl<'a> OtpApplet<'a> {
     /// Read+unseal a slot into `buf`; `Some(len)` only when it holds at least a
     /// full config. A `&self` helper so the `&mut self` command handlers read a
     /// slot without pinning a device borrow across their own mutations.
+    ///
+    /// A read the medium refused reads as an absent slot here. The four gates
+    /// that decide on the answer take [`try_read_slot_m`](Self::try_read_slot_m).
+    ///
+    /// **7 functions / 11 probes keep the collapse on purpose** — 10 under
+    /// `strict-config`, where `apply_scanmap` is compiled out. The list is written
+    /// down so a new one arrives unlisted rather than unnoticed, and NOTHING
+    /// checks it: no gate in the tree derives this roster, so a name here can rot
+    /// (it did — `cmd_chal` was not a function) with every row green.
+    /// `button_ticket` (1, types nothing) · `status_bytes` (2, the valid/touch
+    /// bits) · `cmd_status_ext` (1) · [`cmd_calculate`](Self::cmd_calculate) (1,
+    /// an empty 9000 body) · `Applet::select` (2 `has_data`, the latched
+    /// `config_seq`) · `apply_scanmap` (1, falls back to ASCII) ·
+    /// [`migrate_seal`] (3: two `seal_read` and one `fs.read_key`).
+    ///
+    /// The last is the one worth reading twice, because its cost is not a status
+    /// field: a faulted probe there leaves a legacy PLAINTEXT slot unsealed for
+    /// that boot, silently, and the pass runs again next boot rather than
+    /// recording anything. It stays collapsing because the alternative — writing
+    /// on a probe it could not complete — is the one that destroys the record.
     fn read_slot_m<S: Storage>(
         &self,
         fs: &mut Fs<S>,
         fid: u16,
         buf: &mut [u8; SLOT_SIZE],
     ) -> Option<usize> {
+        self.try_read_slot_m(fs, fid, buf).ok().flatten()
+    }
+
+    /// [`read_slot_m`](Self::read_slot_m), fallible: `Err` is a medium that could
+    /// not answer, which at an access-code gate is not an unprogrammed slot.
+    fn try_read_slot_m<S: Storage>(
+        &self,
+        fs: &mut Fs<S>,
+        fid: u16,
+        buf: &mut [u8; SLOT_SIZE],
+    ) -> Result<Option<usize>> {
         let mkek = read_fused(self.mkek_source);
-        read_slot(&self.device(&mkek), fs, fid, buf)
+        try_read_slot(&self.device(&mkek), fs, fid, buf)
     }
 
     /// Seal+write a slot record. `false` on a storage failure.
@@ -295,12 +328,27 @@ impl<'a> OtpApplet<'a> {
         }
         let idx = (slot - 1) as usize;
         let t = ticket::build(&buf, self.session_counter[idx], ts_secs, rnd, out)?;
-        self.session_counter[idx] = t.new_session;
         if let Some(tail) = t.new_tail {
             let mut rec = buf;
             rec[CONFIG_SIZE..].copy_from_slice(&tail);
-            let _ = self.put_slot(fs, fid, &rec);
+            // The advance this press owes the PERSISTED half of the position. A
+            // ticket typed without it is typed again: the next press reads the old
+            // counter back and pairs it with a session this cycle already used —
+            // measured, an in-cycle repeat at the very next press. So a refused
+            // write types nothing and leaves the RAM half where the stored one is,
+            // which retries the press rather than replaying it.
+            //
+            // How often this arm runs depends on the slot: a Yubico-OTP slot owes
+            // a write on its FIRST press (the stored tail is zero) and then only
+            // at each session wrap, but an OATH-HOTP slot moves its factor on
+            // EVERY press — so a store that keeps refusing denies every HOTP press
+            // for as long as it refuses. That is a denial of service and it
+            // recovers cleanly; emitting the code twice would not.
+            if !self.put_slot(fs, fid, &rec) {
+                return None;
+            }
         }
+        self.session_counter[idx] = t.new_session;
         let (len, encode) = (t.len, t.encode);
         // Functional custom scancode map (0x12): if one is stored and the whole
         // typed output is within the covered 45-char set, emit raw scancodes so a
@@ -406,7 +454,14 @@ impl<'a> OtpApplet<'a> {
         }
         let data = &apdu.data[..apdu.nc];
         let mut stored = [0u8; SLOT_SIZE];
-        if self.read_slot_m(fs, fid, &mut stored).is_some() {
+        // A slot the medium could not read is not an unprogrammed one: the fold
+        // skipped the access-code check below, and this command's other arm
+        // DELETES the record — so one faulted probe overwrote or erased a
+        // protected slot for a host that presented nothing.
+        let Ok(programmed) = self.try_read_slot_m(fs, fid, &mut stored) else {
+            return Sw::MEMORY_FAILURE;
+        };
+        if programmed.is_some() {
             // Existing config: the host must present its access code.
             if data.len() < CONFIG_SIZE + ACC_CODE_SIZE {
                 return Sw::WRONG_LENGTH;
@@ -427,9 +482,11 @@ impl<'a> OtpApplet<'a> {
             if !self.put_slot(fs, fid, &rec) {
                 return Sw::MEMORY_FAILURE;
             }
-        } else {
-            // An all-zero config deletes the slot.
-            let _ = fs.delete(fid);
+        } else if fs.delete(fid).is_err() && slot_still_live(fs, fid) {
+            // An all-zero config deletes the slot. The reply is `status()`, taken
+            // back off flash — so a slot that did not go reports itself VALID
+            // under a 9000, which is the host being told without being told.
+            return Sw::MEMORY_FAILURE;
         }
         self.config_seq = self.config_seq.wrapping_add(1);
         self.status(fs, res)
@@ -459,7 +516,12 @@ impl<'a> OtpApplet<'a> {
             return SW_WRONG_DATA;
         }
         let mut stored = [0u8; SLOT_SIZE];
-        if self.read_slot_m(fs, fid, &mut stored).is_some() {
+        // An absent slot is updated by doing nothing, under an OK — so a read the
+        // medium refused took that arm and reported a mutation that never ran.
+        let Ok(programmed) = self.try_read_slot_m(fs, fid, &mut stored) else {
+            return Sw::MEMORY_FAILURE;
+        };
+        if programmed.is_some() {
             if data.len() < CONFIG_SIZE + ACC_CODE_SIZE {
                 return Sw::WRONG_LENGTH;
             }
@@ -533,8 +595,16 @@ impl<'a> OtpApplet<'a> {
         }
         let mut a = [0u8; SLOT_SIZE];
         let mut b = [0u8; SLOT_SIZE];
-        let na = self.read_slot_m(fs, fid1, &mut a);
-        let nb = self.read_slot_m(fs, fid2, &mut b);
+        // Fallibly, and before anything moves. A slot read as absent where the
+        // truth is present-but-unreadable loses its record twice over: its own
+        // `unmatched` gate below is skipped, the OTHER slot's `None` arm deletes
+        // it, and the other slot's record is written over it.
+        let (Ok(na), Ok(nb)) = (
+            self.try_read_slot_m(fs, fid1, &mut a),
+            self.try_read_slot_m(fs, fid2, &mut b),
+        ) else {
+            return Sw::MEMORY_FAILURE;
+        };
         // The access code gates a swap's move/delete just as it gates
         // overwrite/update/delete: a programmed slot may not be relocated or
         // deleted without its code (an unprotected slot's stored code is zero).
@@ -550,7 +620,9 @@ impl<'a> OtpApplet<'a> {
                 }
             }
             None => {
-                let _ = fs.delete(fid1);
+                if fs.delete(fid1).is_err() && slot_still_live(fs, fid1) {
+                    return Sw::MEMORY_FAILURE;
+                }
             }
         }
         match na {
@@ -560,9 +632,21 @@ impl<'a> OtpApplet<'a> {
                 }
             }
             None => {
-                let _ = fs.delete(fid2);
+                // A swallowed refusal here left this slot's record standing while
+                // the arm above copied it to the other one: one public id in two
+                // slots, holding one session counter, under a 9000.
+                if fs.delete(fid2).is_err() && slot_still_live(fs, fid2) {
+                    return Sw::MEMORY_FAILURE;
+                }
             }
         }
+        // The replay position is a PAIR — the record's persisted use counter and
+        // the slot's RAM session counter — so the volatile half moves with the
+        // record, or the move re-pairs it with one used fewer times (a replay).
+        self.session_counter.swap(
+            (fid1 - EF_OTP_SLOT1) as usize,
+            (fid2 - EF_OTP_SLOT1) as usize,
+        );
         self.config_seq = self.config_seq.wrapping_add(1);
         self.status(fs, res)
     }
@@ -823,7 +907,13 @@ impl<'a> OtpApplet<'a> {
     ) -> bool {
         for i in 0..SLOT_COUNT as u16 {
             let mut rec = [0u8; SLOT_SIZE];
-            if self.read_slot_m(fs, EF_OTP_SLOT1 + i, &mut rec).is_some()
+            // A slot the medium could not read is not an unprotected one, and this
+            // gate is the only thing between a host and what a protected slot
+            // TYPES — so an unreadable slot is one the code has not cleared.
+            let Ok(programmed) = self.try_read_slot_m(fs, EF_OTP_SLOT1 + i, &mut rec) else {
+                return false;
+            };
+            if programmed.is_some()
                 && !ct_eq(code, &rec[OFF_ACC_CODE..OFF_ACC_CODE + ACC_CODE_SIZE])
             {
                 return false;
@@ -887,17 +977,30 @@ impl<S: Storage> Applet<Fs<S>> for OtpApplet<'_> {
     }
 }
 
-/// Read+unseal a slot file; `Some(len)` only when it holds at least a full
-/// config. Legacy plaintext (pre-seal) fails GCM authentication and reads as
-/// `None` until [`migrate_seal`] re-seals it at boot.
-pub(crate) fn read_slot<S: Storage>(
+/// Whether the record is still on the device after a delete answered `Err`.
+///
+/// That `Err` folds two states, and only one of them is this applet's:
+/// `Fs::delete` drops the EF_META record FIRST and removes the value anyway, so a
+/// faulted read of that shared blob answers `Err` over a slot that really did go.
+/// An OTP slot carries no head of its own (`assurance/deleters.toml`), which
+/// makes that arm somebody else's record being unreadable — reporting `6581` for
+/// it is a false alarm over a completed delete. A probe that cannot answer counts
+/// as live, because the alarm is the safe direction once the value may be there.
+fn slot_still_live<S: Storage>(fs: &mut Fs<S>, fid: u16) -> bool {
+    fs.try_has_key(KeyFid::new(fid)) != Ok(false)
+}
+
+/// Read+unseal a slot file, CURRENT arm only; `Ok(Some(len))` at full config
+/// length. Legacy plaintext and a pre-OTP seal both read `Ok(None)` until
+/// [`migrate_seal`] re-seals them — a boot whose re-arm it refused leaves a slot
+/// that types nothing. `Err` is a medium that could not answer, not an empty slot.
+pub(crate) fn try_read_slot<S: Storage>(
     dev: &Device,
     fs: &mut Fs<S>,
     fid: u16,
     buf: &mut [u8; SLOT_SIZE],
-) -> Option<usize> {
-    let n = seal::seal_read(dev, fs, KeyFid::new(fid), buf)?;
-    (n >= CONFIG_SIZE).then_some(n)
+) -> Result<Option<usize>> {
+    Ok(seal::try_seal_read(dev, fs, KeyFid::new(fid), buf)?.filter(|&n| n >= CONFIG_SIZE))
 }
 
 /// The kind of one programming slot, as the no-host menu shows it. Derived
@@ -986,14 +1089,25 @@ pub fn migrate_seal<S: Storage>(dev: &Device, fs: &mut Fs<S>, rng: &mut dyn Rng)
         if dev.otp_key.is_some()
             && let Some(n) = seal::seal_read(&dev.without_otp(), fs, fid, &mut out)
         {
-            let _ = seal::seal_put(dev, fs, rng, fid, &out[..n]);
+            // Ahead of the write and gating it, per `rsk_fs::request_rescrub`: the
+            // copy it supersedes is the pre-OTP one. The `continue` stays outside —
+            // falling through would re-seal that ciphertext as if it were plaintext.
+            if rsk_fs::request_rescrub(fs).is_ok() {
+                let _ = seal::seal_put(dev, fs, rng, fid, &out[..n]);
+            }
             continue;
         }
         if let Some(n) = fs.read_key(fid, &mut raw) {
             // Only re-seal a genuine plaintext config; anything longer is not a
             // legacy record — the smallest sealed blob is already > SLOT_SIZE,
             // asserted at compile time in `seal.rs`.
-            if (CONFIG_SIZE..=SLOT_SIZE).contains(&n) {
+            //
+            // The re-arm is the pre-OTP one's, for a copy that is weaker still: this
+            // slot's AES key is in the clear on the medium. Gated on the OTP key
+            // because that is what `run_at_rest_lap`'s caller gates the lap on.
+            if (CONFIG_SIZE..=SLOT_SIZE).contains(&n)
+                && (dev.otp_key.is_none() || rsk_fs::request_rescrub(fs).is_ok())
+            {
                 let _ = seal::seal_put(dev, fs, rng, fid, &raw[..n]);
             }
         }
@@ -1001,6 +1115,25 @@ pub fn migrate_seal<S: Storage>(dev: &Device, fs: &mut Fs<S>, rng: &mut dyn Rng)
     out.zeroize();
     raw.zeroize();
 }
+
+/// Attempts the boot bump spends on one slot, per side, before giving up on it.
+/// What the retry is for is a SINGLE-SHOT refusal — the fault a fixture arms with
+/// one call, and the only kind either side recovers from — so the only value that
+/// is wrong is 1. Everything above it is arbitrary and nothing pins an upper
+/// bound: measured, 0 is killed by three tests while 2 and 255 both survive the
+/// whole suite. 3 is chosen because 4 slots × 3 is not a boot stall.
+///
+/// It does NOT close a refusal that persists — `Fs::put` answers `NoMemory` on a
+/// full store — and that residual is a CHOICE, not a limit this frame cannot
+/// escape. Two closures were built and measured. One carries the failure out:
+/// `power_up_bump` returns a stale-slot bitmask the applet is told about. One
+/// stays here: a per-slot "bumped this cycle" flag on `OtpApplet`, with the first
+/// press of a slot performing [`counter::boot_use_counter`]'s write itself and
+/// answering `None` if the store refuses. What ships is the other arm — keep
+/// typing — because a store that cannot be written to would otherwise silence
+/// every slot on the key. docs/threat-model.md states it that way, and a test
+/// pins the repeat so whichever arm lands is visible.
+const BUMP_TRIES: u8 = 3;
 
 /// Boot-time use-counter bump: on power-up, advance the 16-bit use counter of
 /// every plain Yubico-OTP slot (skipping HOTP / short / static slots), so a
@@ -1010,7 +1143,20 @@ pub fn power_up_bump<S: Storage>(dev: &Device, fs: &mut Fs<S>, rng: &mut dyn Rng
     let mut slot = [0u8; SLOT_SIZE];
     for i in 0..SLOT_COUNT as u16 {
         let fid = EF_OTP_SLOT1 + i;
-        let Some(n) = read_slot(dev, fs, fid, &mut slot) else {
+        // A read the medium REFUSED is not an unprogrammed slot: skipping it
+        // leaves the use counter where the last power cycle left it, while the RAM
+        // session counter restarts at zero — so that cycle's pairs are typed
+        // again. One transient fault must not buy a host that window.
+        let mut read = try_read_slot(dev, fs, fid, &mut slot);
+        for _ in 1..BUMP_TRIES {
+            if read.is_ok() {
+                break;
+            }
+            read = try_read_slot(dev, fs, fid, &mut slot);
+        }
+        // A slot that is genuinely absent, and one a persistently refusing medium
+        // never served, are both skipped — the residual docs/threat-model.md states.
+        let Ok(Some(n)) = read else {
             continue;
         };
         let tkt = slot[OFF_TKT_FLAGS];
@@ -1026,7 +1172,16 @@ pub fn power_up_bump<S: Storage>(dev: &Device, fs: &mut Fs<S>, rng: &mut dyn Rng
         let stored = u16::from_be_bytes([rec[CONFIG_SIZE], rec[CONFIG_SIZE + 1]]);
         if let Some(counter) = counter::boot_use_counter(stored) {
             rec[CONFIG_SIZE..CONFIG_SIZE + 2].copy_from_slice(&counter.to_be_bytes());
-            let _ = seal::seal_put(dev, fs, rng, KeyFid::new(fid), &rec);
+            // The write half of the same window, and it is the more reachable one:
+            // nothing has to fault for it to open, and the old record goes on
+            // reading perfectly. A retry is all this frame can do — boot has no one
+            // to report to, and the press cannot tell a stale counter from a fresh
+            // one — so the persistent case stays a residual rather than a guard.
+            for _ in 0..BUMP_TRIES {
+                if seal::seal_put(dev, fs, rng, KeyFid::new(fid), &rec) {
+                    break;
+                }
+            }
         }
     }
 }

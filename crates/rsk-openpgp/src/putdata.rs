@@ -104,9 +104,11 @@ pub fn put_data<S: Storage>(fs: &mut Fs<S>, sess: &Session, fid: u16, data: &[u8
     }
 
     let target = match fid {
-        // Routed away by the dispatch (put_reset_code / put_pw_status); rejected
-        // here so a direct call cannot write them as raw DOs.
-        EF_RESET_CODE | EF_PW_STATUS => return Sw::CONDITIONS_NOT_SATISFIED,
+        // Routed away by the dispatch (put_reset_code / put_pw_status / put_kdf);
+        // rejected here so a direct call cannot write them as raw DOs. `EF_KDF` is
+        // the one that used to fall through: stored as an opaque DO, it left the
+        // PW1/PW3 verifiers holding values `gpg` had already stopped sending (#104).
+        EF_RESET_CODE | EF_PW_STATUS | EF_KDF => return Sw::CONDITIONS_NOT_SATISFIED,
         // OpenPGP 3.4, "Access conditions for Data Objects": the DS-Counter is
         // WRITE = *Never*, reset only internally by generating or importing a new
         // signature key. It is the card's only evidence that the key was used while
@@ -141,19 +143,30 @@ pub fn put_data<S: Storage>(fs: &mut Fs<S>, sess: &Session, fid: u16, data: &[u8
 
     // Refines `RSKeyAppletPolicies!AttributeChangeInvalidatesTheKey` — SEC-POL-003.
     if let Some(slot) = algorithm_slot(fid) {
+        // Every probe below is fallible on purpose: an unreadable attribute reads as
+        // the default and an unreadable key slot reads as empty, and either one lets
+        // the invalidation be skipped while the attribute changes underneath a key
+        // that stays.
         let mut current = [0u8; 16];
-        let current = match fs.read(target, &mut current) {
+        let Ok(stored) = fs.try_read(target, &mut current) else {
+            return Sw::MEMORY_FAILURE;
+        };
+        let current = match stored {
             Some(n) if n > 0 => &current[..n.min(current.len())],
             _ => DEFAULT_ALGO,
         };
         let replacement = if data.is_empty() { DEFAULT_ALGO } else { data };
         if current != replacement {
-            if fs.has_key(slot) && fs.force_delete(slot.get()).is_err() {
-                return Sw::MEMORY_FAILURE;
+            match fs.try_has_key(slot) {
+                Ok(true) if fs.force_delete(slot.get()).is_err() => return Sw::MEMORY_FAILURE,
+                Err(_) => return Sw::MEMORY_FAILURE,
+                _ => {}
             }
             let public = slot_pub_fid(slot);
-            if fs.has_data(public) && fs.force_delete(public).is_err() {
-                return Sw::MEMORY_FAILURE;
+            match fs.try_has_data(public) {
+                Ok(true) if fs.force_delete(public).is_err() => return Sw::MEMORY_FAILURE,
+                Err(_) => return Sw::MEMORY_FAILURE,
+                _ => {}
             }
         }
     }
@@ -179,8 +192,14 @@ pub fn put_data<S: Storage>(fs: &mut Fs<S>, sess: &Session, fid: u16, data: &[u8
     // (TERMINATE DF re-seeds UIF_DEFAULT). It is the one touch setting that is meant
     // to survive an admin-PIN compromise, so the generic writer must not lower it.
     if matches!(fid, EF_UIF_SIG | EF_UIF_DEC | EF_UIF_AUT) {
+        // `try_read`: the guard fires only on the value it managed to read, so an
+        // unreadable record skipped it entirely — and `02` is clearable ONLY by a
+        // factory reset, which makes the lowering irreversible.
         let mut cur = [0u8; 2];
-        if let Some(n) = fs.read(target, &mut cur)
+        let Ok(stored) = fs.try_read(target, &mut cur) else {
+            return Sw::MEMORY_FAILURE;
+        };
+        if let Some(n) = stored
             && n >= 1
             && cur[0] == UIF_PERMANENT
             && data.first() != Some(&UIF_PERMANENT)

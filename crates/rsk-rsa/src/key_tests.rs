@@ -140,6 +140,29 @@ fn private_op_takes_the_non_crt_branch_to_the_same_answer() {
 }
 
 #[test]
+fn private_op_refuses_a_faulted_crt_intermediate() {
+    // The software half of the same composition as `crt_tests.rs`'s: a `dP` off
+    // by one leaves Garner's result congruent mod `q` only, and `mᵉ ≢ c` is the
+    // one thing that stops it. The positive vectors above cannot fall for this.
+    let mut k = test_key();
+    let mlen = k.size();
+    let mut em = [0xffu8; MAX_RSA_BYTES];
+    em[0] = 0x00;
+    em[1] = 0x01;
+    let mut out = [0u8; MAX_RSA_BYTES];
+    assert_eq!(
+        k.private_op(&em[..mlen], &mut SeqRng(5), &mut out),
+        Ok(mlen)
+    );
+
+    k.crt.as_mut().unwrap().dp += big(1);
+    assert_eq!(
+        k.private_op(&em[..mlen], &mut SeqRng(5), &mut out),
+        Err(RsaError::Failed)
+    );
+}
+
+#[test]
 fn private_op_refuses_a_block_that_is_not_below_the_modulus() {
     // `cᵈ` is only defined for `c < n`; a wider block would decrypt `c mod n`
     // and then fail the fault check anyway, so it is refused up front —

@@ -62,6 +62,20 @@ impl Session {
         }
     }
 
+    /// Re-point the standing PW1/PW3 sessions at reference values that were just
+    /// re-seeded underneath them ([`crate::kdf::put_kdf`]).
+    ///
+    /// The access statuses are deliberately left alone — a YubiKey 5.7.4 keeps
+    /// them across a KDF-DO write (measured: `PUT DATA 5E` straight after
+    /// `PUT DATA F9`, no re-VERIFY, answers `9000`). Ours cannot simply keep them
+    /// too: the session key a VERIFY derived is the one that opens the DEK, and
+    /// the re-seed has just sealed it under a different password. So the status
+    /// survives and the key it carries is replaced.
+    pub(crate) fn adopt_reseeded(&mut self, pw1: [u8; 32], pw3: [u8; 32]) {
+        self.session_pw1 = pw1;
+        self.session_pw3 = pw3;
+    }
+
     /// Clear all auth state (applet deselect) and restore the default MSE key
     /// slots.
     pub fn reset(&mut self) {
@@ -306,8 +320,23 @@ fn migrate_pin_kbase<S: Storage>(
         EF_RC => EF_DEK_RC,
         _ => return Err(Sw::EXEC_ERROR),
     };
+    // This migration is lazy — it runs on the first VERIFY, long after the boot-time
+    // at-rest scrub latched. Both writes below are appends, so the pre-OTP DEK copy
+    // and the pre-OTP verifier end up superseded but still readable in a flash dump,
+    // and both are rooted in the *public* chip serial (so the verifier is
+    // brute-forceable offline). Re-arm the scrub AHEAD of them and gate them on it:
+    // the re-arm is its own append, so a reset between the two keeps whichever landed,
+    // and a medium that refuses it reaches the losing state with no reset at all.
+    rsk_fs::request_rescrub(fs).map_err(|_| Sw::MEMORY_FAILURE)?;
     let mut blob = [0u8; DEK_FILE_SIZE];
-    if let Some(n) = fs.read_key(dek_fid, &mut blob).map(|n| n.min(blob.len())) {
+    // `try_read_key`: a read this medium could not serve is not a copy that was
+    // never written. Skipping the re-wrap and storing the verifier anyway leaves a
+    // PIN that verifies forever over a DEK nothing can open — `6A00` on every
+    // operation, with TERMINATE DF the only way back.
+    let copy = fs
+        .try_read_key(dek_fid, &mut blob)
+        .map_err(|_| Sw::MEMORY_FAILURE)?;
+    if let Some(n) = copy.map(|n| n.min(blob.len())) {
         if n < 1 || blob[0] != DEK_FORMAT_V3 {
             return Err(Sw::EXEC_ERROR);
         }
@@ -334,12 +363,6 @@ fn migrate_pin_kbase<S: Storage>(
         }
     }
     store_verifier(dev, fs, fid, pin)?;
-    // This migration is lazy — it runs on the first VERIFY, long after the boot-time
-    // at-rest scrub latched. Both writes above are appends, so the pre-OTP DEK copy and
-    // the pre-OTP verifier are now superseded but still readable in a flash dump, and
-    // both are rooted in the *public* chip serial (so the verifier is brute-forceable
-    // offline). Re-arm the scrub so the next boot reclaims their pages.
-    rsk_fs::request_rescrub(fs);
     Ok(())
 }
 
@@ -390,8 +413,12 @@ pub fn load_dek<S: Storage>(
         if let Some(stage) = stage_fid(fid)
             && fs.has_key(stage)
         {
-            let _ = fs.delete_key(stage);
-            rsk_fs::request_rescrub(fs);
+            // The re-arm leads, as at every lazy re-key: a tombstone is an append
+            // like any other. A refused one skips this retirement rather than failing
+            // the load — it is already best-effort, and a later load retries it.
+            if rsk_fs::request_rescrub(fs).is_ok() {
+                let _ = fs.delete_key(stage);
+            }
         }
         return Ok(());
     }
@@ -442,7 +469,13 @@ fn recover_staged_dek<S: Storage>(
     let opened = dev
         .decrypt_with_aad(key, &staged[2..n], PinKdf::V2, out)
         .is_ok();
-    let commit = if opened {
+    // The copy the commit below supersedes is rooted in a PIN the owner has
+    // replaced; the same reasoning as `migrate_pin_kbase`'s re-arm applies, and so
+    // do its order and its gate — ahead of the write, and the write only if it landed.
+    let re_armed = rsk_fs::request_rescrub(fs).is_ok();
+    let commit = if !re_armed {
+        Err(Sw::MEMORY_FAILURE)
+    } else if opened {
         fs.put_key(fid, Sealed::wrap(&staged[1..n]))
             .map_err(|_| Sw::MEMORY_FAILURE)
     } else {
@@ -458,9 +491,6 @@ fn recover_staged_dek<S: Storage>(
         return Err(sw);
     }
     let _ = fs.delete_key(stage);
-    // The copy just superseded is rooted in a PIN the owner has replaced; the
-    // same reasoning as `migrate_pin_kbase`'s re-arm applies.
-    rsk_fs::request_rescrub(fs);
     Ok(())
 }
 
@@ -479,6 +509,13 @@ fn stage_dek<S: Storage>(
     dek: &[u8; DEK_SIZE],
 ) -> Result<[u8; 32], Sw> {
     let stage = stage_fid(dek_fid).ok_or(Sw::EXEC_ERROR)?;
+    // The ONLY re-arm on `change_pin`, both `reset_retry` arms and `put_reset_code`'s
+    // set arm: each verifies one reference and re-keys ANOTHER its `check_pin` never
+    // migrated. It sits here, at the FIRST append of the stage/verifier/commit
+    // sequence, rather than at the commit that ends it — every one of those three is
+    // its own append, so a re-arm at the end is one a reset can take while the
+    // superseded copies stand. Make it conditional and all four open silently.
+    rsk_fs::request_rescrub(fs).map_err(|_| Sw::MEMORY_FAILURE)?;
     let session = dev.pin_derive_session(pin);
     let mut rec = [0u8; 1 + DEK_FILE_SIZE];
     rec[0] = dek_fid.get() as u8;
@@ -514,7 +551,6 @@ fn commit_staged_dek<S: Storage>(fs: &mut Fs<S>, dek_fid: KeyFid) -> Result<(), 
     staged.zeroize();
     r?;
     let _ = fs.delete_key(stage);
-    rsk_fs::request_rescrub(fs);
     Ok(())
 }
 
@@ -522,6 +558,75 @@ fn commit_staged_dek<S: Storage>(fs: &mut Fs<S>, dek_fid: KeyFid) -> Result<(), 
 /// PW verifiers at `0x1000 | mode` (`EF_PW1`/`EF_RC`/`EF_PW3`).
 fn pw_fid(p2: u8) -> u16 {
     0x1000 | p2 as u16
+}
+
+/// Make `new` the reference value of PW1 or PW3, re-sealing that PIN's DEK copy
+/// under it and giving the counter its retries back. `dek` is the plaintext a
+/// prior [`load_dek`] produced, so a caller re-seeding BOTH references opens the
+/// DEK once — the two copies hold the same key. Returns the session key `new`
+/// now derives, for a caller keeping its access status ([`Session::adopt_reseeded`]).
+///
+/// The authority is the caller's: unlike [`change_pin`] this compares no old
+/// value, so it may only be reached from a path that has already established one
+/// ([`crate::kdf::put_kdf`] runs under PW3). Stage / verifier / commit and their
+/// tear behaviour are [`stage_dek`]'s.
+pub(crate) fn reseed_pin<S: Storage>(
+    dev: &Device,
+    fs: &mut Fs<S>,
+    rng: &mut dyn Rng,
+    fid: u16,
+    new: &[u8],
+    dek: &[u8; DEK_SIZE],
+) -> Result<[u8; 32], Sw> {
+    let dek_fid = match fid {
+        EF_PW1 => EF_DEK_PW1,
+        EF_PW3 => EF_DEK_PW3,
+        _ => return Err(Sw::EXEC_ERROR),
+    };
+    check_pin_len(fid, new.len())?;
+    let session = stage_dek(dev, fs, rng, dek_fid, new, dek)?;
+    put_verifier(dev, fs, fid, new)?;
+    commit_staged_dek(fs, dek_fid)?;
+    pin_reset_retries(fs, fid, true)?;
+    Ok(session)
+}
+
+/// Deactivate the resetting code: drop its verifier, the DEK copy sealed under
+/// it, its STAGE slot and its retry budget — the four together are what RESET
+/// RETRY P1=0 walks in through, so an `Ok` over a survivor revokes a credential
+/// only on paper. The stage is the one a reader forgets: a torn or refused PUT
+/// DATA 0xD3 leaves it holding the whole DEK under the code being revoked, and
+/// nothing else retires it — `load_dek`'s retirement needs an `sess.has_rc` that
+/// needs the EF_RC this function has just deleted, and the at-rest lap cannot
+/// touch it because it is LIVE rather than superseded.
+/// `init`'s repair pass reaches the FACTORY reset code alone, so nothing else on
+/// the card clears a set one.
+///
+/// The third is not a delete, and folding its other two failures into `6581` is
+/// deliberate: `set_pin_retry_counter`'s REFERENCE_NOT_FOUND would name
+/// EF_PW_PRIV, a record neither caller ever mentions. Neither is reachable
+/// anyway — every writer puts back `&pw[..n]` or the whole default, so the record
+/// cannot shorten past the RC index. The half of that a test can hold is in
+/// `pin_tests.rs`.
+pub(crate) fn clear_reset_code<S: Storage>(fs: &mut Fs<S>, sess: &mut Session) -> Result<(), Sw> {
+    // Ahead of everything below because it holds on every exit, the refused re-arm
+    // included: the session must not keep a reset code answered for here.
+    sess.has_rc = false;
+    // Re-arm the one-shot at-rest lap (rsk-fs `EF_HARDENED`): EF_RC migrates only
+    // through its own verify, so both records tombstoned below can still be keyed
+    // under the pre-OTP arm — and clearing the code does not rotate the DEK. Ahead
+    // of the tombstones, which are appends of their own, and gating them: a reset
+    // between them and a trailing re-arm would leave the marker standing over both.
+    rsk_fs::request_rescrub(fs).map_err(|_| Sw::MEMORY_FAILURE)?;
+    let verifier = fs.delete(EF_RC).is_ok();
+    let dek = fs.delete_key(EF_DEK_RC).is_ok();
+    let staged = fs.delete_key(EF_DEK_STAGE_RC).is_ok();
+    let counter = set_pin_retry_counter(fs, EF_RC, 0).is_ok();
+    if verifier && dek && staged && counter {
+        Ok(())
+    } else {
+        Err(Sw::MEMORY_FAILURE)
+    }
 }
 
 /// VERIFY (INS 0x20).
@@ -864,11 +969,10 @@ pub fn put_reset_code<S: Storage>(
         return Sw::SECURITY_STATUS_NOT_SATISFIED;
     }
     if data.is_empty() {
-        let _ = fs.delete(EF_RC);
-        let _ = fs.delete_key(EF_DEK_RC);
-        let _ = set_pin_retry_counter(fs, EF_RC, 0);
-        sess.has_rc = false;
-        return Sw::OK;
+        return match clear_reset_code(fs, sess) {
+            Ok(()) => Sw::OK,
+            Err(sw) => sw,
+        };
     }
     sess.has_rc = false;
     let mut dek = [0u8; DEK_SIZE];

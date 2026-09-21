@@ -1,0 +1,231 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 117 and seed 6141124012609292414 with 2 workers on 18 cores with 3641MB heap and 64MB offheap memory (Mac OS X 27.0 aarch64, Azul Systems, Inc. 1.8.0_492 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Users/maxmur/Code/RS-Key/formal/RSKeySecurityState.tla
+Parsing file /private/var/folders/gg/lgcg496924x384yd58t3b9180000gn/T/Naturals.tla
+Parsing file /private/var/folders/gg/lgcg496924x384yd58t3b9180000gn/T/FiniteSets.tla
+Parsing file /private/var/folders/gg/lgcg496924x384yd58t3b9180000gn/T/TLC.tla
+Parsing file /private/var/folders/gg/lgcg496924x384yd58t3b9180000gn/T/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module RSKeySecurityState
+Starting... (2026-08-29 02:37:57)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-08-29 02:37:57.
+Error: Invariant RamNeverOutlivesFlashSeed is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ lock = [soft |-> FALSE, mism |-> 0, policyMism |-> 0]
+/\ walk = [open |-> FALSE, chan |-> "nochan"]
+/\ sys = [warmBoot |-> FALSE, clock |-> 0]
+/\ pres = [ scope |-> "none",
+  cancelReq |-> FALSE,
+  cancelBy |-> "none",
+  granted |-> "none",
+  pressing |-> FALSE,
+  spent |-> FALSE,
+  usedBy |-> "none" ]
+/\ store = [seed |-> TRUE, cred |-> {}, rpent |-> {}]
+/\ viol = {}
+/\ plat = [held |-> FALSE, verifies |-> FALSE, revoked |-> FALSE]
+/\ snap = [ pin |-> FALSE,
+  seen |-> FALSE,
+  auv |-> FALSE,
+  surv |-> {},
+  seed |-> FALSE,
+  sealed |-> FALSE ]
+/\ upSpent = FALSE
+/\ op = [kind |-> "none", t |-> "none", rp |-> "norp", step |-> 0]
+/\ pin = [set |-> FALSE, retries |-> 8, everSet |-> FALSE]
+/\ ram = FALSE
+/\ tok = [rp |-> "norp", live |-> FALSE, perms |-> {}]
+/\ gate = [ ppuat |-> FALSE,
+  ppuatStale |-> FALSE,
+  alwaysUv |-> FALSE,
+  backupSealed |-> FALSE ]
+
+State 2: <PressDown line 336, col 5 to line 339, col 41 of module RSKeySecurityState>
+/\ lock = [soft |-> FALSE, mism |-> 0, policyMism |-> 0]
+/\ walk = [open |-> FALSE, chan |-> "nochan"]
+/\ sys = [warmBoot |-> FALSE, clock |-> 0]
+/\ pres = [ scope |-> "none",
+  cancelReq |-> FALSE,
+  cancelBy |-> "none",
+  granted |-> "none",
+  pressing |-> TRUE,
+  spent |-> FALSE,
+  usedBy |-> "none" ]
+/\ store = [seed |-> TRUE, cred |-> {}, rpent |-> {}]
+/\ viol = {}
+/\ plat = [held |-> FALSE, verifies |-> FALSE, revoked |-> FALSE]
+/\ snap = [ pin |-> FALSE,
+  seen |-> FALSE,
+  auv |-> FALSE,
+  surv |-> {},
+  seed |-> FALSE,
+  sealed |-> FALSE ]
+/\ upSpent = FALSE
+/\ op = [kind |-> "none", t |-> "none", rp |-> "norp", step |-> 0]
+/\ pin = [set |-> FALSE, retries |-> 8, everSet |-> FALSE]
+/\ ram = FALSE
+/\ tok = [rp |-> "norp", live |-> FALSE, perms |-> {}]
+/\ gate = [ ppuat |-> FALSE,
+  ppuatStale |-> FALSE,
+  alwaysUv |-> FALSE,
+  backupSealed |-> FALSE ]
+
+State 3: <DeviceUnlock line 1070, col 5 to line 1075, col 42 of module RSKeySecurityState>
+/\ lock = [soft |-> FALSE, mism |-> 0, policyMism |-> 0]
+/\ walk = [open |-> FALSE, chan |-> "nochan"]
+/\ sys = [warmBoot |-> FALSE, clock |-> 0]
+/\ pres = [ scope |-> "none",
+  cancelReq |-> FALSE,
+  cancelBy |-> "none",
+  granted |-> "none",
+  pressing |-> TRUE,
+  spent |-> FALSE,
+  usedBy |-> "none" ]
+/\ store = [seed |-> TRUE, cred |-> {}, rpent |-> {}]
+/\ viol = {}
+/\ plat = [held |-> FALSE, verifies |-> FALSE, revoked |-> FALSE]
+/\ snap = [ pin |-> FALSE,
+  seen |-> FALSE,
+  auv |-> FALSE,
+  surv |-> {},
+  seed |-> FALSE,
+  sealed |-> FALSE ]
+/\ upSpent = FALSE
+/\ op = [kind |-> "none", t |-> "none", rp |-> "norp", step |-> 0]
+/\ pin = [set |-> FALSE, retries |-> 8, everSet |-> FALSE]
+/\ ram = TRUE
+/\ tok = [rp |-> "norp", live |-> FALSE, perms |-> {}]
+/\ gate = [ ppuat |-> FALSE,
+  ppuatStale |-> FALSE,
+  alwaysUv |-> FALSE,
+  backupSealed |-> FALSE ]
+
+State 4: <ResetStart line 1187, col 5 to line 1196, col 35 of module RSKeySecurityState>
+/\ lock = [soft |-> FALSE, mism |-> 0, policyMism |-> 0]
+/\ walk = [open |-> FALSE, chan |-> "nochan"]
+/\ sys = [warmBoot |-> FALSE, clock |-> 0]
+/\ pres = [ scope |-> "fido",
+  cancelReq |-> FALSE,
+  cancelBy |-> "none",
+  granted |-> "none",
+  pressing |-> TRUE,
+  spent |-> FALSE,
+  usedBy |-> "none" ]
+/\ store = [seed |-> TRUE, cred |-> {}, rpent |-> {}]
+/\ viol = {}
+/\ plat = [held |-> FALSE, verifies |-> FALSE, revoked |-> FALSE]
+/\ snap = [ pin |-> FALSE,
+  seen |-> FALSE,
+  auv |-> FALSE,
+  surv |-> {},
+  seed |-> FALSE,
+  sealed |-> FALSE ]
+/\ upSpent = FALSE
+/\ op = [kind |-> "reset", t |-> "fido", rp |-> "norp", step |-> 0]
+/\ pin = [set |-> FALSE, retries |-> 8, everSet |-> FALSE]
+/\ ram = TRUE
+/\ tok = [rp |-> "norp", live |-> FALSE, perms |-> {}]
+/\ gate = [ ppuat |-> FALSE,
+  ppuatStale |-> FALSE,
+  alwaysUv |-> FALSE,
+  backupSealed |-> FALSE ]
+
+State 5: <TouchConfirm line 386, col 5 to line 401, col 35 of module RSKeySecurityState>
+/\ lock = [soft |-> FALSE, mism |-> 0, policyMism |-> 0]
+/\ walk = [open |-> FALSE, chan |-> "nochan"]
+/\ sys = [warmBoot |-> FALSE, clock |-> 0]
+/\ pres = [ scope |-> "fido",
+  cancelReq |-> FALSE,
+  cancelBy |-> "none",
+  granted |-> "confirm",
+  pressing |-> FALSE,
+  spent |-> FALSE,
+  usedBy |-> "none" ]
+/\ store = [seed |-> TRUE, cred |-> {}, rpent |-> {}]
+/\ viol = {}
+/\ plat = [held |-> FALSE, verifies |-> FALSE, revoked |-> FALSE]
+/\ snap = [ pin |-> FALSE,
+  seen |-> FALSE,
+  auv |-> FALSE,
+  surv |-> {},
+  seed |-> FALSE,
+  sealed |-> FALSE ]
+/\ upSpent = FALSE
+/\ op = [kind |-> "reset", t |-> "fido", rp |-> "norp", step |-> 0]
+/\ pin = [set |-> FALSE, retries |-> 8, everSet |-> FALSE]
+/\ ram = TRUE
+/\ tok = [rp |-> "norp", live |-> FALSE, perms |-> {}]
+/\ gate = [ ppuat |-> FALSE,
+  ppuatStale |-> FALSE,
+  alwaysUv |-> FALSE,
+  backupSealed |-> FALSE ]
+
+State 6: <ResetConfirmed line 1216, col 5 to line 1257, col 49 of module RSKeySecurityState>
+/\ lock = [soft |-> FALSE, mism |-> 0, policyMism |-> 0]
+/\ walk = [open |-> FALSE, chan |-> "nochan"]
+/\ sys = [warmBoot |-> FALSE, clock |-> 0]
+/\ pres = [ scope |-> "fido",
+  cancelReq |-> FALSE,
+  cancelBy |-> "none",
+  granted |-> "confirm",
+  pressing |-> FALSE,
+  spent |-> FALSE,
+  usedBy |-> "none" ]
+/\ store = [seed |-> TRUE, cred |-> {}, rpent |-> {}]
+/\ viol = {}
+/\ plat = [held |-> FALSE, verifies |-> FALSE, revoked |-> FALSE]
+/\ snap = [ pin |-> FALSE,
+  seen |-> TRUE,
+  auv |-> FALSE,
+  surv |-> {},
+  seed |-> TRUE,
+  sealed |-> FALSE ]
+/\ upSpent = FALSE
+/\ op = [kind |-> "reset", t |-> "fido", rp |-> "norp", step |-> 1]
+/\ pin = [set |-> FALSE, retries |-> 8, everSet |-> FALSE]
+/\ ram = TRUE
+/\ tok = [rp |-> "norp", live |-> FALSE, perms |-> {}]
+/\ gate = [ ppuat |-> FALSE,
+  ppuatStale |-> FALSE,
+  alwaysUv |-> FALSE,
+  backupSealed |-> FALSE ]
+
+State 7: <ResetSweepSecrets line 1295, col 5 to line 1335, col 26 of module RSKeySecurityState>
+/\ lock = [soft |-> FALSE, mism |-> 0, policyMism |-> 0]
+/\ walk = [open |-> FALSE, chan |-> "nochan"]
+/\ sys = [warmBoot |-> FALSE, clock |-> 0]
+/\ pres = [ scope |-> "fido",
+  cancelReq |-> FALSE,
+  cancelBy |-> "none",
+  granted |-> "confirm",
+  pressing |-> FALSE,
+  spent |-> FALSE,
+  usedBy |-> "none" ]
+/\ store = [seed |-> FALSE, cred |-> {}, rpent |-> {}]
+/\ viol = {}
+/\ plat = [held |-> FALSE, verifies |-> FALSE, revoked |-> FALSE]
+/\ snap = [ pin |-> FALSE,
+  seen |-> TRUE,
+  auv |-> FALSE,
+  surv |-> {},
+  seed |-> TRUE,
+  sealed |-> FALSE ]
+/\ upSpent = FALSE
+/\ op = [kind |-> "reset", t |-> "fido", rp |-> "norp", step |-> 1]
+/\ pin = [set |-> FALSE, retries |-> 8, everSet |-> FALSE]
+/\ ram = TRUE
+/\ tok = [rp |-> "norp", live |-> FALSE, perms |-> {}]
+/\ gate = [ ppuat |-> FALSE,
+  ppuatStale |-> FALSE,
+  alwaysUv |-> FALSE,
+  backupSealed |-> FALSE ]
+
+8993 states generated, 2385 distinct states found, 1359 states left on queue.
+The depth of the complete state graph search is 7.
+The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 21 and the 95th percentile is 7).
+Finished in 00s at (2026-08-29 02:37:57)

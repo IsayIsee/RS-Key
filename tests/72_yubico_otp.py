@@ -29,10 +29,11 @@ except ImportError:
     sys.exit("missing dependency: pip install cryptography")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _device import find_reader  # noqa: E402
+from _device import FW_VERSION_HINT, find_reader, fw_version  # noqa: E402
 
 OTP_AID = [0xA0, 0x00, 0x00, 0x05, 0x27, 0x20, 0x01]
 MGMT_AID = [0xA0, 0x00, 0x00, 0x05, 0x27, 0x47, 0x11, 0x17]
+WANT_VERSION = list(fw_version())
 
 CONFIG_SIZE, ACC_SIZE = 52, 6
 TKT_CHAL_RESP = 0x40
@@ -130,8 +131,8 @@ def main():
     # keyboard frame protocol, and dropping it here is what makes SELECT answer
     # byte-for-byte like a real YubiKey's (`00c7232`, issue #44). This asserted
     # seven until 2026-08-08, three weeks after that landed.
-    if len(status) != 6 or list(status[:3]) != [5, 7, 4]:
-        fail(f"status record {list(status)} not a 5.7.4 6-byte record")
+    if len(status) != 6 or list(status[:3]) != WANT_VERSION:
+        fail(f"status record {list(status)} is not a 6-byte record starting {WANT_VERSION} {FW_VERSION_HINT}")
     otp.delete_slot(0x01)
     otp.delete_slot(0x03)
     status = otp.select()

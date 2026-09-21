@@ -30,7 +30,7 @@ def test_verify_pw3(card):
     assert v
 
 def test_kdf_put_none(card):
-    if card.is_yubikey:
+    if card.is_yubikey or card.kdf_moves_references:
         KDF_SETUP_NONE=b"\x81\x01\x00"
     else:
         KDF_SETUP_NONE=b""

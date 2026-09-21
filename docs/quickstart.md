@@ -103,7 +103,7 @@ Check it (optional, needs the host tools from the dev shell or `tools/`):
 
 ```sh
 rsk status        # FIDO getInfo + secure-boot + backup state, over USB
-ykman info        # needs the opt-in VIDPID=Yubikey5 build: YubiKey 5A, firmware 5.7.4, 6 apps
+ykman info        # needs the opt-in VIDPID=Yubikey5 build: YubiKey 5A, firmware 5.8.0, 6 apps
 ```
 
 On Linux, the CCID half (OpenPGP/PIV/OATH) needs `pcscd` + a polkit rule

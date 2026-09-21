@@ -13,7 +13,7 @@ itself drifts (the firmware changed, or this list went stale).
 Rule kinds, first match wins (list order = most specific first):
 
 - `Ignore`      — drop the field (per-device randomness: key material, GUIDs, salts).
-- `Tolerance`   — a live/capacity counter; any value is fine (retries, fw patch).
+- `Tolerance`   — a live/capacity counter; any value is fine (retries, occupancy).
 - `ExpectDiff`  — assert each side matches its own pattern; the diff is expected
                   but pinned, so a drift on either side is a RULE_VIOLATION.
 - `Superset`    — a set field; RS-Key may add elements, but must not *lack* one the
@@ -111,6 +111,10 @@ class Superset(Rule):
         return UNEXPECTED, f"RS-Key lacks {sorted(missing)}"
 
 
+# A dotted firmware version, as ykman prints one and `normalize.mgmt_deviceinfo` joins it.
+_VERSION = r"^\d+\.\d+\.\d+$"
+
+
 # ── The allow-list ──────────────────────────────────────────────────────────
 # Ordered; the first glob (fnmatch, case-sensitive) that matches a canonical
 # dotted path wins. Keep the most specific paths above the broad globs.
@@ -143,12 +147,19 @@ RULES = [
      Tolerance("RS-Key store capacity differs from YubiKey's 25")),
     ("*.remaining*", Tolerance("live remaining-capacity counter")),
 
-    # ── version fields — tolerate a 5.7.x patch skew across the two keys ────
-    ("fido.getinfo.firmwareVersion", Tolerance("fw version; 5.7.x patch skew")),
-    ("mgmt.version", Tolerance("reported fw version; 5.7.x patch skew")),
-    ("piv.version", Tolerance("PIV applet version; 5.7.x patch skew")),
-    ("oath.version", Tolerance("OATH applet version; 5.7.x patch skew")),
-    ("openpgp.card.version", Tolerance("OpenPGP card-spec version (both 3.4)")),
+    # ── version fields — RS-Key reports FW_VERSION (default 5.8.0, as the reference) ──
+    # A skew (another reference key, a `FW_VERSION=X.Y.Z` build) is free and the shape is
+    # pinned, as a vanished version is a regression; each surface equalling FW_VERSION is
+    # tests/*.py's check. The card-spec `openpgp.openpgp_version` (3.4 on both) has no rule.
+    ("fido.getinfo.firmwareVersion",
+     ExpectDiff(r"^\d+$", r"^\d+$", "getInfo 0x0E packs FW_VERSION; a skew is allowed, a missing field is not")),
+    ("mgmt.version", ExpectDiff(_VERSION, _VERSION, "DeviceInfo reports FW_VERSION; a skew is allowed")),
+    ("piv.piv_version", ExpectDiff(_VERSION, _VERSION, "PIV GET VERSION reports FW_VERSION; a skew is allowed")),
+    ("oath.oath_version", ExpectDiff(_VERSION, _VERSION, "OATH SELECT reports FW_VERSION; a skew is allowed")),
+    ("openpgp.application_version",
+     ExpectDiff(_VERSION, _VERSION, "OpenPGP's vendor VERSION (INS 0xF1) reports FW_VERSION; a skew is allowed")),
+    ("openpgp.gpg.card_firmware",
+     ExpectDiff(_VERSION, _VERSION, "gpg-card's Card firmware line, scdaemon's YubiKey path; a skew is allowed")),
 
     # ── identity — expected to differ, each side pinned ────────────────────
     ("usb.serialNumber",
@@ -171,8 +182,6 @@ RULES = [
     ("fido.getinfo.aaguid",
      ExpectDiff(None, r"(?i)2479c7bf", "RS-Key self-assigns AAGUID 2479c7bf-… (not Yubico's)")),
     ("openpgp.aid", ExpectDiff(None, None, "OpenPGP AID manufacturer + serial bytes differ")),
-    ("openpgp.appVersion",
-     ExpectDiff(None, r"4\.6", "vendor app version pico-openpgp 4.6.x vs Yubico's")),
 
     # ── capacity constants — RS-Key is larger, expected to differ ──────────
     ("fido.getinfo.maxMsgSize", ExpectDiff(None, r"7609", "RS-Key maxMsgSize 7609 vs real ~1200")),
@@ -183,12 +192,12 @@ RULES = [
      ExpectDiff(None, r"4078",
                 "RS-Key advertises its store's true per-value ceiling, rsk_fs::MAX_VALUE_BYTES")),
     ("fido.getinfo.maxCredBlobLength", ExpectDiff(None, r"128", "RS-Key 128 vs real 32")),
-    # A YubiKey publishes neither 0x15 nor the 0xFF entry in 0x1F; RS-Key
-    # implements the vendorPrototype arm, and CTAP 2.3 §6.11.3 ties the two, so it
-    # must publish both. Deliberate, not a fidelity gap.
+    # A YubiKey publishes neither 0x15 nor the 0xFF entry in 0x1F; RS-Key implements
+    # the arm, and §6.11.3 ties the two. Pinned EMPTY: the ids are 64-bit, and
+    # Yubico's Android SDK fails the whole getInfo on one (issue #111).
     ("fido.getinfo.vendorPrototypeConfigCommands",
-     ExpectDiff(None, None,
-                "RS-Key implements vendorPrototype, so §6.11.3 requires listing its ids")),
+     ExpectDiff(None, r"^$",
+                "RS-Key implements vendorPrototype, so §6.11.3 needs 0x15 present; §6.4 lets it be empty")),
     ("fido.getinfo.maxRPIDsForSetMinPINLength", ExpectDiff(None, None, "RS-Key 8 vs real 1")),
 
     # ── FIDO getInfo option skew (build-config), each side pinned ──────────
@@ -220,8 +229,10 @@ RULES = [
     ("fido.getinfo.extensions", Superset("RS-Key extension set is a superset")),
     ("fido.getinfo.algorithms", Superset("RS-Key advertises a superset (ES384/512/256K, +ML-DSA)")),
     ("fido.getinfo.attestationFormats", Superset("attestation-format set; order-insensitive")),
+    # Both keys route the FIDO AID onto CCID, so both list `smart-card`; the radio is
+    # the only difference left. `_scalar` sorts, hence `smart-card,usb`.
     ("fido.getinfo.transports",
-     ExpectDiff(r"nfc", r"^usb$", "RS-Key is USB-only; a real 5C NFC also lists nfc")),
+     ExpectDiff(r"nfc", r"^smart-card,usb$", "RS-Key has no radio; a real key also lists nfc")),
     ("fido.getinfo.certifications",
      ExpectDiff(None, r"(?i)<missing>", "RS-Key advertises no FIDO/FIPS certification levels")),
 
@@ -266,10 +277,6 @@ RULES = [
     ("mgmt.deviceFlags", ExpectDiff(None, r"(?i)<missing>", "RS-Key's DeviceInfo omits the device-flags tag")),
     ("mgmt.configLock", ExpectDiff(None, r"(?i)<missing>", "RS-Key's DeviceInfo omits the config-lock tag")),
     ("mgmt.tag_0x*", Ignore("vendor-specific DeviceInfo tags differ between models")),
-
-    # ── OpenPGP / OATH / OTP prose from ykman ─────────────────────────────
-    ("openpgp.application_version",
-     ExpectDiff(None, r"4\.6", "RS-Key OpenPGP app version is pico-openpgp 4.6.x; a real key tracks firmware")),
 
     # ── gpg-card / OpenSC views of the same two cards ─────────────────────
     ("openpgp.gpg.serial_number", Ignore("the OpenPGP AID embeds the chip-derived serial")),

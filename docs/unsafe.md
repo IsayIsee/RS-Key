@@ -7,11 +7,11 @@ contained. Adding a new `unsafe` requires updating this page. (Safe Rust rules
 out memory-corruption bugs in this code. It is not a security audit; see the
 [threat model](threat-model.md).)
 
-**Runtime sites: 21.** Twelve in the firmware proper (`main.rs` + `presence.rs`):
+**Runtime sites: 22.** Twelve in the firmware proper (`main.rs` + `presence.rs`):
 the interrupt-handler pair (2), the `Send` impl, the heap init, and the eight
 GPIO-pin `steal`s (the presence button, the LED power-enable rail, the nuisance
 USR LED, the display build's wake button, and — display builds only — the panel's
-CS/DC/RST/TP_RST control lines). Two for the per-core prime sieves and one
+CS/DC/RST/TP_RST control lines). Three for the per-core prime sieves and one
 stack limit per core, three in the RSA assembly FFI, two in the standalone
 flash-wipe tool.
 
@@ -25,7 +25,7 @@ flowchart TB
       d2["core0 stack limit (MSPLIM)"]
     end
     subgraph kg["firmware/src/core1.rs"]
-      e["per-core prime sieves (×2)"]
+      e["per-core prime sieves (×3)"]
       e2["core1 stack limit (MSPLIM)"]
     end
     subgraph asm["rsk-rsa"]
@@ -41,7 +41,7 @@ wrapper, or the filesystem.
 
 ## Firmware (`firmware/src/main.rs`, `firmware/src/presence.rs`)
 
-### 1–2. The high-priority interrupt executor
+### 1–2. The high-priority interrupt executor — `PLAT-UNSAFE-001`
 
 ```rust
 #[interrupt]
@@ -60,7 +60,7 @@ is the only caller.
 executor.
 *Containment:* two lines, no data touched.
 
-### 3. `unsafe impl Send for SendUsb`
+### 3. `unsafe impl Send for SendUsb` — `PLAT-UNSAFE-002`
 
 `embassy_usb::UsbDevice` is `!Send` only because it holds a list of
 `&mut dyn Handler` control-request handlers. Our only stateful handler is a
@@ -72,7 +72,7 @@ executor and embassy keeps the trait object `!Send`.
 *Containment:* the wrapper is private, constructed once, and the invariant
 (single task, single executor) is structural.
 
-### 4. Heap initialization
+### 4. Heap initialization — `PLAT-UNSAFE-003`
 
 ```rust
 unsafe { HEAP.init(core::ptr::addr_of_mut!(HEAP_MEM) as usize, HEAP_SIZE) }
@@ -85,7 +85,7 @@ static buffer used by nothing else.
 *Safe alternative:* none; every embedded allocator initializes this way.
 *Containment:* one call, before any allocation can happen.
 
-### 5–12. GPIO pin type-erasure (presence button, LED power rail, USR-LED-off, display wake + control pins, ×8)
+### 5–12. GPIO pin type-erasure (presence button, LED power rail, USR-LED-off, display wake + control pins, ×8) — `PLAT-UNSAFE-004`
 
 ```rust
 let any = unsafe { AnyPin::steal(pin) };
@@ -148,7 +148,7 @@ back while the thread executor is held — the same thread-exclusivity every
 
 ## Firmware dual-core keygen (`firmware/src/core1.rs`)
 
-### 13–14. The per-core prime sieves
+### 13–15. The per-core prime sieves — `PLAT-UNSAFE-005`
 
 ```rust
 static mut CORE0_SIEVE: IncrementalSieve = IncrementalSieve::new();
@@ -180,7 +180,7 @@ on core0; the partition (which core touches which sieve) is structural, and the 
 a candidate, scrubbed at the top of every keygen). A wrong residue can only let
 a composite through to the strong-MR/Lucas test, which still rejects it.
 
-### 15–16. The per-core stack limits (`main.rs`, `core1.rs`)
+### 16–17. The per-core stack limits (`main.rs`, `core1.rs`) — `PLAT-UNSAFE-006`
 
 ```rust
 unsafe { cortex_m::register::msplim::write(&raw const _stack_end as u32) }; // core0, entering `main`
@@ -215,7 +215,7 @@ issued by the routine that is at that moment generating and storing a key.
 
 ## RSA assembly FFI (`crates/rsk-rsa/src/lib.rs`)
 
-### 16–18. The modexp / CRT-sign calls
+### 18–20. The modexp / CRT-sign calls — `PLAT-UNSAFE-007`
 
 On-card RSA key generation needs hundreds of modular exponentiations over
 1024–2048-bit candidates. The pure-Rust path was ~7× too slow on the
@@ -234,7 +234,7 @@ all host tests exercise the same API safely.
 
 ## Flash wiper (`rsk-wipe/src/main.rs`)
 
-### 19–20. Raw flash erase/program in a critical section
+### 21–22. Raw flash erase/program in a critical section — `PLAT-UNSAFE-008`
 
 The wiper's entire job is to erase the flash the firmware lives on, from a
 RAM-resident image. It calls the ROM flash-erase/program routines inside
@@ -259,6 +259,13 @@ never ships inside the firmware.
   linker-symbol/FFI declaration blocks. These mark declarations the compiler
   cannot check. The symbols are addresses read via `addr_of!`, never
   dereferenced as data.
+- Edition-2024 *placements* in `crates/rsk-rsa/src/lib.rs`:
+  `#[cfg_attr(target_os = "none", unsafe(link_section = ".data.small_primes"))]`
+  on the small-prime table and the same on `.data.sieve_step` for
+  `IncrementalSieve::step`, so both run out of SRAM rather than through the XIP
+  cache (the 1.36× keygen regression that motivated them). The linker collects
+  `.data.*` into `.data`; a section it does not know leaves the symbol wherever
+  it lands, which costs speed rather than safety.
 
 ## What is *not* here
 

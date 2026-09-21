@@ -186,13 +186,21 @@ fn pin_caption_text(c: PinCaption) -> &'static str {
 
 /// Pixels: the entry row's left margin, dot diameter, dot pitch, and vertical centre. The
 /// row is left-aligned (not centred) so the reveal eye has a fixed home on the right.
-const ENTRY_X0: i32 = 24;
-const ENTRY_DIA: u32 = 12;
-const ENTRY_STEP: i32 = 16;
-const ENTRY_CY: i32 = 60;
+/// `pub(super)` for the overflow edge test: it used to mirror these, and a mirror lets an
+/// edit here move the row out from under its probes with the test still green.
+pub(super) const ENTRY_X0: i32 = 24;
+pub(super) const ENTRY_DIA: u32 = 12;
+pub(super) const ENTRY_STEP: i32 = 16;
+pub(super) const ENTRY_CY: i32 = 60;
 /// The most dots/digits the entry row shows before a "+" overflow marker (it fits left of
 /// the eye); a longer PIN is still entered and verified in full.
-const ENTRY_MAX_SHOWN: usize = 10;
+pub(super) const ENTRY_MAX_SHOWN: usize = 10;
+
+/// "It fits left of the eye" above, as an invariant rather than as prose. A row widened
+/// past the eye draws the "+" underneath it, which the overflow test can only read as a
+/// stale marker — a red for the wrong reason where this is a build failure.
+const _: () =
+    assert!(ENTRY_X0 + (ENTRY_MAX_SHOWN as i32 + 1) * ENTRY_STEP <= PIN_EYE_RECT.x as i32);
 
 /// The masked entry row plus the reveal (eye) toggle. Masked (`reveal = None`): a filled
 /// accent dot per entered digit over `expected` dim placeholder outlines (the design's

@@ -21,9 +21,7 @@ use minicbor::encode::{Error, Write};
 
 use crate::consts::{
     AAGUID, ALG_EDDSA, ALG_ES256, ALG_ES384, ALG_ES512, ALG_MLDSA44, ALG_MLDSA65, ALG_MLDSA87,
-    ATT_FMT_PACKED, CONFIG_AUT_DISABLE, CONFIG_AUT_ENABLE, CONFIG_EA_RPIDS,
-    CONFIG_PHY_LED_BRIGHTNESS, CONFIG_PHY_LED_GPIO, CONFIG_PHY_OPTIONS, CONFIG_PHY_VIDPID,
-    ENC_GETINFO_MEMBER_LEN, FIRMWARE_VERSION, LARGE_BLOB_EXT, MAX_CRED_ID_LENGTH,
+    ATT_FMT_PACKED, ENC_GETINFO_MEMBER_LEN, FIRMWARE_VERSION, LARGE_BLOB_EXT, MAX_CRED_ID_LENGTH,
     MAX_CREDBLOB_LENGTH, MAX_CREDENTIAL_COUNT_IN_LIST, MAX_LARGE_BLOB_SIZE, MAX_MIN_PIN_RPIDS,
     MAX_MSG_SIZE, PIN_COMPLEXITY_POLICY, TRANSPORTS,
 };
@@ -205,9 +203,10 @@ fn write_info<W: Write>(
     // 0x08 maxCredentialIdLength
     enc.u8(0x08)?.u64(MAX_CRED_ID_LENGTH)?;
 
-    // 0x09 transports — the FIDO interface is reachable over USB-HID only. (The
-    // device also presents a PC/SC smartcard interface, but the FIDO applet is on
-    // HID, so the FIDO transport list is just "usb".)
+    // 0x09 transports — USB-HID and the device's own PC/SC interface. That second
+    // one was omitted on the reading that the FIDO applet lives on HID; it does not.
+    // Measured on this build: `SELECT A0000006472F0001` over PC/SC answers `U2F_V2`
+    // and `80 10 00 00 01 04` (NFCCTAP_MSG getInfo) returns the whole map.
     enc.u8(0x09)?;
     transports(enc)?;
 
@@ -280,30 +279,10 @@ fn write_info<W: Write>(
     // slots (capacity minus the occupied EF_CRED slots), supplied by the caller.
     enc.u8(0x14)?.u16(remaining_rk)?;
 
-    // 0x15 vendorPrototypeConfigCommands — the vendorCommandIds `config.rs`
-    // dispatches under authenticatorConfig's vendorPrototype (0xFF): the soft-lock
-    // enable/disable pair and the four PicoForge phy writes.
-    //
-    // It is not optional here, and hiding it was a defect: §6.11.3 says the
-    // vendorPrototype subcommand "is only implemented if the
-    // vendorPrototypeConfigCommands member in the authenticatorGetInfo response is
-    // present", while §6.11.7 makes listing 0xFF in `authenticatorConfigCommands`
-    // (below) a MUST once it IS implemented. Advertising 0xFF without this member
-    // therefore claimed a subcommand that, by the spec's own definition, was not
-    // implemented — caught by an external CTAP 2.3 conformance runner. A YubiKey
-    // omits both together; this device implements the arm, so it publishes both.
-    // Not an obscurity loss: `docs/protocol.md` §9 already documents these ids for
-    // PicoForge, and §6.11.7 says vendors "MUST NOT count on obscurity of the
-    // vendorCommandId value as any sort of security".
-    enc.u8(0x15)?
-        .array(7)?
-        .u64(CONFIG_AUT_ENABLE)?
-        .u64(CONFIG_AUT_DISABLE)?
-        .u64(CONFIG_PHY_VIDPID)?
-        .u64(CONFIG_PHY_LED_BRIGHTNESS)?
-        .u64(CONFIG_PHY_LED_GPIO)?
-        .u64(CONFIG_PHY_OPTIONS)?
-        .u64(CONFIG_EA_RPIDS)?;
+    // 0x15 vendorPrototypeConfigCommands: present, since §6.11.3 implements the 0xFF
+    // arm only with it, and EMPTY, as §6.4 allows — the ids are 64-bit and Yubico's
+    // Android SDK fails the whole getInfo on one (issue #111). docs/protocol.md lists them.
+    enc.u8(0x15)?.array(0)?;
 
     // 0x16 attestationFormats — the formats we CHOOSE from. Only "packed": an
     // `attestationFormatsPreference` of exactly ["none"] still yields an empty
@@ -362,15 +341,15 @@ fn write_info<W: Write>(
     // still canonical. Keep in sync with the metadata statement
     // (`authenticatorGetInfo.authenticatorConfigCommands`).
     //
-    // 0xFF is listed because §6.11.7 says it must be: "authenticatorConfigCommands
+    // 0xFF is listed because §6.11.3 says it must be: "authenticatorConfigCommands
     // MUST contain an array member with the value 0xFF if this subcommand is
     // supported", and `config.rs` implements it — it is the phy/soft-lock config arm
-    // `docs/protocol.md` §9 publishes for PicoForge. Omitting it told a platform the
+    // `docs/protocol.md` §11 publishes for PicoForge. Omitting it told a platform the
     // arm was absent while the wire spec documented it. Not an obscurity measure
-    // either way: §6.11.7 also says "Vendors MUST NOT count on obscurity of the
+    // either way: §6.11.3 also says "Vendors MUST NOT count on obscurity of the
     // vendorCommandId value as any sort of security", and the arm needs an `acfg`
-    // token regardless. Its companion 0x15 lists the ids themselves — §6.11.3 ties
-    // the two, so neither is advertised without the other.
+    // token regardless. Its companion 0x15 is present and empty — §6.11.3 ties the
+    // two, so neither is advertised without the other.
     enc.u8(0x1F)?
         .array(4)?
         .u8(0x01)?

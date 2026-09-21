@@ -97,6 +97,34 @@ downgrade-exploitable bug:
 | `v0.4.0` (PIV slots) | no |
 | `v0.5.0` (signature-check fix) | **yes** |
 
+#### The marker a tool can read
+
+That flag is also machine-readable, so a flasher (`rs-key-flasher`, or anything
+else that watches releases) can raise it without a human reading the changelog.
+A downgrade-fix release carries an HTML comment in its **release body** — bare:
+
+```text
+<!-- @increase-anti-rollback-epoch -->
+```
+
+or with an optional JSON object whose `reason` is one sentence for the owner:
+
+```text
+<!-- @increase-anti-rollback-epoch{"reason": "CVE-1234 was fixed"} -->
+```
+
+The name is exact and the whole marker is one line. It is written in this
+repository's `CHANGELOG.md`, inside the released version's section, and
+`release-build.yml` copies it into the release body — re-appending it if the
+section had to be shortened, so a tool never has to care where in the notes it
+was written. A release **without** the marker is not a downgrade-fix; absence is
+the answer, not "unknown".
+
+What it means is what this page already says: *your* floor is worth raising, and
+that is your decision to make (`--rollback <your counter + 1>`). It is not an
+epoch the project assigns — there is none — and a tool must not burn anything on
+its own.
+
 When you build firmware, you check: were there downgrade-fix releases since my
 last build? If so, it is your call:
 

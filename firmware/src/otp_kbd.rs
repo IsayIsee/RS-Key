@@ -97,7 +97,7 @@ pub fn finish_response(status: [u8; REPORT_SIZE], body: &[u8]) {
     OTP_HID.lock(|c| c.borrow_mut().finish_response(status, body));
 }
 
-/// Seed the cached status frame at boot (before any host poll).
+/// Seed the cached status frame at boot; a host poll can land before it (see `OtpHid::new`).
 pub fn set_status(status: [u8; REPORT_SIZE]) {
     OTP_HID.lock(|c| c.borrow_mut().set_status(status));
 }

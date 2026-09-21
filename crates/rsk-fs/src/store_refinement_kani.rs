@@ -78,16 +78,18 @@ fn a_clean_confirm_caches_what_the_backend_said() {
     kani::cover!(!live, "the absent answer is reachable");
 }
 
-/// `Confirm(f)` with `fault = TRUE`: `record_unless_faulted` caches NOTHING, so
-/// the pair is untouched. Caching it would set the decided bit over a live file,
-/// which is audit run-36 — one transient error made permanent for the boot.
+/// `Confirm(f)` with `fault = TRUE`: `settle` caches NOTHING, so the pair is
+/// untouched. Caching it would set the decided bit over a live file, which is
+/// audit run-36 — one transient error made permanent for the boot.
 #[kani::proof]
 fn no_false_absent_survives_a_faulted_confirm() {
     let (f, g) = two_fids();
-    let live: bool = kani::any();
     let mut fs = fresh(true);
     fs.step_put(g);
-    fs.step_confirm(f, live);
+    // Not symbolic: a probe that FAILED returned none. `last_error` reports on
+    // the very read that produced the answer, so `Some` under a fault is
+    // unreachable — and the model's faulted arm carries no `Live(f)` either.
+    fs.step_confirm(f, false);
     assert!(
         fs.cache_view(f) == CacheView::CLEAR,
         "a fault was cached as a decision"

@@ -14,11 +14,12 @@
 //! a host ever has to sit through).
 //!
 //! Safety boundaries:
-//! - **Flash/XIP**: embassy-rp's flash driver brackets every erase/program
-//!   with `multicore::pause_core1()` (a RAM-resident FIFO-IRQ handshake), so
-//!   this loop's XIP fetches can never collide with a flash write. The
-//!   inter-core FIFO stays reserved for that protocol — this mailbox is
-//!   critical-section statics plus SEV/WFE.
+//! - **Flash/XIP**: embassy-rp brackets every erase/program with
+//!   `pause_core1()` and puts the flash routine in `.data.ram_func`; the
+//!   handshake core 1 waits in is ordinary `.text`, so whether the pause keeps
+//!   this loop off the array is `PLAT-XIP-001 [pending]`. The FIFO stays
+//!   reserved for that protocol — this mailbox is critical-section statics
+//!   plus SEV/WFE.
 //! - **Heap**: both cores allocate bignums; the global allocator is
 //!   critical-section-guarded (a cross-core hardware spinlock), so
 //!   allocations serialize.
@@ -139,8 +140,8 @@ pub fn stats() -> [u8; 32] {
 }
 
 /// Boot the engine (idle in WFE until the first job). Called once from `main`;
-/// from that point embassy-rp's flash driver pauses/resumes core1 around every
-/// erase/program.
+/// from that point embassy-rp pauses/resumes core1 around every erase/program —
+/// what that leaves open is the module bullet's `PLAT-XIP-001 [pending]`.
 pub fn spawn(core1: Peri<'static, CORE1>) {
     let stack = CORE1_STACK.init_with(Stack::new);
     let floor = stack.mem.as_ptr() as u32;

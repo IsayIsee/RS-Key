@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 RS-Key contributors
 
-"""Host tests for the capture cells that have to name their own device — no hardware.
+"""Host tests for the capture helpers that name a device — no hardware.
 
 `gpg` and `pkcs11-tool` take no device selector, so with both keys plugged they
-answer for whichever card scdaemon and OpenSC picked. These are the two pure
-helpers that pin them to the labelled device. Run:
+answer for whichever card scdaemon and OpenSC picked. Two pure helpers pin them to
+the labelled device, and `_fw_from` labels the snapshot with its firmware. Run:
 
     nix develop -c python -m pytest tests/interop/test_capture.py -q
 """
@@ -78,3 +78,11 @@ def test_aid_ignores_a_serial_that_only_appears_outside_the_serial_field(monkeyp
 def test_aid_is_none_when_gpg_card_fails(monkeypatch):
     _fake_run(monkeypatch, 2, "gpg-card: no card")
     assert capture._openpgp_aid("gpg-card", "37365093") is None
+
+
+# ── _fw_from ─────────────────────────────────────────────────────────────────
+
+def test_fw_label_reads_the_version_ykman_info_prints():
+    # The ykman cell keeps its own namespace; `mgmt.*` is the raw TLV's.
+    parsed = capture.nz.kv_lines("Firmware version: 5.8.0\n", "ykman.info")
+    assert capture._fw_from({"ykman_info": {"parsed": parsed}}) == "5.8.0"

@@ -18,6 +18,13 @@
 \* Until this file nothing stopped those domains being narrowed to a singleton,
 \* and all three rows would have stayed GREEN over a live defect.
 \*
+\* A FOURTH joined that class after the sweep above and was driven against the
+\* minimum rather than assumed to fit: `BugMetaDeleteTearsBlob`, `meta_delete`'s
+\* torn rewrite. Its violation is a BYSTANDER's record going, so at one FID it
+\* explores its whole space without a counterexample and falls at two -- which is
+\* also what separates it from its inverse, an arm that would redden on the
+\* subject's own record being dropped as asked.
+\*
 \* TWO columns are written by hand: the measured minimum, and THE INVARIANT IT
 \* WAS MEASURED AGAINST. The second is not decoration -- a minimum only binds
 \* configurations that check that invariant. The fairness row sits in the safety
@@ -32,20 +39,30 @@
 \* means nothing in the roster probes above it. Reading it the other way is the
 \* same mistake as reading a floor as a proof.
 \*
+\* LOWERING A MINIMUM TAKES TWO EDITS, and this is where the second one is named.
+\* The gate reads the number out of this file, so a number lowered here is a gate
+\* that agrees with it -- measured, `RSKeyStore Fids` 2 -> 1 is exit 0 on the row.
+\* Every minimum of 2 or more is therefore pinned in `scope_gate.MEASURED_MINIMA`
+\* beside the configuration it is the minimum FOR, and the pair must agree. Move
+\* one only with what re-measured it.
+\*
 \* Columns: <module>  <scope constant>  <measured minimum, or - >  <invariant, or - >
 
 \* --- RSKeySecurityState ----------------------------------------------------
-\* Measured over the 28 mutants and 2 historical configurations, one constant
-\* reduced at a time with the rest left shipped.
+\* Measured over the 28 mutants and 2 historical configurations the roster then
+\* held, one constant reduced at a time with the rest left shipped. It holds 30
+\* now: the two token-less makeCredential mutants were driven against these
+\* minima afterwards rather than assumed to fit, and move neither of them.
 \* The witness: BugCmWalkIgnoresChannel explores the whole space at one channel
 \* without a counterexample, and falls at two.
 RSKeySecurityState     Channels               2   NoAuthorizationBypass
-\* Every one of the thirty fires with a SINGLE relying party -- including the two
-\* registration-order mutants. The module comment asks for ">= 2 to exercise
+\* Every one of the thirty-two fires with a SINGLE relying party -- including the
+\* two registration-order mutants, and BugUvNotRqdIgnoresRk, whose whole defect is
+\* a registration that writes one. The module comment asks for ">= 2 to exercise
 \* rpId binding"; no mutant in the roster backs that, and the honest record says
 \* so rather than repeating the claim.
 RSKeySecurityState     RPs                    1   NoUnmanageableCredential
-\* All thirty fire at MaxClock = 0 as well, but that scope is degenerate: the
+\* All thirty-two fire at MaxClock = 0 as well, but that scope is degenerate: the
 \* clock has one value, `Tick` is never enabled, and COVERAGE=1 names it
 \* (DEAD ACTION, measured GREEN over 29 512 104 distinct). 1 is the smallest
 \* scope at which the constant means anything, so 1 is what is recorded.
@@ -67,11 +84,27 @@ RSKeyTransport         Channels               2   NoCrossChannelSplice
 \* The module's own precondition is Cap >= 2, and all three mutants fire there.
 RSKeyTransport         Cap                    2   NoBufferOverrun
 
+\* --- RSKeyAppletPolicies ----------------------------------------------------
+\* The Yubico OTP position is a PAIR over a SET of slots, and each half has its
+\* own witness. Every one of the four OTP mutants still falls with the use
+\* counter reduced to one, which is why that row does not move.
+RSKeyAppletPolicies    CounterMax             1   OtpCounterNeverRepeats
+\* The session has to be able to WRAP, because the wrap is the only place the
+\* persisted half moves and the only thing a cold boot rewinds. Measured, one
+\* below the shipped value: both BugOtpBootKeepsPosition and
+\* BugOtpSwapKeepsSession explore their whole space without a counterexample
+\* when the session cannot roll, and fall as soon as it can.
+RSKeyAppletPolicies    SessionMax             1   OtpCounterNeverRepeats
+\* The witness for the second slot: BugOtpSwapKeepsSession is the defect of
+\* re-pairing a moved record with the session counter of the slot it left, and
+\* with one slot there is nowhere to move it to -- measured, it explores the
+\* whole space with no counterexample there and falls at two.
+RSKeyAppletPolicies    Slots                  2   OtpCounterNeverRepeats
+
 \* --- where a single element is enough ---------------------------------------
-\* Every mutant of these four fires over one element; the shipped values are the
+\* Every mutant of these three fires over one element; the shipped values are the
 \* domain's real vocabulary, not a measurement.
 RSKeyAdminSurface      Caps                   1   DisabledAppletNeverDispatches
-RSKeyAppletPolicies    CounterMax             1   OtpCounterNeverRepeats
 RSKeyRetryLattice      Max                    1   NoAuthWhenBlocked
 RSKeyBootHardening     MaxWeak                1   MarkerNeverLies
 \* Not a size. The open RP2350 question (M7-Q1) is a standing assumption now,
@@ -79,6 +112,27 @@ RSKeyBootHardening     MaxWeak                1   MarkerNeverLies
 \* scripts/assumption_gate.py holds it against the tree. It stays listed here so
 \* a reader of the scope record is not left thinking it is one.
 RSKeyBootHardening     PowerOnClearsScratch2  -   -
+\* Not a size either, and not a hardware question: whether the record write and
+\* the re-arm are two STEPS. FALSE in every configuration the tiers are about --
+\* one action, no window -- and TRUE in the two order rows, which is where the
+\* order the tree ships becomes falsifiable at all. assurance/assumptions.toml
+\* carries it; listed here so a reader of the scope record is not left thinking
+\* a minimum was measured for it.
+RSKeyBootHardening     RekeyOrderModelled     -   -
+RSKeySecurityState     AlwaysUvShipped        -   -
+RSKeyTokenRefinement   AlwaysUvShipped        -   -
+TraceSecurity          AlwaysUvShipped        -   -
+\* Not a size either: a two-armed standing assumption about the permission
+\* domain, registered in assurance/assumptions.toml. The number that WOULD be a
+\* scope -- how many of the sixteen subsets the model builds -- is what the two
+\* arms differ by, and it is 5 against 16. Listed so a reader of the scope
+\* record is not left thinking a minimum was measured for it.
+RSKeySecurityState     WidePerms              -   -
+RSKeySecurityState     ForceChangeModelled    -   -
+RSKeyTokenRefinement   WidePerms              -   -
+RSKeyTokenRefinement   ForceChangeModelled    -   -
+TraceSecurity          WidePerms              -   -
+TraceSecurity          ForceChangeModelled    -   -
 
 \* --- tiers whose properties these minima were not measured against ----------
 \* The refinement tier runs the smallest scope that still has a token; the trace

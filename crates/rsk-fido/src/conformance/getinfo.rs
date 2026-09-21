@@ -16,9 +16,9 @@ use crate::consts::{
 /// `docs/protocol.md` — this test is the tripwire.
 /// 0x0B (maxSerializedLargeBlobArray) belongs to the `authenticatorLargeBlobs`
 /// command, which a `largeblob-ext` build does not serve (CTAP 2.3 §12.4).
-/// 0x19 (encIdentifier) is listed but never expected here: it needs a persistent
-/// pinUvAuthToken to key it, and `Authr::fresh()` has none. Its presence is proved
-/// where a token exists — `tests::dispatch_get_info_carries_enc_identifier_once_a_token_exists`.
+/// 0x19 and 0x1E are expected too: `ensure_seed` mints the persistent token they are
+/// sealed under, so `Authr::fresh()` publishes both —
+/// `the_sealed_members_are_published_before_any_token_is_issued` pins that.
 const GETINFO_KEYS: [u32; 26] = [
     0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
     0x14, 0x15, 0x16, 0x18, 0x19, 0x1A, 0x1B, 0x1D, 0x1E, 0x1F,
@@ -35,9 +35,6 @@ fn getinfo_envelope_and_canonical() {
         .iter()
         .copied()
         .filter(|k| *k != 0x0B || !crate::consts::LARGE_BLOB_EXT)
-        // 0x19 and 0x1E are both keyed by the persistent pinUvAuthToken, which an
-        // `Authr::fresh()` has never issued.
-        .filter(|k| *k != 0x19 && *k != 0x1E)
         .collect();
     assert_eq!(keys, expected, "getInfo top-level members changed");
 }
@@ -206,4 +203,28 @@ fn str_array(body: &[u8], key: u32) -> Vec<String> {
         out.push(d.str().unwrap().to_string());
     }
     out
+}
+
+/// 0x19 and 0x1E are published from provisioning, not from the first `pcmr`
+/// request. A platform cannot decrypt either without the token, so withholding
+/// them bought no privacy — it only hid them from a conformance runner, which
+/// reads getInfo before it is in a position to ask for anything. Both are
+/// `iv ‖ AES-128-CBC(k, 16-byte block)`, and the IV is fresh per call: a fixed one
+/// would turn either member into a stable cross-origin fingerprint served to
+/// anyone who asks.
+#[test]
+fn the_sealed_members_are_published_before_any_token_is_issued() {
+    let mut a = Authr::fresh();
+    let first = a.get_info();
+    assert_ok(&first);
+    let second = a.get_info();
+    for key in [0x19u32, 0x1E] {
+        let mut d = field_at(&first.body, key).unwrap_or_else(|| panic!("{key:#04x} present"));
+        let one = d.bytes().unwrap().to_vec();
+        assert_eq!(one.len(), 32, "{key:#04x} is iv ‖ one AES block");
+        let mut d2 = field_at(&second.body, key).unwrap_or_else(|| panic!("{key:#04x} present"));
+        let two = d2.bytes().unwrap().to_vec();
+        assert_ne!(one, two, "{key:#04x} must not repeat across calls");
+        assert_ne!(one[..16], two[..16], "the IV is what must move");
+    }
 }

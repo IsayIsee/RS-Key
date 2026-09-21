@@ -1,0 +1,6 @@
+after 51_secure_reboot.py --bootsel:
+"idProduct" = 15
+"USB Product Name" = "RP2350 Boot"
+"idVendor" = 11914
+volumes: Macintosh HD RP2350 Recovery 
+pcsc readers: []

@@ -1,0 +1,170 @@
+warning: Git tree '/Users/maxmur/Code/RS-Key' has uncommitted changes
+rs-key devshell
+  rustc:    rustc 1.96.0 (ac68faa20 2026-05-25)
+  target:   thumbv8m.main-none-eabihf
+  picotool: picotool v2.2.0-a4 (Darwin, Clang-21.1.8, Release)
+
+Build:  cargo build --release -p firmware   # pick the target crate
+  (or:  nix build .#firmware                 # hermetic → result/firmware.uf2)
+PT:     scripts/pt.sh target/thumbv8m.main-none-eabihf/release/firmware fw-pt.elf   # fence the KV store
+UF2:    picotool uf2 convert fw-pt.elf -t elf firmware.uf2
+Flash:  hold BOOTSEL, plug in the RP2350, drag firmware.uf2 to the RP2350 drive
+Check:  ./scripts/check.sh        # fmt + clippy + test + audit + deny + gitleaks
+Fuzz:   nix develop .#fuzz -c cargo fuzz run <target>
+CLI:    rsk status | rsk backup … | rsk secure-boot … | rsk otp … (rsk --help)
+TUI:    rsk-tui                    # live device dashboard
+Docs:   ./scripts/docs.sh serve    # preview the docs site (build|check)
+   Compiling rsk-sdk v0.1.0 (/private/tmp/claude-501/-Users-maxmur-Code-RS-Key/bbd3b806-f073-4a12-b54b-0a4cd11ac45b/scratchpad/wt-f002/crates/rsk-sdk)
+   Compiling rsk-sha512 v0.1.0 (/private/tmp/claude-501/-Users-maxmur-Code-RS-Key/bbd3b806-f073-4a12-b54b-0a4cd11ac45b/scratchpad/wt-f002/crates/rsk-sha512)
+   Compiling rsk-mldsa v0.1.0 (/private/tmp/claude-501/-Users-maxmur-Code-RS-Key/bbd3b806-f073-4a12-b54b-0a4cd11ac45b/scratchpad/wt-f002/crates/rsk-mldsa)
+   Compiling rsk-ec v0.1.0 (/private/tmp/claude-501/-Users-maxmur-Code-RS-Key/bbd3b806-f073-4a12-b54b-0a4cd11ac45b/scratchpad/wt-f002/crates/rsk-ec)
+   Compiling rsk-rsa v0.1.0 (/private/tmp/claude-501/-Users-maxmur-Code-RS-Key/bbd3b806-f073-4a12-b54b-0a4cd11ac45b/scratchpad/wt-f002/crates/rsk-rsa)
+   Compiling rsk-fido v0.1.0 (/private/tmp/claude-501/-Users-maxmur-Code-RS-Key/bbd3b806-f073-4a12-b54b-0a4cd11ac45b/scratchpad/wt-f002/crates/rsk-fido)
+   Compiling rsk-led v0.1.0 (/private/tmp/claude-501/-Users-maxmur-Code-RS-Key/bbd3b806-f073-4a12-b54b-0a4cd11ac45b/scratchpad/wt-f002/crates/rsk-led)
+   Compiling rsk-crypto v0.1.0 (/private/tmp/claude-501/-Users-maxmur-Code-RS-Key/bbd3b806-f073-4a12-b54b-0a4cd11ac45b/scratchpad/wt-f002/crates/rsk-crypto)
+   Compiling rsk-fs v0.1.0 (/private/tmp/claude-501/-Users-maxmur-Code-RS-Key/bbd3b806-f073-4a12-b54b-0a4cd11ac45b/scratchpad/wt-f002/crates/rsk-fs)
+   Compiling rsk-usb v0.1.0 (/private/tmp/claude-501/-Users-maxmur-Code-RS-Key/bbd3b806-f073-4a12-b54b-0a4cd11ac45b/scratchpad/wt-f002/crates/rsk-usb)
+   Compiling rsk-devconf v0.1.0 (/private/tmp/claude-501/-Users-maxmur-Code-RS-Key/bbd3b806-f073-4a12-b54b-0a4cd11ac45b/scratchpad/wt-f002/crates/rsk-devconf)
+   Compiling rsk-phy v0.1.0 (/private/tmp/claude-501/-Users-maxmur-Code-RS-Key/bbd3b806-f073-4a12-b54b-0a4cd11ac45b/scratchpad/wt-f002/crates/rsk-phy)
+   Compiling rsk-vendor v0.1.0 (/private/tmp/claude-501/-Users-maxmur-Code-RS-Key/bbd3b806-f073-4a12-b54b-0a4cd11ac45b/scratchpad/wt-f002/crates/rsk-vendor)
+   Compiling rsk-openpgp v0.1.0 (/private/tmp/claude-501/-Users-maxmur-Code-RS-Key/bbd3b806-f073-4a12-b54b-0a4cd11ac45b/scratchpad/wt-f002/crates/rsk-openpgp)
+   Compiling rsk-piv v0.1.0 (/private/tmp/claude-501/-Users-maxmur-Code-RS-Key/bbd3b806-f073-4a12-b54b-0a4cd11ac45b/scratchpad/wt-f002/crates/rsk-piv)
+   Compiling rsk-oath v0.1.0 (/private/tmp/claude-501/-Users-maxmur-Code-RS-Key/bbd3b806-f073-4a12-b54b-0a4cd11ac45b/scratchpad/wt-f002/crates/rsk-oath)
+   Compiling rsk-otp v0.1.0 (/private/tmp/claude-501/-Users-maxmur-Code-RS-Key/bbd3b806-f073-4a12-b54b-0a4cd11ac45b/scratchpad/wt-f002/crates/rsk-otp)
+   Compiling rsk-mgmt v0.1.0 (/private/tmp/claude-501/-Users-maxmur-Code-RS-Key/bbd3b806-f073-4a12-b54b-0a4cd11ac45b/scratchpad/wt-f002/crates/rsk-mgmt)
+   Compiling rsk-rescue v0.1.0 (/private/tmp/claude-501/-Users-maxmur-Code-RS-Key/bbd3b806-f073-4a12-b54b-0a4cd11ac45b/scratchpad/wt-f002/crates/rsk-rescue)
+   Compiling rsk-device v0.1.0 (/private/tmp/claude-501/-Users-maxmur-Code-RS-Key/bbd3b806-f073-4a12-b54b-0a4cd11ac45b/scratchpad/wt-f002/crates/rsk-device)
+    Finished `test` profile [optimized + debuginfo] target(s) in 6.64s
+     Running unittests src/lib.rs (/Users/maxmur/Code/RS-Key/target/aarch64-apple-darwin/debug/deps/rsk_device-ff62945e84f049d4)
+
+running 78 tests
+test ccid::tests::a_refused_config_write_is_never_acked_as_a_written_one ... ok
+test ccid::tests::an_ungated_applet_is_enabled_whatever_the_mask_says ... ok
+test ccid::tests::a_response_always_fits_one_ccid_frame ... ok
+test ccid::tests::a_write_config_whose_length_byte_lies_is_refused ... ok
+test ccid::tests::an_unknown_vendor_command_is_refused ... ok
+test ccid::tests::a_config_write_is_only_seen_after_a_refresh ... ok
+test ccid::tests::a_button_press_types_nothing_while_otp_is_disabled ... ok
+test ccid::tests::a_host_build_falls_through_to_the_applets_own_keygen ... ok
+test ccid::tests::a_completed_factory_wipe_reports_true_and_leaves_nothing ... ok
+test ccid::tests::an_empty_slot_types_nothing_either ... ok
+test ccid::tests::a_refused_factory_wipe_is_never_reported_as_a_completed_one ... ok
+test ccid::tests::disabling_both_fido_applications_removes_the_aid ... ok
+test ccid::tests::both_transports_answer_from_one_session_state ... ok
+test ccid::tests::a_ctap2_command_over_ccid_reaches_the_real_applet ... ok
+test ccid::tests::disabling_one_fido_application_does_not_leave_the_other_reachable ... ok
+test ccid::tests::disabling_otp_stops_the_function_slots_but_not_the_identify_ones ... ok
+test ccid::tests::read_config_over_the_fido_transport_answers ... ok
+test ccid::tests::scrub_wipes_the_response_buffer ... ok
+test ccid::tests::selecting_fido_over_ccid_answers_the_u2f_version_string ... ok
+test ccid::tests::the_recovery_applets_can_never_be_disabled ... ok
+test ccid::tests::a_card_reset_drops_the_verified_pin_too ... ok
+test ccid::tests::the_wipe_defers_every_applets_own_gate_records ... ok
+test ccid::tests::a_keygen_fast_path_never_fires_for_the_wrong_applet ... ok
+test ccid::tests::no_applet_defers_another_applets_record ... ok
+test ccid::tests::u2f_over_ccid_answers_its_version_command ... ok
+test click::tests::a_dispatch_drops_a_gesture_it_interrupted ... ok
+test ccid::tests::write_config_over_the_fido_transport_round_trips ... ok
+test ccid::tests::the_wipe_defers_nothing_it_was_not_asked_to ... ok
+test ccid::tests::every_applet_is_selectable_on_a_fresh_device ... ok
+test click::tests::a_dispatch_that_ends_with_the_button_up_swallows_nothing ... ok
+test click::tests::one_click_fires_slot_one_when_the_window_closes ... ok
+test click::tests::the_next_press_after_a_consumed_one_is_a_click_again ... ok
+test click::tests::the_release_of_a_press_a_ceremony_consumed_is_not_a_click ... ok
+test click::tests::two_clicks_inside_the_window_are_slot_two ... ok
+test ccid::tests::a_keygen_fast_path_judges_the_class_byte_too ... ok
+test ccid::tests::a_disabled_application_is_invisible_not_just_unreported ... ok
+test ctap::tests::a_cold_boot_is_the_default ... ok
+test ccid::tests::a_card_reset_drops_the_selection ... ok
+test ctap::tests::a_ctaphid_init_drops_a_stale_selection ... ok
+test ctap::tests::a_panel_pin_change_is_consumed_before_the_next_command_runs ... ok
+test ctap::tests::a_secure_reboot_drops_the_auth_state_but_not_the_boot_verdict ... ok
+test ctap::tests::a_select_is_never_routed_to_u2f ... ok
+test ctap::tests::a_selected_vendor_aid_is_not_hijacked_by_a_u2f_ins ... ok
+test ctap::tests::a_vendor_command_reapplies_the_configuration_outside_flash ... ok
+test ctap::tests::a_u2f_command_reaches_fido_when_nothing_is_selected ... ok
+test ctap::tests::a_warm_boot_carries_the_soft_lock_in ... ok
+test ctap::tests::a_warm_boot_is_inherited_from_the_board ... ok
+test ctap::tests::an_ordinary_command_does_not_touch_the_configuration ... ok
+test ctap::tests::every_cbor_dispatch_hands_the_soft_lock_over_for_persisting ... ok
+test ctap::tests::getinfo_advertises_the_transport_maximum ... ok
+test presence::tests::a2_nothing_is_pending_on_a_fresh_arbiter ... ok
+test ctap::tests::nothing_reboots_without_a_phy_write ... ok
+test presence::tests::a2_pending_is_true_only_for_the_scope_that_owns_the_wait ... ok
+test ctap::tests::scrub_wipes_the_response_buffer ... ok
+test presence::tests::a2_the_scope_alone_never_advertises_a_wait ... ok
+test ctap::tests::the_channel_asking_is_recorded_on_every_command ... ok
+test ctap::tests::the_security_trace_reports_the_pad_and_not_a_constant ... ok
+test presence::tests::a7_a8_cancel_otp_wait_only_bites_under_the_otp_scope ... ok
+test presence::tests::a9_a10_the_timeout_floor ... ok
+test presence::tests::one_hold_never_serves_two_transports ... ok
+test presence::tests::w1_a_cancel_left_from_an_earlier_request_is_dropped_at_entry ... ok
+test presence::tests::w2_w7_the_wait_advertises_itself_to_its_own_scope_and_stops_after ... ok
+test presence::tests::a5_a6_request_cancel_only_bites_under_the_fido_scope ... FAILED
+test presence::tests::a_scope_change_mid_wait_moves_the_advertisement_and_the_cancel_right ... FAILED
+test presence::tests::w4a_a_press_beats_a_cancel_and_a_deadline_in_the_same_iteration ... ok
+test presence::tests::w4a_a_press_on_the_first_sample_confirms ... ok
+test presence::tests::w4a_a_spent_hold_confirms_nothing_until_the_finger_lifts ... ok
+test presence::tests::w4b_the_latch_clears_on_the_release_and_the_next_iteration_confirms ... ok
+test presence::tests::w4b_the_release_iteration_cannot_itself_confirm ... ok
+test presence::tests::w4c_a_cancel_from_the_owning_transport_ends_the_wait ... ok
+test presence::tests::w4d_no_press_and_no_cancel_times_out_on_the_budget ... ok
+test presence::tests::w4c_no_cancel_crosses_a_transport_boundary ... FAILED
+test presence::tests::w5_a_ceremony_never_outlasts_the_window_it_was_given ... ok
+test presence::tests::w5_the_debounce_waits_for_the_release ... ok
+test presence::tests::w6_a_cancel_with_the_finger_down_still_spends_the_hold ... ok
+test presence::tests::w6_a_release_before_the_wait_ends_leaves_the_next_ceremony_free ... ok
+test presence::tests::w6_a_timeout_with_the_finger_down_still_spends_the_hold ... ok
+test presence::tests::w8_a_cancel_that_raced_in_does_not_leak_into_the_next_wait ... ok
+
+failures:
+
+---- presence::tests::a5_a6_request_cancel_only_bites_under_the_fido_scope stdout ----
+
+thread 'presence::tests::a5_a6_request_cancel_only_bites_under_the_fido_scope' (125770474) panicked at crates/rsk-device/src/presence_tests.rs:149:9:
+assertion `left == right` failed: CTAPHID_CANCEL reached a wait scoped to 0
+  left: true
+ right: false
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- presence::tests::a_scope_change_mid_wait_moves_the_advertisement_and_the_cancel_right stdout ----
+
+thread 'presence::tests::a_scope_change_mid_wait_moves_the_advertisement_and_the_cancel_right' (125770477) panicked at crates/rsk-device/src/presence_tests.rs:476:5:
+assertion `left == right` failed
+  left: Cancelled
+ right: Timeout
+
+---- presence::tests::w4c_no_cancel_crosses_a_transport_boundary stdout ----
+
+thread 'presence::tests::w4c_no_cancel_crosses_a_transport_boundary' (125770487) panicked at crates/rsk-device/src/presence_tests.rs:289:13:
+assertion `left == right` failed: FidoCancel ended a wait owned by 0
+  left: Cancelled
+ right: Timeout
+
+
+failures:
+    presence::tests::a5_a6_request_cancel_only_bites_under_the_fido_scope
+    presence::tests::a_scope_change_mid_wait_moves_the_advertisement_and_the_cancel_right
+    presence::tests::w4c_no_cancel_crosses_a_transport_boundary
+
+test result: FAILED. 75 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p rsk-device --lib`
+        8.20 real        19.57 user        10.03 sys
+           384483328  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              592762  page reclaims
+                4081  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                  59  signals received
+                1111  voluntary context switches
+              276974  involuntary context switches
+          2505719637  instructions retired
+           959802551  cycles elapsed
+            66585320  peak memory footprint

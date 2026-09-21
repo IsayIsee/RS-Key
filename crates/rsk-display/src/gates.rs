@@ -8,7 +8,10 @@ use super::*;
 /// Which PIN a trusted-display gate or set/change flow operates on. The **device PIN**
 /// gates local control (unlock, on-device delete, factory reset) and is independent of the
 /// **FIDO** clientPIN (WebAuthn / built-in UV). The on-screen pad and verify logic are
-/// shared; only the backing record (`EF_DEVICE_PIN` vs `EF_PIN`) and floor differ.
+/// shared; the backing record (`EF_DEVICE_PIN` vs `EF_PIN`) and the floor differ, and so
+/// do three more: no seed migration, no `clear_ppuat`, and no
+/// `clear_force_change` — a device-PIN entry ends no host token and satisfies
+/// no forced-change policy.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum PinScope {
     Device,

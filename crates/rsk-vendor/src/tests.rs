@@ -376,3 +376,62 @@ fn select_is_the_aid_and_answers_ok() {
         &[0xF0, 0x00, 0x00, 0x00, 0x01]
     );
 }
+
+/// The boot-time LED load has two arms and a fault can reach only one of them.
+///
+/// A device that never customised its LEDs has no record, and the block is seeded
+/// once so a host `CONFIG_READ` has a full block to read-modify-write. A complete
+/// boot scan decides the whole FID space, so that absence is answered from RAM and
+/// no read fault can reach it — armed persistently here to prove it.
+#[test]
+fn a_first_boot_absence_still_seeds_the_live_led_block() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    let live = [7u8; CONF_LEN];
+    let mut buf = [0u8; CONF_LEN];
+
+    medium.stick(Some(EF_LED_CONF));
+    let n = load_or_seed_led_config(&mut fs, &live, &mut buf).expect("a decided absence");
+    medium.stick(None);
+    assert_eq!((n, &buf[..]), (CONF_LEN, &live[..]));
+    assert_eq!(
+        medium.value(EF_LED_CONF).as_deref(),
+        Some(&live[..]),
+        "a first boot must still persist the block a host reads back"
+    );
+}
+
+/// The other arm: a boot walk one read fault cut short leaves every FID undecided,
+/// so the probe reaches the backend and a fault reads as that same absence — which
+/// overwrites the owner's LED configuration with the build defaults, at boot,
+/// unauthenticated.
+#[test]
+fn a_faulted_led_probe_does_not_overwrite_the_owners_block() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    let owner = [3u8; CONF_LEN];
+    fs.put(EF_LED_CONF, &owner).unwrap();
+
+    // The state the fault is live in: nothing decided, so every probe reaches the
+    // backend whether its record is present or absent.
+    let mut fs = Fs::new(fs.into_storage());
+    medium.truncate_walk(true);
+    fs.scan();
+    medium.truncate_walk(false);
+
+    let live = [7u8; CONF_LEN];
+    let mut buf = [0u8; CONF_LEN];
+    medium.stick_once(EF_LED_CONF);
+    let r = load_or_seed_led_config(&mut fs, &live, &mut buf);
+    assert_eq!(
+        medium.value(EF_LED_CONF).as_deref(),
+        Some(&owner[..]),
+        "a faulted probe overwrote the owner's LED block with the build defaults"
+    );
+    assert!(
+        r.is_err(),
+        "a boot that could not read the LED block must apply nothing, not the defaults"
+    );
+}

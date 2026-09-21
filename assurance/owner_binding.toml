@@ -1,0 +1,146 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 RS-Key contributors
+#
+# What links a REGISTERED SOURCE OWNER to the shipped binary, for
+# scripts/owner_binding_gate.py. Stage 11A work 4: a δC/Step owner named in
+# assurance/token_refinement.toml is a claim about a function; until something
+# reads the image, nothing says that function is in the firmware that ships.
+#
+# ---- What is DERIVED, and therefore NOT here ---------------------------------
+#
+# The roster. All 50 rows of assurance/token_refinement.toml, over 47 distinct
+# (file, function) sites, are read from that file — six axes, no second copy.
+# Which of them is TEST-ONLY is derived too, by the module-graph walk
+# token_refinement_gate.test_only_sources() already runs (the neighbouring row
+# holds the registry's own `test_only` field against that walk in BOTH
+# directions, so believing the derivation here is not believing a hand-written
+# field). Measured on the default image: 3 test-only owners, and a test-only
+# owner PRESENT in a shipped image is a defect rather than a bookkeeping
+# mismatch.
+#
+# Each owner's disposition — `symbol`, `inlined`, `absent` — is derived from the
+# image and never stored: a stored disposition is a value whose only source is
+# the moment somebody typed it, which is what assurance/toolchain.toml's header
+# records this tree having already paid for. An owner the source declares more
+# than once (`state.rs::reset`, four of them) is EVERY function of that name, all
+# owed, and its disposition is the weakest of theirs — a sibling with a symbol
+# does not put a function that is nowhere into the image.
+#
+# ---- NO BUILD HASH IS STORED, AND NONE IS CHECKED ----------------------------
+#
+# Said plainly because the omission is a decision and not an oversight: there is
+# no hash field in this file, assurance/image.toml carries no `sha`/`hash`/
+# `digest` either, and the artifact is pinned by PATH alone. This image's own
+# DWARF carries `DW_AT_comp_dir: /Users/maxmur/Code/RS-Key` and dependency paths
+# under `/Users/maxmur/.cargo`, so its sha256 is a fact about one machine's
+# checkout: a digest written down here would be unreadable to CI and to a third
+# party, and a rule keyed on it would be red everywhere but on the machine that
+# typed it. So the ARTIFACT and the COMMAND are hand-written — they are
+# decisions — and owner_binding_gate.digest() derives the stamp from the bytes it
+# just read, which is a receipt for WHICH file this run judged and no more.
+#
+# What that leaves open is the exit criterion's other half — that the bytes on a
+# device are the bytes this row audited — and it is NOT closed here. The
+# `bit-for-bit` row below carries the rebuild half (a workflow that runs it), and
+# assurance/platform.toml's PLAT-TOOLCHAIN-001 carries the compile half; both
+# stay open in their own registries rather than being answered by a digest in
+# this one.
+#
+# ---- The two subjects, and the third this file may NOT carry ------------------
+#
+# `BINARY-CHECKED` is the VALUE of `method` on exactly one claim, and the gate
+# pairs it with `subject` in both directions. `owner->image` ("the function this
+# roster owns is IN the image I ship") and `bit-for-bit` ("rebuilding this source
+# yields the identical bytes") are different questions with different evidence,
+# and reading the second as the first is how a supply-chain claim gets laundered
+# into a code-provenance one. Both are rows here so the pairing rule runs over
+# live data rather than over a comment; neither is marked `public`, because the
+# rule holds for EVERY row and a column that separates nothing is a weakening
+# wearing the separation's name.
+#
+# The third is `source->binary` — "the emitted machine code does what the source
+# says" — and this gate REFUSES it as a subject, by name. Presence is not
+# semantics: an owner can be in the image, at a symbol this gate names, and
+# miscompiled. That obligation belongs to assurance/platform.toml's
+# PLAT-TOOLCHAIN-001, whose status is `pending` and whose discharge sentence
+# reads "Nothing in the tree bridges MIR to the image today"; scripts/release_gate.py
+# refuses the same word off the reproducibility gate for the same reason. Naming
+# this file's subject `source->binary` would have closed that row in a `method`
+# field while the registry still holds it open.
+
+[[claim]]
+subject = "owner->image"
+method = "BINARY-CHECKED"
+artifact = "target/thumbv8m.main-none-eabihf/release/firmware"
+build = "cargo build --release -p firmware"
+statement = "Every (file, function) assurance/token_refinement.toml owns is bound to this ELF: it defines a symbol for it, or the image's DWARF carries it as an abstract instance with at least one inlined call site, or it is registered absent below with a basis this gate re-derives. The artifact is held against assurance/image.toml's `elf` so the two registries cannot name different binaries."
+
+[[claim]]
+subject = "bit-for-bit"
+method = "MEASURED"
+artifact = "result/firmware.uf2"
+build = "nix build .#firmware"
+verified_by = ".github/workflows/release-build.yml"
+statement = "The published images rebuild bit-identical per platform, per flake.lock; the release job fails if any flavor does not. Recorded here so the boundary is data: this gate cannot rebuild anything and does not discharge this row, and no run of it may raise this subject to BINARY-CHECKED. `verified_by` is not satisfied by a file that exists — the gate requires a workflow that RUNS this row's own `build`, read through gate_lines' `run:` walk."
+
+# ---- Registered absences -----------------------------------------------------
+#
+# The contract is that EVERY registered owner is in the image; these are the
+# exemptions, and each carries a `basis` the gate re-derives from the tree rather
+# than believing. The five bases are disjoint by construction — `unreached`
+# refuses a site that is cfg-gated, a trait's provided body, a `const fn`, or
+# called at all — so a row cannot be re-labelled with a neighbouring basis and
+# stay green.
+#
+# `unlinked-crate` is a fifth because `unreached` was measured to be the wrong
+# WORD for two of these rows: its caller scan was token_refinement_gate's own
+# three directories, 71 files, and both `clientpin.rs` doors are called from
+# crates/rsk-display — a fourth. The scan is 244 files now, and what makes those
+# two absent is not that nobody calls them but that their caller's crate is
+# outside the default image's dependency closure, which the gate walks from
+# firmware/Cargo.toml. An owner called from a LINKED crate can no longer be
+# registered absent on either word.
+#
+# Both rows are absences OF THE DEFAULT IMAGE and say nothing about the display
+# one. Measured against `--features display` (17 symbol / 21 inlined / 6 absent):
+# rsk-display links, both doors bind as `inlined`, and this file's two rows read
+# as stale exemptions. That build happens BELOW the row in scripts/check.sh, so
+# nothing runs into it — recorded here rather than handled, because a per-profile
+# exemption column would be a second registry keyed on a build flag.
+#
+# The three TEST-ONLY owners are NOT here and may not be: their absence is
+# derived from the module graph, and a hand-written row answering a derived
+# question is a second answer to it. The gate refuses one by name.
+#
+# `why` is prose for a reader. It is not the evidence — `basis` is — and the gate
+# says so by checking one and only requiring the other to be non-empty.
+
+[[absent]]
+file = "crates/rsk-device/src/ctap.rs"
+function = "security_trace_snapshot"
+basis = "cfg-gated"
+why = "`#[cfg(feature = \"security-trace\")]`, and rsk-device declares no `default` feature list while firmware's dependency on it enables nothing — the emulator's phase-4 recorder is not compiled into a shipped image at all"
+
+[[absent]]
+file = "crates/rsk-device/src/lib.rs"
+function = "store_pin_lock"
+basis = "trait-default-body"
+why = "the `Hooks` provided body, `fn store_pin_lock(&mut self, _lock: PinLock) {}`. firmware::handler::DeviceHooks overrides it, so the default is never monomorphised — and the override IS in the image, as its own registered owner"
+
+[[absent]]
+file = "crates/rsk-fido/src/clientpin.rs"
+function = "store_local_pin"
+basis = "unlinked-crate"
+why = "the panel's PIN-change door: its only production caller is crates/rsk-display/src/pin.rs, and `display` is what pulls that crate in. Nothing the default image links calls it, so it is dropped"
+
+[[absent]]
+file = "crates/rsk-fido/src/clientpin.rs"
+function = "spend_and_verify_local_pin"
+basis = "unlinked-crate"
+why = "the same door onto the EF_PIN retry counter, called only from crates/rsk-display/src/gates.rs — absent from this image for the reason its `column = \"firmware-display\"` records"
+
+[[absent]]
+file = "firmware/src/pin_lock.rs"
+function = "round_trips"
+basis = "const-evaluated"
+why = "a `const fn` reached only by `const _: () = assert!(round_trips(..))` items in its own file; the compiler answers it and emits no code"

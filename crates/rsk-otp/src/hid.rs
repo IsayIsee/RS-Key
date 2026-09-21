@@ -7,7 +7,7 @@
 
 use zeroize::Zeroize;
 
-use crate::crc16;
+use crate::{VERSION, crc16};
 
 /// HID feature-report size.
 pub const REPORT_SIZE: usize = 8;
@@ -309,9 +309,10 @@ impl OtpHid {
             tx: FrameTx::new(),
             state: State::Idle,
             processing: ProcessingStatus::new(),
-            // Plausible pre-boot status (version, no slots); whoever runs commands
-            // overwrites it with the real record before the host ever reads it.
-            status: [0, 5, 7, 4, 0, 0, 0, 0],
+            // Placeholder (version, sequence 0, no slots) until the worker seeds the real
+            // record. USB answers polls before then, for at least ~370 ms on a display
+            // build (panel and touch init), so an early host poll may read this one.
+            status: [0, VERSION.0, VERSION.1, VERSION.2, 0, 0, 0, 0],
             req_slot: 0,
             req_payload: [0; PAYLOAD_SIZE],
             req_ready: false,
@@ -395,7 +396,7 @@ impl OtpHid {
         }
     }
 
-    /// Seed the cached status frame at boot, before any host poll.
+    /// Seed the cached status frame at boot. A host poll can land before it (see `new`).
     pub fn set_status(&mut self, status: [u8; REPORT_SIZE]) {
         self.status = status;
     }

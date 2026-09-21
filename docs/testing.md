@@ -218,9 +218,10 @@ crypto-critical helpers, where a proof genuinely beats a sample:
   findings each needed two commands to express. It pins that the applet is
   never handed a body from a command it did not itself terminate, that a
   dropped chain leaves no bytes behind, that a secure-messaging class reaches
-  no applet, and that a SELECT for a registered AID always arrives. It is also
-  the tree's only `cfg(kani)` change to production source; the shrink and its
-  reasoning are in `applet_kani.rs`.
+  no applet, and that a SELECT for a registered AID always arrives. Its bound is
+  a `cfg(kani)` shrink of production source — the table below is the whole set —
+  and it states what it stops proving where it is written, this one in
+  `applet_kani.rs`.
 - `rsk-fs`: the `EF_META` record-walk (`rebuild_meta`) over arbitrary (corrupt)
   blobs — nothing written past the length it reports, and the old record for the
   rebuilt fid is **gone** from the output, which is what `meta_delete` and
@@ -270,6 +271,35 @@ crypto-critical helpers, where a proof genuinely beats a sample:
   begin/delete/advance/abort/finish/power-cut step preserve
   `ResetNeverWeakensSurvivingState` and its three independently named clauses.
 
+### What a proof no longer sees
+
+Some of that production source means something different under Kani than in the
+shipped build: an array cut to 16 so CBMC does not bit-blast 2 KiB, a file id
+aliased into a 24-bit map. Each such shrink narrows every proof over it, so each
+one says beside itself what it stops proving — and three `cfg(not(kani))`
+compile-time assertions carry the part of that shape a shrunk proof no longer
+can, about the width that ships.
+
+| Crate | Source | Kani-only item |
+|---|---|---|
+| `rsk-device` | `ctap.rs` | `const _` |
+| `rsk-fs` | `fs.rs` | `FID_PRESENT_BYTES` |
+| `rsk-fs` | `fs.rs` | `const _` |
+| `rsk-fs` | `lib.rs` | `EF_META` |
+| `rsk-sdk` | `applet.rs` | `CHAIN_BUF_SIZE` |
+| `rsk-sdk` | `applet.rs` | `RESP_CHAIN_CAP` |
+| `rsk-usb` | `ctaphid.rs` | `CTAP_MAX_MESSAGE` |
+| `rsk-usb` | `ctaphid.rs` | `const _` |
+
+`scripts/shrink_gate.py` derives that table from the crates and fails the merge
+gate on either direction — a shrink that arrives unrostered, and a row whose item
+has gone away — and on one that carries no reason above it. The rows are names
+only, deliberately: the values and the reason live in the code, and copying either
+here would give them a second place to rot — which is what the sentence above did
+until now. It said "one of four in the tree" and named three of them, having twice
+stayed green while a new shrink arrived, and `rsk-sdk` shrinks two constants rather
+than the one it was counted for.
+
 Kani is **not** in nixpkgs and its setup downloads a prebuilt CBMC bundle, so
 this is the one deliberately non-nix tool (install once, outside the dev
 shell):
@@ -318,27 +348,104 @@ that would otherwise die half an hour later on a confusing one. It is also the
 thing that has to be revisited if a later Kani lets the two combine, because then
 the interleaving becomes real and grouping by harness stops being safe.
 
-The split is by measured cost, not by guess (kani 0.67.0, 18-core Apple Silicon
-under load, 2026-08-13; "solve" excludes compilation, which dominates a cold
-run):
+The split is by measured cost, not by guess — but a row is not one reading, and
+its two halves must not be read as if they were. **Crates, Harnesses and Covers
+are the current tree's counts**, derived from source by `scripts/kani_gate.py`
+and held against `scripts/kani.sh`'s floors in both directions; they move the day
+a harness lands, and no run stands behind them. **Solve, Wall, Peak and Slowest
+harness are a measurement**, of one run of the command above the table, taken on
+2026-08-26 under kani 0.67.0 on the maintainer's 18-core Apple M5 Pro (48 GB,
+macOS 27) with nothing else on the machine. Nothing re-checks those four:
+`kani_gate.py` reads a row's Crates, Harnesses and Covers cells and stops there,
+so a tier that has gained harnesses since keeps the timing it was given before
+them, and only a fresh measurement moves it. "Solve" is the sum of Kani's own
+per-harness `Verification Time` and so excludes compilation; "Wall" is the whole
+command with it. "Peak" is the tier's `maximum resident set size` under
+`/usr/bin/time -l` — the largest single CBMC process, not the sum of them:
 
-| Tier | Crates | Harnesses | Covers | Solve | Slowest harness |
-|---|---|---|---|---|---|
-| `pr` | 13 | 61 | 31 | 276 s | `rsk-piv::set_protected_total_and_invariant`, 47 s |
-| `state` | 2 | 24 | 26 | ~10 min | `rsk-fido::…_at_call_site`, ~7 min (9.3 GiB peak) |
-| `all` | 17 | 87 | 51 | ~1 h 46 | `rsk-phy::serialize_parse_roundtrip`, 27 m 42 s |
-| `light1` | 4 | 27 | 23 | not yet run | `rsk-fido::…_at_call_site`, ~7 min (9.3 GiB peak) |
-| `light2` | 5 | 27 | 8 | not yet run | `rsk-rsa`'s division spec and sieve |
-| `light3` | 7 | 28 | 19 | not yet run | `rsk-mldsa`'s rounding round-trips |
-| `heavy` | 1 | 5 | 1 | ~55 min | `rsk-phy::serialize_parse_roundtrip`, 55 min (11.1 GB peak) |
+| Tier | Crates | Harnesses | Covers | Solve | Wall | Peak | Slowest harness |
+|---|---|---|---|---|---|---|---|
+| `pr` | 13 | 65 | 41 | 229 s | 251 s | 2.8 GiB | `rsk-usb::no_buffer_overrun_after_any_single_frame`, 39 s |
+| `state` | 2 | 29 | 36 | 1341 s | 1365 s | 15.3 GiB | `rsk-fido::…_at_call_site`, 6 m 06 s |
+| `all` | 17 | 94 | 67 | 3735 s | 3770 s | 19.0 GiB | `rsk-phy::serialize_parse_roundtrip`, 19 m 07 s |
+| `light1` | 4 | 32 | 35 | 528 s | 538 s | 9.3 GiB | `rsk-fido::…_at_call_site`, 5 m 35 s |
+| `light2` | 5 | 29 | 12 | 1289 s | 1300 s | 8.9 GiB | `rsk-rsa::sieve_step_keeps_residues`, 17 m 38 s |
+| `light3` | 7 | 28 | 19 | 162 s | 176 s | 2.4 GiB | `rsk-usb::no_buffer_overrun_after_any_single_frame`, 36 s |
+| `heavy` | 1 | 5 | 1 | 1785 s | 1788 s | 19.9 GiB | `rsk-phy::serialize_parse_roundtrip`, 18 m 35 s |
 
-`pr` and `state` are measured runs. `all` has never been run end to end here:
-its cover count is the two measured tiers plus `rsk-phy`'s one, so
-**`FLOOR_all` is a number no run has reached**. The `rsk-phy` times and the
-11.1 GB peak are **inherited**, not re-run: they were taken while that harness
-lived in `rsk-rescue`, and `189f24c` moved the file byte-identical.
+> **`state` is the one row re-measured after the authorization slice, and it
+> more than doubled.** Three new `credmgmt_kani.rs` harnesses drive a real
+> `pinUvAuthParam` through `verify_cm_token`, and an HMAC-SHA-256 evaluation is
+> what a bounded proof pays for at this call site: measured, a harness whose only
+> content is two of them costs 233 s on its own. Solving went 546 → 1341 s and
+> the peak 9.3 → **15.3 GiB**, over what a hosted `ubuntu-latest` has. `state` is
+> a CI step (`ci.yml`, gated on `proofs_state`), and **the margin is negative
+> before the OS is counted**: the measured peak is 16 418 144 256 bytes and a
+> `ubuntu-latest` runner is advertised at 16 GB — 16 000 000 000 bytes — so the
+> single largest CBMC process is already 418 MB over the machine's whole RAM,
+> with the kernel, the runner agent and cargo still to fit. Three ways out, and
+> the one that is **cheapest to reverse is the first**: a larger `runs-on:` label
+> is one line, moves no floor and re-measures nothing. Shrinking a `cfg(kani)`
+> constant across `rsk-fido` (`CredMgmtState::rp_index` alone is 1 KiB of
+> symbolic struct) changes every existing proof's domain, owes each one a "what
+> stops being proved", and cannot be undone without re-measuring the ratchets a
+> second time. Moving the crate to a weekly-only tier is one commit but takes
+> `rsk-fido` out of PR-time proof coverage, which is a gate weakening rather than
+> a scheduling change. The other six rows were NOT re-measured; their harness and
+> cover counts moved with the ratchets and their timings are the 2026-08-26
+> reading.
 
-None of the six figures in the Harnesses and Covers columns is kept by hand, and
+Every tier came back at exactly the floor it carried that day: the four weekly
+shards ran separately in the same session and checked the same harness names as
+`all` did, compared name by name out of the four logs against `all`'s own
+listing, for 3763 s of solving against `all`'s 3735 s. That count was the `all`
+roster **of the 2026-08-26 tree: 89 names**. The same tier is **today's
+`FLOOR_all` of 94** — the `all` row above, five harnesses later — and the four
+weekly floors still sum to it, because the shards partition the crates and
+`kani.sh` refuses to run when they stop. The count adds up; the *solving* does
+not, which is what 3763 s against 3735 s says. So `FLOOR_all` and `COVERS_all`
+are numbers a run has reached, and the reading they have reached is the 89 —
+moving it onto the 94 takes a fresh run of the four shards.
+
+Two figures this page carried are refuted by that run rather than confirmed.
+`rsk-phy`'s tier peaks at **19.9 GiB** against the 11.1 GB recorded for the
+harness alone while it still lived in `rsk-rescue` — not a like-for-like pair,
+and not a close one either, wrong in the direction that makes `heavy`'s own job
+more necessary rather than less. And `light3`'s slowest harness is not
+`rsk-mldsa`'s rounding round-trips: all four of those together take 3.7 s, and
+the shard's cost is `rsk-usb` at 54 s and `rsk-led` at 36 s. So the three shards
+are balanced 528 : 1289 : 162 s, and the crate placed in `light3` to weigh it
+down weighs nothing. Left as it is on purpose — re-balancing moves harnesses between
+shards and every shard floor with them, which is a change to make deliberately
+and not as a side effect of measuring.
+
+**Where each of these has actually run.** The four weekly shards are the CI half.
+`deep-checks.yml` run 32621720655, the Sunday cron of 2026-08-23, took `light1`
+20 m 33 s, `light2` 54 m 52 s, `light3` 4 m 59 s and `heavy` 1 h 33 m 41 s on
+hosted `ubuntu-latest` runners, all four inside the 6 h job cap — and only one of
+the four is a reading of the roster above. That run was `main` at `06813cc1`,
+where `FLOOR_all` was 66 against today's `FLOOR_all` of 94, `light1` carried 17
+harnesses against today's `FLOOR_light1` of 32 and `light2` 21 against today's
+`FLOOR_light2` of 29. A run that proved 17 of `light1` is not evidence for a
+`light1` floor of 32.
+
+By *cost* it reads better than by count, and the two answers should not be
+conflated. Every harness the three shards have gained since is in one crate each
+— `rsk-fido` 3 → 13 in `light1`, `rsk-fs` 5 → 13 in `light2`, `rsk-usb` 3 → 8 in
+`light3` — and the single harness that dominates any of them,
+`rsk-rsa::sieve_step_keeps_residues` at 82% of `light2`, was in that run already.
+So the times are better evidence than the floors are. `heavy` needs no such
+correction at all: 5 harnesses and 1 cover then and now, over a proof file
+`189f24c` moved byte-identical. It is also the job that died twice while this
+split was being drawn, which makes its 1 h 33 m 41 s the figure that mattered.
+The three `light*` floors still owe a reading, and the next Sunday cron is the
+first that can give them one.
+
+`all` is the maintainer's half and stays off CI by arithmetic: one job costs what
+the four cost between them, which on this machine is 3770 s of wall clock against
+their 3802 s. It runs where the table says.
+
+None of the fourteen figures in the Harnesses and Covers columns is kept by hand, and
 neither are `kani.sh`'s `FLOOR_*`/`COVERS_*`. `scripts/kani_gate.py` counts the
 tree's `#[kani::proof]` and `kani::cover!` per tier — comments stripped, since two
 `*_kani.rs` files discuss `kani::cover!` in prose — and fails the merge gate on
@@ -347,21 +454,19 @@ by the instruction "raise it in the commit that adds one", and `FLOOR_all` drift
 to 64 against a tree of 65: one harness could have gone missing under a floor that
 still passed.
 
-`pr` passes `--harness-timeout 5m`, five times its slowest harness. That cap is
+`pr` passes `--harness-timeout 5m`, seven times its slowest harness. That cap is
 the tripwire on the tier assignment: a fast-tier harness that grows past it
 fails the pull request instead of quietly making every one of them wait, and the
 answer is to move its crate to the slow list, never to raise the cap.
 
 A harness that trips its cap ends the whole row, and it ends it *above* the floor
 checks: `cargo kani` exits 1, `pipefail` makes that the pipeline's, and the script
-stops at the `tee`. Both measured on kani 0.67.0, 2026-08-13. That matters for
-`TIMEOUT_all=30m`, because the harness it is really about —
-`serialize_parse_roundtrip` — verified in **27 m 42 s** here, an 8% margin, on an
-18-core Apple Silicon under load. The `~80 min` this page carried for it is not
-reproduced; if it is right for a slower runner then the daily row has been failing
-on a correct harness, and `FLOOR_all` and `COVERS_all` have never been read. The
-`~1 h 45` in the Solve column above still includes the old figure and no one has
-re-composed it.
+stops at the `tee`. Both measured on kani 0.67.0, 2026-08-13. That is why `all`
+and the four weekly tiers now cap at `6h`, the runner's own ceiling: there a cap
+that fires costs the row its floors, so it reports nothing rather than reporting
+a slow proof. The 30-minute cap it replaced had an 8% margin over
+`serialize_parse_roundtrip` at 27 m 42 s and none at all against the ~80 min a
+hosted runner once recorded; the harness takes 18 m 35 s on the machine above.
 
 Pin the version — a verdict belongs to the tool that gave it, and an unpinned
 install is not the one CI runs. `--harness-timeout` is experimental (hence the
@@ -445,9 +550,11 @@ exclusion and its reason live in that guard, next to the roster it belongs to.
 machine — PIN retries, the pinUvAuthToken and its permissions, which transport
 owns the touch, which channel owns a stateful walk, the reset window, the
 persistent gate records, and the position at which power is lost inside a
-multi-write flash sequence. TLC checks six named invariants exhaustively at
-small constants; the names are the ones the `rsk-fido` Kani harnesses use, so
-one property reads model → code → harness by grep.
+multi-write flash sequence. TLC checks eight security invariants exhaustively at
+the firmware's own PIN-retry constants — `Shipped.cfg`'s INVARIANTS block names
+nine, and `TypeOK` is the one no mutant targets. Four of the eight are also Kani
+harness names — three in `rsk-fido`, `NoCrossTransportTouchConsumption` in
+`rsk-device` — so those four read model → code → harness by grep.
 
 It exists because Kani proves a property over *one call* and RS-Key's dangerous
 defects have lived in *orderings*. It is a **design artefact, not a proof of the
@@ -462,10 +569,46 @@ nix develop            # exports TLA2TOOLS_JAR; the JVM comes with it
 cd formal && ./gen-configs.sh && ./run-tlc.sh safety   # the tier CI runs
 ```
 
-`safety` is the nine shipped models, their 71 mutation switches, floors and the vacuity check —
-`deep-checks.yml`'s weekly `formal` row, which also fires on any push touching
-`formal/`. `liveness` is the temporal half and is not in CI: it needs a 12g
-heap. `all` is both. Tier membership lives in `formal/run-tlc.sh`.
+<!-- run-count-tlc-roster:start -->
+<!-- Generated by scripts/run_count_gate.py --write; do not edit. -->
+`safety` is the nine shipped models, the 90 mutation switches that have a
+configuration family of their own (92 `Bug*` switches exist;
+`BugDeadTokenAuthorized`, `BugRecordWriteBeforeRearm` have none), floors and
+the vacuity check.
+<!-- run-count-tlc-roster:end -->
+
+That tier is `deep-checks.yml`'s weekly `formal` row, which also fires on any
+push touching `formal/`. `liveness` is the temporal half and is not in CI: it
+needs a 12g heap. `all` is both. Tier membership lives in `formal/run-tlc.sh`.
+
+<!-- run-count-tlc-measured:start -->
+<!-- Generated by scripts/run_count_gate.py --write; do not edit. -->
+Both tiers are measured runs, not sums. On 2026-09-19, on the Apple M5 Pro (18
+cores) of the Kani table above at the default `WORKERS=2`, `safety` came back
+over **224 configurations in 8683 s — 25 GREEN, 199 RED, and not one row that
+missed what `floors.txt` asks of it**; `liveness` took **2616 s** for its 4, at
+the heap that file gives each of them.
+<!-- run-count-tlc-measured:end -->
+
+Every number in that paragraph is counted out of `formal/runs.toml`, which keeps
+the runner's own matrix per tier; `scripts/run_count_gate.py` writes the
+paragraph and refuses a run-count typed anywhere else on this page. CI has the
+`safety` half: `deep-checks.yml` run 32684551258 discharged it in 1 h 14 m 47 s
+against a 120-minute cap.
+
+> **That cap is the thing to watch, and the margin shrank once already.**
+> `safety` was 2003 s here before the token-less `makeCredential` widening, and
+> `Shipped.cfg` alone went 48 679 968 distinct to the count the generated
+> paragraph above prints — which is why what it costs now is not typed here.
+> The CI figure was measured on that older tree, so scaling it by the ratio
+> between the two local readings is the only projection available, and it
+> leaves the row minutes of headroom rather than the three quarters of an hour
+> it used to have. Nothing has timed out — that is a projection off one local
+> ratio, not a measurement of the runner — but the next model widening should
+> re-measure the CI row before assuming it fits. `liveness` has no CI row and is
+> the maintainer's, and
+`Liveness_Full.cfg` is nobody's yet — `floors.txt` reserves it a 24 GB heap that
+no run has asked for.
 
 The emulator CI also records raw security-state snapshots from the real
 `21_pin_webauthn` suite and replays them against `RSKeySecurityState`. R4a
@@ -490,15 +633,22 @@ See [Cross-reset refinement pilot](reset-refinement.md) for the abstraction
 boundary, measurements, and the still-required per-board HIL witness.
 
 The companion co-refutation run asks whether production tests reject those
-same semantic defects. The original phase-2 baseline is fixed at 28 rows:
-26 are killed by code-level harnesses, two are unreachable by construction,
-and none remains a gap. Its generated table is in `formal/README.md`; ordinary
-`check.sh` rejects drift, while the full 67-entry live roster runs weekly:
+same semantic defects.
+
+<!-- run-count-comutate-roster:start -->
+<!-- Generated by scripts/run_count_gate.py --write; do not edit. -->
+The original phase-2 baseline is fixed at 31 rows, and the full 85-entry live
+roster runs weekly.
+<!-- run-count-comutate-roster:end -->
+
+Which of those rows a code-level harness kills, and which are unreachable by
+construction, is the generated table in `formal/README.md` and is not restated
+here; ordinary `check.sh` rejects a stale copy of it.
 
 ```sh
 python scripts/comutate.py --lint
 python scripts/comutate.py run
-python scripts/comutate.py run --write-readme  # full run, then refresh 28 rows
+python scripts/comutate.py run --write-readme  # full run, then refresh its table
 ```
 
 ## Formal claims — what is and is not verified
@@ -521,12 +671,17 @@ is measured; nothing in it is an aspiration.
 > reset phases, abort and reboot; the complete `FidoState` and byte-level flash
 > are linked by unit tests and sampled power-cut fuzz, not by that proof. On top
 > of that sits a
-> **TLA+ model** of the authenticator's security state. TLC checks six named
-> invariants exhaustively over 60,020,016 states at small constants. **That
-> is a result about the model, not about the firmware binary**: it is only as
-> good as the model's fidelity to the code. Citations and co-refutation are
-> maintained by hand; a bounded emulator trace also checks raw C-state → B and
-> α(C) = γ(B) at recorded boundaries, but says nothing about unrecorded runs. Every
+> **TLA+ model** of the authenticator's security state.
+> <!-- run-count-shipped-row:start -->
+> <!-- Generated by scripts/run_count_gate.py --write; do not edit. -->
+> TLC checks 11 named invariants exhaustively over 108 618 956 distinct states at
+> the firmware's own PIN-retry constants.
+> <!-- run-count-shipped-row:end -->
+> **That is a result about the model, not about the
+> firmware binary**: it is only as good as the model's fidelity to the code.
+> Citations and co-refutation are maintained by hand; a bounded emulator trace
+> also checks raw C-state → B and α(C) = γ(B) at recorded boundaries, but says
+> nothing about unrecorded runs. Every
 > invariant has been shown to be breakable by an injected defect, so none of
 > them is a check that cannot fail — and the model has already produced two
 > counterexamples on the shipped tree, both fixed and co-refuted since.
@@ -565,7 +720,7 @@ nix develop -c python tests/75_seed_backup.py --pin <your PIN>
   a real YubiKey would answer just as well (`51` probes Yubico's own management AID).
   Those five refuse an unmarked reader rather than accept a lone stranger, so a build
   whose `USB_PRODUCT` drops the marker has to name its reader with `RSK_TEST_READER`.
-- Version assertions follow `FW_VERSION` (default 5.7.4, [build.md](build.md)). An
+- Version assertions follow `FW_VERSION` (default 5.8.0, [build.md](build.md)). An
   image built with an override needs the same value in the test environment:
   `FW_VERSION=1.4.0 python tests/31_openpgp_select.py`.
 - Numbering: `0x` transport smoke, `1x` FIDO basics, `2x` FIDO full,

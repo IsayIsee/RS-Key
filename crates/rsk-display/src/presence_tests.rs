@@ -259,3 +259,44 @@ fn only_the_ceremony_ask_pops_the_approved_card() {
          ceremony lost its Approved pop, or a card signature is now paying it"
     );
 }
+
+/// The class behind issue #107, swept at the door rather than one site at a time.
+/// `Ctx` holds `fs` AND `rng` borrowed for the whole CTAP dispatch and then calls the
+/// panel through this trait, so ANY shared-cell borrow reachable from an entry point
+/// is a BorrowMutError — and under `panic-halt` that is a board that dies mid-ceremony
+/// and returns only on the reset button. The pad was one such site (`pin.rs`, the
+/// scrambled layout); this drives every entry point with both cells held, so the next
+/// one is a red test rather than a dead board.
+#[test]
+fn every_presence_entry_point_survives_a_held_dispatch() {
+    let env = Env::new();
+    let ui = prompt(&env, Pad::taps(&[allow(), allow(), allow(), allow()]), 400);
+    {
+        let mut u = ui.borrow_mut();
+        u.scramble_pin = true; // the branch that regressed
+    }
+    // Exactly what `rsk_device::ctap` holds around the dispatch that raises the panel.
+    let _fs = env.fs.borrow_mut();
+    let _rng = env.rng.borrow_mut();
+
+    // Every method a dispatch can call on the handle, and both `request_ceremony`
+    // arms — `Register` routes to the passkey card, `Generic` to the hold prompt,
+    // and only one of them would be driven by picking either.
+    let mut p = TouchPresence::new(&ui);
+    assert!(rsk_sdk::UserPresence::shows_confirm(&p));
+    let _ = rsk_sdk::UserPresence::uv_available(&p);
+    let _ = p.poll_pressed();
+    let _ = rsk_sdk::UserPresence::request(&mut p, sign_in());
+    let _ = rsk_sdk::UserPresence::request_ceremony(&mut p, sign_in());
+    let _ = rsk_sdk::UserPresence::request_ceremony(
+        &mut p,
+        Confirm::register(b"example.com", b"alex@example.com"),
+    );
+    let mut out = [0u8; 64];
+    let _ = rsk_sdk::UserPresence::collect_pin(&mut p, 4, &mut out);
+    let _ = rsk_sdk::UserPresence::collect_device_pin(&mut p, 4, &mut out);
+    // The CCID secure-PIN entry point: `pub`, not on the trait, reached straight
+    // from `firmware/src/worker.rs`, and so outside every rule written about the
+    // trait alone.
+    let _ = p.collect_pin_titled("OpenPGP PIN", 6, &mut out);
+}

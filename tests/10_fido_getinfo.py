@@ -29,8 +29,8 @@ AAGUID = bytes(
     [0x24, 0x79, 0xC7, 0xBF, 0x6B, 0x30, 0x56, 0x83,
      0x9E, 0xC8, 0x0E, 0x81, 0x71, 0xA9, 0x18, 0xB7]
 )
-# getInfo firmwareVersion (field 0x0E) packs the version the management applet also
-# reports: the default 5.7.4 = (5<<16)|(7<<8)|4.
+# getInfo firmwareVersion (field 0x0E) is the version the management applet also
+# reports, packed as (major<<16)|(minor<<8)|patch; `fw_version()` follows FW_VERSION.
 _MAJOR, _MINOR, _PATCH = fw_version()
 FIRMWARE_VERSION = (_MAJOR << 16) | (_MINOR << 8) | _PATCH
 
@@ -76,9 +76,8 @@ def _decode(b, i):
     elif info == 26:
         val, i = int.from_bytes(b[i : i + 4], "big"), i + 4
     elif info == 27:
-        # 8-byte uints reach getInfo through `vendorPrototypeConfigCommands`
-        # (0x15), whose vendorCommandIds are u64. Omitting this arm made the
-        # decoder reject the device's own response the day that member appeared.
+        # getInfo carried 8-byte uints in 0x15 until 0x09D5, and they are legal
+        # CBOR: without this arm the decoder rejected the device's own response.
         val, i = int.from_bytes(b[i : i + 8], "big"), i + 8
     else:
         raise ValueError(f"unsupported additional info {info}")

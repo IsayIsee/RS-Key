@@ -3,6 +3,7 @@
 
 use super::*;
 use rsk_ec::{Curve, PrivKey};
+use rsk_fs::storage::faults::{Cut, CutMedium, ProbeStuck};
 use rsk_fs::storage::ram::RamStorage;
 
 use std::cell::Cell;
@@ -33,6 +34,16 @@ fn new_fs() -> Fs<RamStorage> {
     let mut fs = Fs::new(RamStorage::new());
     fs.scan();
     fs
+}
+
+/// [`new_fs`] on a medium that logs the order of the appends it serves — the only
+/// place the re-arm of the at-rest lap can be seen to land BEFORE the re-key it
+/// covers rather than after it.
+fn new_cut_fs() -> (Fs<Cut>, CutMedium) {
+    let (cut, medium) = Cut::new();
+    let mut fs = Fs::new(cut);
+    fs.scan();
+    (fs, medium)
 }
 
 fn select<S: Storage>(app: &mut PivApplet, fs: &mut Fs<S>) -> Vec<u8> {
@@ -475,7 +486,7 @@ fn a_wrong_pin_is_refused_on_the_kbase_fallback_path() {
     // wrong PIN accepted AND stored as the new one. Killed by no test, because
     // the fallback is only reachable on an OTP-provisioned device and every PIV
     // test that offers a wrong PIN runs without one (found by the reverse
-    // mutation pass, D2). Its FIDO twin at `clientpin.rs:761` is not the same
+    // mutation pass, D2). Its FIDO twin at `clientpin.rs:764` is not the same
     // shape: there the `ct_eq` sits inside the block, so a widened guard still
     // cannot write.
     const OTP: [u8; 32] = [0x44; 32];
@@ -605,7 +616,7 @@ fn version_and_serial() {
     select(&mut app, &mut fs);
     let (sw, v) = run(&mut app, &mut fs, INS_VERSION, 0, 0, &[]);
     assert_eq!(sw, Sw::OK);
-    assert_eq!(v, vec![5, 7, 4]);
+    assert_eq!(v, vec![5, 8, 0]);
     let (sw, s) = run(&mut app, &mut fs, INS_YK_SERIAL, 0, 0, &[]);
     assert_eq!(sw, Sw::OK);
     assert_eq!(s, rsk_sdk::serial4(SERIAL).to_vec());
@@ -5176,9 +5187,21 @@ fn reset_sweeps_more_files_than_one_batch() {
         );
         assert_eq!(sw, Sw::OK);
     }
+    // Read off the sweep, not copied: this guard named an `8 × 32` budget the
+    // sweep stopped having (progress is counted in DELETED FILES now, against
+    // `RESET_MAX_DELETES`), so it held a number nothing could move and left the
+    // wrap it is here for free to slide out from under the fill.
+    //
+    // Counted over the SECRETS phase, which is the one that wraps: `wipe_piv`
+    // sweeps the two predicates separately, and the four gate fids ride in the
+    // total without ever being in the same batch as these.
+    let secrets = piv_fids(&mut fs)
+        .into_iter()
+        .filter(|fid| !files::is_piv_gate_fid(*fid))
+        .count();
     assert!(
-        piv_fids(&mut fs).len() > 256,
-        "the fill must exceed the old 8x32 sweep budget"
+        secrets > files::SWEEP_BATCH,
+        "the fill no longer spans more than one sweep batch: {secrets} secret fids"
     );
 
     // Block both references, then RESET.
@@ -5591,30 +5614,11 @@ fn reset_converges_over_multi_version_stuffing() {
     assert_eq!(sw, Sw::OK);
 }
 
-/// `Storage` whose enumeration is truncated by a flash read fault: it yields
-/// nothing and reports the walk incomplete, while the files are still there.
-struct TruncatedWalk(RamStorage);
-
-impl Storage for TruncatedWalk {
-    fn read(&mut self, fid: u16, buf: &mut [u8]) -> Option<usize> {
-        self.0.read(fid, buf)
-    }
-    fn write(&mut self, fid: u16, data: &[u8]) -> rsk_sdk::error::Result<()> {
-        self.0.write(fid, data)
-    }
-    fn remove(&mut self, fid: u16) -> rsk_sdk::error::Result<()> {
-        self.0.remove(fid)
-    }
-    fn size(&mut self, fid: u16) -> Option<usize> {
-        self.0.size(fid)
-    }
-    fn for_each_key(&mut self, _f: &mut dyn FnMut(u16)) -> bool {
-        false
-    }
-}
-
 /// An un-yielded fid is not an absent fid: a truncated walk must fail the reset
-/// rather than report a factory state it only failed to look at.
+/// rather than report a factory state it only failed to look at. The medium is
+/// `rsk_fs::storage::faults::TruncatedWalk` — this test's own local copy for a
+/// release, and the reason PIV was the only applet whose guard anything could
+/// falsify.
 #[test]
 fn reset_fails_when_the_enumeration_is_truncated() {
     let dev = Device {
@@ -5622,7 +5626,7 @@ fn reset_fails_when_the_enumeration_is_truncated() {
         serial_id: &SERIAL,
         otp_key: None,
     };
-    let mut fs = Fs::new(TruncatedWalk(RamStorage::new()));
+    let mut fs = Fs::new(rsk_fs::storage::faults::TruncatedWalk::new());
     fs.scan();
     let obj = data_object_fid(0x01).unwrap();
     fs.put(obj, &[0x41]).unwrap();
@@ -5860,6 +5864,10 @@ fn kbase_migration_reseals_slots_and_pin_falls_back() {
     // below re-keys the PIN verifier, superseding a chip-serial-sealed copy,
     // so it must re-arm the lap (request_rescrub) — audit run-35's rule.
     fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    assert!(
+        fs.has_data(rsk_fs::EF_HARDENED),
+        "fixture: the lap has latched"
+    );
     let mut app2 = PivApplet::new(SERIAL, HASH, Some(otp_source as FusedKey), &rng, &pres);
     select(&mut app2, &mut fs);
     auth_mgm(&mut app2, &mut fs);
@@ -5893,7 +5901,548 @@ fn kbase_migration_reseals_slots_and_pin_falls_back() {
     let (sw, _) = run(&mut app3, &mut fs, INS_VERIFY, 0, 0x80, &DEFAULT_PIN);
     assert_eq!(sw, Sw::new(0x63, 0xC2));
 }
+/// RESET RETRY COUNTER re-keys `EF_PIN` under the OTP arm while verifying only the
+/// PUK. The PIN is blocked on this path by construction, so `check_ref`'s migrating
+/// fallback has never run on it — and once the PUK itself has migrated on an earlier
+/// use, nothing on the call re-arms the lap.
+#[test]
+fn unblock_with_the_puk_re_arms_the_at_rest_lap() {
+    const OTP: [u8; 32] = [0x55; 32];
+    fn otp_source() -> Option<[u8; 32]> {
+        Some(OTP)
+    }
+    const NEW_PIN: [u8; PIN_WIRE_LEN] = [0x39, 0x39, 0x39, 0x39, 0x39, 0x39, PIN_PAD, PIN_PAD];
+    let dev_pre = Device {
+        serial_hash: &HASH,
+        serial_id: &SERIAL,
+        otp_key: None,
+    };
+    let dev_otp = Device {
+        serial_hash: &HASH,
+        serial_id: &SERIAL,
+        otp_key: Some(&OTP),
+    };
 
+    // Provision pre-OTP: both references are rooted in the public chip serial.
+    let rng = RefCell::new(TestRng(3));
+    let pres = RefCell::new(AlwaysConfirm);
+    let mut app = PivApplet::new(SERIAL, HASH, None, &rng, &pres);
+    let (mut fs, medium) = new_cut_fs();
+    select(&mut app, &mut fs);
+    let mut rec = [0u8; PIN_REC_LEN];
+    assert_eq!(fs.read(EF_PIN, &mut rec), Some(PIN_REC_LEN));
+    assert_eq!(
+        &rec[2..],
+        &dev_pre.pin_derive_verifier(&DEFAULT_PIN)[..],
+        "fixture: EF_PIN starts rooted in the public chip serial"
+    );
+
+    // The OTP build. The PUK migrates on its own first use and re-arms the lap;
+    // a boot then runs the lap and re-latches the marker.
+    let mut app2 = PivApplet::new(SERIAL, HASH, Some(otp_source as FusedKey), &rng, &pres);
+    select(&mut app2, &mut fs);
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    assert!(
+        fs.has_data(rsk_fs::EF_HARDENED),
+        "fixture: the lap has latched"
+    );
+    let mut body = DEFAULT_PUK.to_vec();
+    body.extend_from_slice(&DEFAULT_PUK);
+    medium.clear_ops();
+    let (sw, _) = run(&mut app2, &mut fs, INS_CHANGE_PIN, 0, REF_PUK, &body);
+    assert_eq!(sw, Sw::OK);
+    assert!(
+        !fs.has_data(rsk_fs::EF_HARDENED),
+        "fixture: the PUK's own migrating verify re-arms the lap"
+    );
+    medium.assert_re_armed_before(EF_PUK, |_| false, "check_ref's kbase fallback");
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    assert!(
+        fs.has_data(rsk_fs::EF_HARDENED),
+        "fixture: the lap has latched"
+    );
+
+    // Block the PIN. A wrong PIN never reaches the fallback, so EF_PIN is still
+    // chip-serial-rooted when the unblock replaces it.
+    for _ in 0..DEFAULT_RETRIES {
+        run(&mut app2, &mut fs, INS_VERIFY, 0, REF_PIN, &NEW_PIN);
+    }
+    let (sw, _) = run(&mut app2, &mut fs, INS_VERIFY, 0, REF_PIN, &DEFAULT_PIN);
+    assert_eq!(sw, Sw::PIN_BLOCKED, "fixture: the PIN is blocked");
+    assert_eq!(fs.read(EF_PIN, &mut rec), Some(PIN_REC_LEN));
+    assert_eq!(
+        &rec[2..],
+        &dev_pre.pin_derive_verifier(&DEFAULT_PIN)[..],
+        "fixture: a blocked PIN never migrated"
+    );
+
+    let mut body = DEFAULT_PUK.to_vec();
+    body.extend_from_slice(&NEW_PIN);
+    medium.clear_ops();
+    let (sw, _) = run(&mut app2, &mut fs, INS_RESET_RETRY, 0, REF_PIN, &body);
+    assert_eq!(sw, Sw::OK);
+    medium.assert_re_armed_before(EF_PIN, |_| false, "unblock_pin_with_puk");
+    assert_eq!(fs.read(EF_PIN, &mut rec), Some(PIN_REC_LEN));
+    assert_eq!(
+        &rec[2..],
+        &dev_otp.pin_derive_verifier(&NEW_PIN)[..],
+        "the unblock re-keyed EF_PIN under the OTP arm"
+    );
+    assert!(
+        !fs.has_data(rsk_fs::EF_HARDENED),
+        "the unblock superseded a chip-serial-rooted verifier and must re-arm the at-rest lap"
+    );
+}
+
+/// SET RETRIES rewrites BOTH references to their factory defaults, gated on the PIN
+/// and the management key and never on the PUK. So `EF_PUK` can still be
+/// chip-serial-rooted when its record is superseded, with nothing on the call
+/// re-arming the lap.
+#[test]
+fn set_retries_re_arms_the_at_rest_lap() {
+    const OTP: [u8; 32] = [0x66; 32];
+    fn otp_source() -> Option<[u8; 32]> {
+        Some(OTP)
+    }
+    let dev_pre = Device {
+        serial_hash: &HASH,
+        serial_id: &SERIAL,
+        otp_key: None,
+    };
+    let dev_otp = Device {
+        serial_hash: &HASH,
+        serial_id: &SERIAL,
+        otp_key: Some(&OTP),
+    };
+
+    let rng = RefCell::new(TestRng(5));
+    let pres = RefCell::new(AlwaysConfirm);
+    let mut app = PivApplet::new(SERIAL, HASH, None, &rng, &pres);
+    let (mut fs, medium) = new_cut_fs();
+    select(&mut app, &mut fs);
+    migrate_kbase(&dev_otp, &mut fs, &mut TestRng(13));
+
+    // The PIN migrates on its own verify and re-arms; a boot re-latches the marker.
+    // The PUK is untouched by that path, so it is still chip-serial-rooted.
+    let mut app2 = PivApplet::new(SERIAL, HASH, Some(otp_source as FusedKey), &rng, &pres);
+    select(&mut app2, &mut fs);
+    auth_mgm(&mut app2, &mut fs);
+    verify_pin(&mut app2, &mut fs);
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    assert!(
+        fs.has_data(rsk_fs::EF_HARDENED),
+        "fixture: the lap has latched"
+    );
+    let mut rec = [0u8; PIN_REC_LEN];
+    assert_eq!(fs.read(EF_PUK, &mut rec), Some(PIN_REC_LEN));
+    assert_eq!(
+        &rec[2..],
+        &dev_pre.pin_derive_verifier(&DEFAULT_PUK)[..],
+        "fixture: EF_PUK is still rooted in the public chip serial"
+    );
+
+    medium.clear_ops();
+    let (sw, _) = run(&mut app2, &mut fs, INS_SET_RETRIES, 5, 5, &[]);
+    assert_eq!(sw, Sw::OK);
+    medium.assert_re_armed_before(EF_PUK, |_| false, "SET RETRIES");
+    assert_eq!(fs.read(EF_PUK, &mut rec), Some(PIN_REC_LEN));
+    assert_eq!(
+        &rec[2..],
+        &dev_otp.pin_derive_verifier(&DEFAULT_PUK)[..],
+        "SET RETRIES re-keyed EF_PUK under the OTP arm"
+    );
+    assert!(
+        !fs.has_data(rsk_fs::EF_HARDENED),
+        "SET RETRIES superseded a chip-serial-rooted verifier and must re-arm the at-rest lap"
+    );
+}
+
+/// The other half of [`set_retries_re_arms_the_at_rest_lap`], and the one nothing
+/// exercised: what a medium that REFUSES the re-arm leaves behind. The `EF_RETRIES`
+/// write ahead of that gate is four plaintext counter bytes, so what stands after a
+/// refusal is a retriable command — new totals, both references in force — and never
+/// a chip-serial-rooted verifier superseded under a marker nothing clears.
+#[test]
+fn a_set_retries_whose_re_arm_the_medium_refuses_resets_neither_reference() {
+    const OTP: [u8; 32] = [0x66; 32];
+    fn otp_source() -> Option<[u8; 32]> {
+        Some(OTP)
+    }
+    let dev_pre = Device {
+        serial_hash: &HASH,
+        serial_id: &SERIAL,
+        otp_key: None,
+    };
+    let rng = RefCell::new(TestRng(5));
+    let pres = RefCell::new(AlwaysConfirm);
+    let (stuck, medium) = rsk_fs::storage::faults::RemoveStuck::new();
+    let mut fs = Fs::new(stuck);
+    fs.scan();
+
+    // The happy path's fixture: the PIN migrates on its own verify, the PUK is
+    // untouched by that path, and a boot latches the marker over it.
+    let mut app = PivApplet::new(SERIAL, HASH, None, &rng, &pres);
+    select(&mut app, &mut fs);
+    migrate_kbase(
+        &Device {
+            otp_key: Some(&OTP),
+            ..dev_pre
+        },
+        &mut fs,
+        &mut TestRng(13),
+    );
+    let mut app2 = PivApplet::new(SERIAL, HASH, Some(otp_source as FusedKey), &rng, &pres);
+    select(&mut app2, &mut fs);
+    auth_mgm(&mut app2, &mut fs);
+    verify_pin(&mut app2, &mut fs);
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    let mut before = [0u8; PIN_REC_LEN];
+    assert_eq!(fs.read(EF_PUK, &mut before), Some(PIN_REC_LEN));
+    assert_eq!(
+        &before[2..],
+        &dev_pre.pin_derive_verifier(&DEFAULT_PUK)[..],
+        "fixture: EF_PUK is still rooted in the public chip serial"
+    );
+
+    medium.refuse(Some(rsk_fs::EF_HARDENED));
+    let (sw, _) = run(&mut app2, &mut fs, INS_SET_RETRIES, 5, 5, &[]);
+    let mut after = [0u8; PIN_REC_LEN];
+    assert_eq!(fs.read(EF_PUK, &mut after), Some(PIN_REC_LEN));
+    assert_eq!(
+        after, before,
+        "the re-arm never landed, so the chip-serial-rooted PUK must stay in force \
+         instead of being superseded under a marker nothing will clear"
+    );
+    assert_eq!(sw, Sw::MEMORY_FAILURE, "and the host must be told so");
+    assert!(
+        medium.live(rsk_fs::EF_HARDENED),
+        "fixture: the refusal really left the marker on the medium"
+    );
+    // What DID land ahead of the gate: the counter record, and nothing keyed. The
+    // command is retriable rather than half-applied over a remnant.
+    let mut r = [0u8; 4];
+    assert_eq!(fs.read(EF_RETRIES, &mut r), Some(4));
+    assert_eq!(r, [5, 5, 5, 5]);
+
+    // The control, same medium, fault cleared: the same call DOES reset both
+    // references, so the assertion above is about the gate and not about a path
+    // that never fires.
+    medium.refuse(None);
+    assert_eq!(
+        run(&mut app2, &mut fs, INS_SET_RETRIES, 5, 5, &[]).0,
+        Sw::OK
+    );
+    assert_eq!(fs.read(EF_PUK, &mut after), Some(PIN_REC_LEN));
+    assert_ne!(after, before, "the control re-keyed EF_PUK");
+    assert!(!medium.live(rsk_fs::EF_HARDENED));
+}
+
+/// The reset path's own re-arm, which no applet wipe in the tree had: measured at
+/// five wipe-sweep delete sites across four applets, none re-armed. A tombstone
+/// appends like a re-seal, and EF_PIN / EF_PUK migrate only on their own verify —
+/// so a RESET can leave a chip-serial-rooted verifier dumpable under a marker the
+/// lap gates on. Best-effort, and that is the whole difference from the gated
+/// sites: refusing here would leave the key material live rather than in force.
+#[test]
+fn a_reset_re_arms_the_at_rest_lap_before_the_first_tombstone() {
+    const OTP: [u8; 32] = [0x66; 32];
+    let dev = Device {
+        serial_hash: &HASH,
+        serial_id: &SERIAL,
+        otp_key: Some(&OTP),
+    };
+    let rng = RefCell::new(TestRng(5));
+    let pres = RefCell::new(AlwaysConfirm);
+
+    let (mut fs, medium) = new_cut_fs();
+    let mut app = PivApplet::new(SERIAL, HASH, None, &rng, &pres);
+    select(&mut app, &mut fs);
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    assert!(
+        fs.has_data(rsk_fs::EF_HARDENED),
+        "fixture: an earlier boot latched the marker"
+    );
+
+    medium.clear_ops();
+    assert_eq!(
+        crate::files::reset_files(&dev, &mut fs, &mut TestRng(9)),
+        Ok(())
+    );
+    medium.assert_re_armed_before(EF_PUK, |_| false, "PIV RESET");
+    assert!(
+        !fs.has_data(rsk_fs::EF_HARDENED),
+        "the reset tombstoned a possibly chip-serial-rooted verifier, so the lap \
+         must run again"
+    );
+
+    // The best-effort half, and the direction that separates a wipe from every
+    // gated site: a medium refusing only `remove(EF_HARDENED)` must still WIPE.
+    let (stuck, medium) = rsk_fs::storage::faults::RemoveStuck::new();
+    let mut fs = Fs::new(stuck);
+    fs.scan();
+    let mut app = PivApplet::new(SERIAL, HASH, None, &rng, &pres);
+    select(&mut app, &mut fs);
+    let slot = crate::files::key_fid(SLOT_AUTHENTICATION);
+    seal::seal_put(&dev, &mut fs, &mut TestRng(3), slot, &[0x5A; 33]).unwrap();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    medium.refuse(Some(rsk_fs::EF_HARDENED));
+    let swept = crate::files::reset_files(&dev, &mut fs, &mut TestRng(9));
+    assert!(
+        !medium.live(slot.get()),
+        "the refused re-arm stopped the wipe, which leaves the key material LIVE — \
+         the one direction a reset must never fail in"
+    );
+    assert_eq!(swept, Ok(()));
+    assert!(
+        medium.live(rsk_fs::EF_HARDENED),
+        "fixture: the refusal really left the marker on the medium"
+    );
+}
+
+/// The head re-arm is BEST-EFFORT, so its refusal leaves the marker latched over
+/// every tombstone the sweep then appends — the residual the gated sites do not
+/// carry. A single-shot refusal is the only kind the pass recovers from, and the
+/// retry after the sweep is what recovers it; a persistent one is still a residual.
+#[test]
+fn a_reset_retries_the_re_arm_after_the_sweep() {
+    const OTP: [u8; 32] = [0x66; 32];
+    let dev = Device {
+        serial_hash: &HASH,
+        serial_id: &SERIAL,
+        otp_key: Some(&OTP),
+    };
+    let rng = RefCell::new(TestRng(5));
+    let pres = RefCell::new(AlwaysConfirm);
+    let (stuck, medium) = rsk_fs::storage::faults::RemoveStuck::new();
+    let mut fs = Fs::new(stuck);
+    fs.scan();
+    let mut app = PivApplet::new(SERIAL, HASH, None, &rng, &pres);
+    select(&mut app, &mut fs);
+    let slot = crate::files::key_fid(SLOT_AUTHENTICATION);
+    seal::seal_put(&dev, &mut fs, &mut TestRng(3), slot, &[0x5A; 33]).unwrap();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    assert!(
+        medium.live(rsk_fs::EF_HARDENED),
+        "fixture: an earlier boot latched the marker"
+    );
+    // Only the HEAD re-arm is refused; the medium serves every mutation after it.
+    medium.refuse_once(rsk_fs::EF_HARDENED);
+
+    let swept = crate::files::reset_files(&dev, &mut fs, &mut TestRng(9));
+    assert!(
+        !medium.live(rsk_fs::EF_HARDENED),
+        "the head re-arm was refused and nothing retried it, so the marker stands \
+         over the verifier this reset just tombstoned and no later boot ever laps"
+    );
+    assert_eq!(swept, Ok(()));
+    assert!(!medium.live(slot.get()), "the wipe still ran");
+
+    // The control on the same medium, with the refusal made PERSISTENT instead:
+    // the marker survives, so the assertion above is about the retry landing and
+    // not about a marker the fixture never latched.
+    seal::seal_put(&dev, &mut fs, &mut TestRng(3), slot, &[0x5A; 33]).unwrap();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    medium.refuse(Some(rsk_fs::EF_HARDENED));
+    let swept = crate::files::reset_files(&dev, &mut fs, &mut TestRng(9));
+    assert_eq!(swept, Ok(()));
+    assert!(
+        medium.live(rsk_fs::EF_HARDENED),
+        "fixture: a persistent refusal really does leave the marker standing"
+    );
+}
+
+/// Both faults of the residual in one medium, because neither alone reaches it: a
+/// SINGLE-SHOT refusal of `refuse_once`'s removal — the only kind a retry recovers
+/// — and a walk that truncates for good once `truncate_after` has been tombstoned.
+/// `RemoveStuck` and `TruncatedWalk` carry one each and cannot be composed.
+struct RefusedThenTruncated {
+    inner: RamStorage,
+    refuse_once: Option<u16>,
+    truncate_after: Option<u16>,
+    truncated: bool,
+}
+
+impl Storage for RefusedThenTruncated {
+    fn read(&mut self, fid: u16, buf: &mut [u8]) -> Option<usize> {
+        self.inner.read(fid, buf)
+    }
+    fn write(&mut self, fid: u16, data: &[u8]) -> rsk_sdk::error::Result<()> {
+        self.inner.write(fid, data)
+    }
+    fn remove(&mut self, fid: u16) -> rsk_sdk::error::Result<()> {
+        if self.refuse_once == Some(fid) {
+            self.refuse_once = None;
+            return Err(rsk_sdk::error::Error::MemoryFatal);
+        }
+        self.inner.remove(fid)?;
+        self.truncated |= self.truncate_after == Some(fid);
+        Ok(())
+    }
+    fn size(&mut self, fid: u16) -> Option<usize> {
+        self.inner.size(fid)
+    }
+    fn for_each_key(&mut self, f: &mut dyn FnMut(u16)) -> bool {
+        if self.truncated {
+            return false;
+        }
+        self.inner.for_each_key(f)
+    }
+}
+
+/// What one arm of [`a_reset_that_faults_mid_sweep_still_re_arms_the_lap`] left
+/// behind: the host's answer, and what the MEDIUM kept — never `Fs::has_data`,
+/// since a refused removal is exactly where the present cache and the medium part.
+/// `EF_PIN` is read off the walk's own trigger rather than the medium, because
+/// `reset_files` runs `scan_files` whatever the wipe answered and re-seeds a
+/// published default over it.
+struct Residue {
+    answered: Result<(), Sw>,
+    marker: bool,
+    slot: bool,
+    verifier_tombstoned: bool,
+}
+
+fn reset_under(refuse_once: Option<u16>, truncate_after: Option<u16>) -> Residue {
+    const OTP: [u8; 32] = [0x66; 32];
+    let dev = Device {
+        serial_hash: &HASH,
+        serial_id: &SERIAL,
+        otp_key: Some(&OTP),
+    };
+    let mut fs = Fs::new(RefusedThenTruncated {
+        inner: RamStorage::new(),
+        refuse_once,
+        truncate_after,
+        truncated: false,
+    });
+    fs.scan();
+    scan_files(&dev, &mut fs, &mut TestRng(3)).unwrap();
+    let slot = key_fid(SLOT_AUTHENTICATION);
+    seal::seal_put(&dev, &mut fs, &mut TestRng(3), slot, &[0x5A; 33]).unwrap();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    // Neither fault fires during setup — it writes and never removes these — so
+    // the arms differ only in what the RESET meets.
+    assert!(
+        fs.has_data(rsk_fs::EF_HARDENED) && fs.has_data(EF_PIN),
+        "fixture"
+    );
+    let answered = crate::files::reset_files(&dev, &mut fs, &mut TestRng(9));
+    let mut medium = fs.into_storage();
+    Residue {
+        answered,
+        marker: medium.inner.exists(rsk_fs::EF_HARDENED),
+        slot: medium.inner.exists(slot.get()),
+        verifier_tombstoned: medium.truncated,
+    }
+}
+
+/// The refusal the retry exists for, met by the wipe fault the retry stands below:
+/// the sweeps carry `?`, so an early return skips the retry, and the conjunction is
+/// exactly the case it was written for. Both controls run in this case rather than
+/// their own, so the claim is about the CONJUNCTION and not about either fault.
+#[test]
+fn a_reset_that_faults_mid_sweep_still_re_arms_the_lap() {
+    let subject = reset_under(Some(rsk_fs::EF_HARDENED), Some(EF_PIN));
+    assert!(
+        !subject.marker,
+        "the head re-arm was refused and the sweep then faulted, so the only retry \
+         left is one the fault returns past — the marker stands over a possibly \
+         chip-serial-rooted verifier this reset tombstoned and no boot ever laps"
+    );
+    assert!(
+        subject.verifier_tombstoned && !subject.slot,
+        "fixture: the verifier really was tombstoned under that marker, over key \
+         material the wipe had already taken"
+    );
+    assert_eq!(
+        subject.answered,
+        Err(Sw::MEMORY_FAILURE),
+        "the faulted sweep is still reported, so the re-arm changed no answer"
+    );
+
+    // CONTROL A: the head refusal alone. The sweeps complete, so the retry is
+    // reached — the refusal is not by itself what leaves the marker.
+    let head_only = reset_under(Some(rsk_fs::EF_HARDENED), None);
+    assert!(!head_only.marker, "control: a refusal the retry recovers");
+    assert_eq!(head_only.answered, Ok(()));
+
+    // CONTROL B: the sweep fault alone. The head re-arm lands, so the fault has no
+    // latched marker to leave behind.
+    let sweep_only = reset_under(None, Some(EF_PIN));
+    assert!(
+        !sweep_only.marker,
+        "control: the head re-arm already landed"
+    );
+    assert_eq!(sweep_only.answered, Err(Sw::MEMORY_FAILURE));
+}
+
+#[test]
+fn the_boot_pass_re_arms_the_lap_before_it_supersedes_a_pre_otp_key_slot() {
+    // Standing before `run_at_rest_lap` in `firmware/src/main.rs` is not the same as
+    // standing before every lap. A boot whose `seal_put` here was refused latched the
+    // marker all the same, and the boot that finally re-seals the slot supersedes a
+    // chip-serial-rooted copy under a marker the lap gates on and nothing clears.
+    const OTP: [u8; 32] = [0x9C; 32];
+    let dev_pre = Device {
+        serial_hash: &HASH,
+        serial_id: &SERIAL,
+        otp_key: None,
+    };
+    let dev_otp = Device {
+        otp_key: Some(&OTP),
+        ..dev_pre
+    };
+    let fid = crate::files::key_fid(SLOT_AUTHENTICATION);
+    let plain = [0x5Au8; 33];
+    let mut rng = TestRng(21);
+    let mut out = [0u8; 64];
+
+    // The ORDER, on the one medium that can tell the two orderings apart.
+    let (mut fs, medium) = new_cut_fs();
+    seal::seal_put(&dev_pre, &mut fs, &mut rng, fid, &plain).unwrap();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    assert!(
+        fs.has_data(rsk_fs::EF_HARDENED),
+        "fixture: an earlier boot latched the marker"
+    );
+    medium.clear_ops();
+    migrate_kbase(&dev_otp, &mut fs, &mut rng);
+    medium.assert_re_armed_before(fid.get(), |_| false, "PIV migrate_kbase");
+    assert!(
+        !fs.has_data(rsk_fs::EF_HARDENED),
+        "the re-seal superseded a chip-serial-rooted copy, so the lap must run again"
+    );
+    assert_eq!(seal::seal_read(&dev_otp, &mut fs, fid, &mut out), Ok(33));
+
+    // The GATE. A medium refusing only `remove(EF_HARDENED)` reaches that same end
+    // state with no reset in it, so the re-seal must not go ahead at all.
+    let (stuck, medium) = rsk_fs::storage::faults::RemoveStuck::new();
+    let mut fs = Fs::new(stuck);
+    fs.scan();
+    seal::seal_put(&dev_pre, &mut fs, &mut rng, fid, &plain).unwrap();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    medium.refuse(Some(rsk_fs::EF_HARDENED));
+    migrate_kbase(&dev_otp, &mut fs, &mut rng);
+    assert_eq!(
+        seal::seal_read(&dev_pre, &mut fs, fid, &mut out),
+        Ok(33),
+        "the re-arm never landed, so the pre-OTP copy must stay UNSUPERSEDED rather \
+         than be displaced under a marker nothing will clear. The cost is stated \
+         at the site: `seal_read` under the CURRENT arm answers `6581` until a \
+         later boot migrates it"
+    );
+    assert!(
+        medium.live(rsk_fs::EF_HARDENED),
+        "fixture: the refusal really left the marker on the medium"
+    );
+
+    // The control, same medium, fault cleared: the migration DOES happen, so the
+    // assertion above is about the gate and not about a pass that never fires.
+    medium.refuse(None);
+    migrate_kbase(&dev_otp, &mut fs, &mut rng);
+    assert_eq!(seal::seal_read(&dev_otp, &mut fs, fid, &mut out), Ok(33));
+    assert!(!medium.live(rsk_fs::EF_HARDENED));
+}
 /// Targeted property fuzz for the Pivman ADMIN-DATA (`5FFF00`) parse and the
 /// PIN-protected PRINTED (`5FC109`) assembly. A management-key-authenticated
 /// host can PUT *arbitrary* bytes into the ADMIN-DATA object; `mgm_is_protected`
@@ -8004,9 +8553,10 @@ impl Storage for MetaFaults {
     }
 }
 
-/// MOVE with `to = 0xFF` is the slot DELETE, and it is the one path in the tree
-/// that deletes a fid carrying an EF_META head — the heads are minted by this
-/// crate alone. `Fs::delete` removes the value whatever the head does, so a
+/// MOVE with `to = 0xFF` is the slot DELETE, and it is one of the two paths in the
+/// tree that delete a fid carrying an EF_META head — the heads are minted by this
+/// crate alone, and the other path is RESET's sweep, below.
+/// `Fs::delete` removes the value whatever the head does, so a
 /// faulted drop leaves a record over a key that is gone and GET METADATA would
 /// answer for a slot that cannot sign; a failed `remove` leaves the other
 /// direction, a live key with no head, which is the state `files.rs`'s mint-arm
@@ -8095,5 +8645,780 @@ fn a_slot_delete_answers_for_what_it_could_not_drop() {
         (Sw::MEMORY_FAILURE, false, true),
         "the other direction: the head went and the key did not, so the move is \
          not done and the answer must not say it is"
+    );
+}
+
+/// MOVE is not the only path that deletes a fid carrying a head, and the delete-
+/// caller audit found the other one hiding what MOVE reports: RESET sweeps through
+/// `Fs::force_delete`, which used to swallow `meta_delete`'s error. The medium here
+/// refuses EF_META's own `remove`, and 0x9A is left holding the ONLY head — so the
+/// drop that cannot land is deterministically its, and `scan_files`' later reads
+/// and writes still work, which keeps the re-provisioning half out of the verdict.
+///
+/// Returns the reset's answer, whether 0x9A's head outlived its key, and the
+/// certificate objects still live — the second half is what a sweep that STOPPED on
+/// the faulted drop fails: folding the two answers into one made this reset abort at
+/// 0x9A's own fid, so the rest of the range stayed on the card while the status word
+/// read the same on both sides.
+fn reset_with_ef_meta_stuck(stuck: bool) -> (Result<(), Sw>, bool, Vec<&'static str>) {
+    let rng = RefCell::new(TestRng(7));
+    let pres = RefCell::new(AlwaysConfirm);
+    let mut app = PivApplet::new(SERIAL, HASH, None, &rng, &pres);
+    let unremovable = std::rc::Rc::new(std::cell::Cell::new(0u16));
+    let mut fs = Fs::new(MetaFaults {
+        inner: RamStorage::new(),
+        budget: std::rc::Rc::new(std::cell::Cell::new(0usize)),
+        unremovable: unremovable.clone(),
+        err: false,
+    });
+    fs.scan();
+    select(&mut app, &mut fs);
+    auth_mgm(&mut app, &mut fs);
+    verify_pin(&mut app, &mut fs);
+    assert_eq!(
+        run(
+            &mut app,
+            &mut fs,
+            INS_ASYM_KEYGEN,
+            0,
+            SLOT_AUTHENTICATION,
+            &gen_template(ALGO_ECCP256)
+        )
+        .0,
+        Sw::OK
+    );
+    // After the management key has been used for the last time: 0x9B's head is the
+    // other one EF_META carries, and it would empty the blob after 0x9A's rather
+    // than before it. `scan_files` re-mints it unconditionally either way.
+    fs.meta_delete(key_fid(SLOT_CARDMGM).get()).unwrap();
+    // Certificate objects: plain 0xD2xx values, so they carry no head of their own
+    // (0x9A keeps the only one) and `scan_files` does not put them back.
+    let certs: [(&'static str, u16); 4] = [
+        (
+            "cert_9a",
+            files::cert_fid_for_slot(SLOT_AUTHENTICATION).unwrap(),
+        ),
+        ("cert_9c", files::cert_fid_for_slot(SLOT_SIGNATURE).unwrap()),
+        ("cert_9d", files::cert_fid_for_slot(SLOT_KEYMGM).unwrap()),
+        ("pivman", files::EF_PIVMAN_DATA),
+    ];
+    for (_, fid) in certs {
+        fs.put(fid, &[0xCE; 40]).unwrap();
+    }
+
+    if stuck {
+        unremovable.set(rsk_fs::EF_META);
+    }
+    let dev = Device {
+        serial_hash: &HASH,
+        serial_id: &SERIAL,
+        otp_key: None,
+    };
+    let answered = files::reset_files(&dev, &mut fs, &mut *rng.borrow_mut());
+    unremovable.set(0);
+
+    let mut head = [0u8; 8];
+    let orphan = fs
+        .meta_find(key_fid(SLOT_AUTHENTICATION).get(), &mut head)
+        .is_some()
+        && !fs.has_key(key_fid(SLOT_AUTHENTICATION));
+    let survivors = certs
+        .iter()
+        .filter(|&&(_, fid)| fs.has_data(fid))
+        .map(|&(name, _)| name)
+        .collect();
+    (answered, orphan, survivors)
+}
+
+#[test]
+fn a_reset_answers_for_the_heads_it_could_not_drop() {
+    assert_eq!(
+        reset_with_ef_meta_stuck(false),
+        (Ok(()), false, vec![]),
+        "the clean control: the wipe takes 0x9A's key, its head and the objects"
+    );
+    assert_eq!(
+        reset_with_ef_meta_stuck(true),
+        (Err(Sw::MEMORY_FAILURE), true, vec![]),
+        "the head stands over a key that is gone — legal, and the answer must say so \
+         — but the sweep still owes the WHOLE range, and a surviving object is a \
+         record RESET reported erased"
+    );
+}
+
+/// GET METADATA's `is_key` arm gates existence on `meta_find` alone. That was
+/// justified by "delete clears the meta record unconditionally", which
+/// SEC-STORE-006 withdraws: a faulted EF_META drop leaves the head standing over
+/// a key that is gone, both producers REPORT that state rather than prevent it,
+/// and it persists on the card. So what the arm answers over an orphan is a
+/// measured fact, not an impossible one.
+///
+/// `keep_cache` restores the slot's cached public point, which the same fault can
+/// leave behind (its own `remove` is a separate write); without it the arm falls
+/// through to deriving the point from a key that is not there. The RSA size is a
+/// FIXTURE here — the case is about the orphan, not the modulus — so it takes
+/// `ALGO_RSA_FIXTURE` rather than asserting an error `fips-profile` cannot make.
+fn metadata_over_an_orphan_head(keep_cache: bool) -> Sw {
+    metadata_over_an_orphan_head_algo(keep_cache, ALGO_ECCP256)
+}
+fn metadata_over_an_orphan_head_algo(keep_cache: bool, algo: u8) -> Sw {
+    let rng = RefCell::new(TestRng(7));
+    let pres = RefCell::new(AlwaysConfirm);
+    let mut app = PivApplet::new(SERIAL, HASH, None, &rng, &pres);
+    let faults = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let mut fs = Fs::new(MetaFaults {
+        inner: RamStorage::new(),
+        budget: faults.clone(),
+        unremovable: std::rc::Rc::new(std::cell::Cell::new(0u16)),
+        err: false,
+    });
+    fs.scan();
+    select(&mut app, &mut fs);
+    auth_mgm(&mut app, &mut fs);
+    verify_pin(&mut app, &mut fs);
+    assert_eq!(
+        run(
+            &mut app,
+            &mut fs,
+            INS_ASYM_KEYGEN,
+            0,
+            SLOT_AUTHENTICATION,
+            &gen_template(algo)
+        )
+        .0,
+        Sw::OK
+    );
+    let mut point = [0u8; 256];
+    let cached = fs
+        .read(files::pubkey_fid(SLOT_AUTHENTICATION), &mut point)
+        .unwrap_or(0);
+
+    faults.set(usize::MAX);
+    let (sw, _) = run(
+        &mut app,
+        &mut fs,
+        INS_MOVE_KEY,
+        0xFF,
+        SLOT_AUTHENTICATION,
+        &[],
+    );
+    faults.set(0);
+    assert_eq!(sw, Sw::MEMORY_FAILURE);
+    let mut head = [0u8; 8];
+    assert!(
+        fs.meta_find(key_fid(SLOT_AUTHENTICATION).get(), &mut head)
+            .is_some()
+            && !fs.has_key(key_fid(SLOT_AUTHENTICATION)),
+        "the fixture must leave a head over a key that is gone"
+    );
+    if keep_cache {
+        fs.put(files::pubkey_fid(SLOT_AUTHENTICATION), &point[..cached])
+            .unwrap();
+    }
+    run(
+        &mut app,
+        &mut fs,
+        INS_GET_METADATA,
+        0,
+        SLOT_AUTHENTICATION,
+        &[],
+    )
+    .0
+}
+
+/// The arm's comment used to justify dropping its `has_key` probe with "delete
+/// clears the meta record unconditionally". It does not, and this is what the
+/// slot answers instead — so the justification is held to a measurement rather
+/// than to a guarantee the store withdrew.
+#[test]
+fn metadata_answers_over_an_orphaned_head() {
+    assert_eq!(
+        (
+            metadata_over_an_orphan_head(true),
+            metadata_over_an_orphan_head(false),
+        ),
+        (Sw::OK, Sw::OK),
+        "an EC head carries the point itself, so the slot reads as populated \
+         whether or not its cache file survived — it just cannot sign"
+    );
+    assert_eq!(
+        metadata_over_an_orphan_head_algo(false, ALGO_RSA_FIXTURE),
+        Sw::EXEC_ERROR,
+        "RSA loads the modulus from the key, so the same orphan fails there"
+    );
+}
+
+/// One faulted flash probe at an unauthenticated `SELECT` must not re-seed the
+/// factory PIN, PUK and management key.
+///
+/// [`scan_files`] provisions on `!has_data`, and `Storage::read`/`size` answer the
+/// same `None` for "no such record" and for "that read failed" — so one faulted
+/// `EF_PIN` probe, read as an absence, replaced the owner's verifier byte for byte
+/// with `DEFAULT_PIN` and `VERIFY 123456` opened the applet. Driven over the wire
+/// because `select` is where the probe happens and `VERIFY` is where the takeover
+/// shows: the record comparison alone would pass on a fix that merely skipped the
+/// write and left the gate answering for a file it never read.
+#[test]
+fn a_faulted_probe_at_select_does_not_reseed_the_factory_pin() {
+    const OWNER_PIN: [u8; 8] = *b"00112233";
+    let (backend, medium) = ProbeStuck::new();
+    let rng = RefCell::new(TestRng(7));
+    let pres = RefCell::new(AlwaysConfirm);
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    // A provisioned card whose owner moved the PIN off the factory value.
+    let mut app = PivApplet::new(SERIAL, HASH, None, &rng, &pres);
+    select(&mut app, &mut fs);
+    let mut msg = DEFAULT_PIN.to_vec();
+    msg.extend_from_slice(&OWNER_PIN);
+    assert_eq!(
+        run(&mut app, &mut fs, INS_CHANGE_PIN, 0, 0x80, &msg).0,
+        Sw::OK
+    );
+    let owner = medium
+        .value(EF_PIN)
+        .expect("the owner's verifier is on the medium");
+
+    // A power cycle — a fresh applet clears `files_ensured`, so the next SELECT is
+    // the one that probes — with EF_PIN's reads faulting from here on.
+    let mut fs = Fs::new(fs.into_storage());
+    fs.scan();
+    medium.stick(Some(EF_PIN));
+    let mut app = PivApplet::new(SERIAL, HASH, None, &rng, &pres);
+    let mut out = [0u8; 256];
+    let sw = Applet::select(&mut app, false, &mut fs, &mut ResBuf::new(&mut out));
+    assert_eq!(
+        medium.value(EF_PIN).as_deref(),
+        Some(&owner[..]),
+        "a faulted EF_PIN probe re-seeded the owner's verifier with DEFAULT_PIN"
+    );
+    assert_eq!(
+        sw,
+        Sw::MEMORY_FAILURE,
+        "a SELECT that could not read the files it provisions must say so"
+    );
+
+    // The medium recovers; nothing about the card may have moved.
+    medium.stick(None);
+    let mut app = PivApplet::new(SERIAL, HASH, None, &rng, &pres);
+    select(&mut app, &mut fs);
+    assert_eq!(
+        run(&mut app, &mut fs, INS_VERIFY, 0, 0x80, &DEFAULT_PIN).0,
+        Sw::new(0x63, 0xC2),
+        "the factory PIN must not open a card whose owner changed it"
+    );
+    assert_eq!(
+        run(&mut app, &mut fs, INS_VERIFY, 0, 0x80, &OWNER_PIN).0,
+        Sw::OK,
+        "and the owner's PIN must still open it"
+    );
+}
+
+/// `protect_mgm_key` rebuilds the 0x9B meta head, and the one property of the slot
+/// it is not asked to change is the touch gate `SET MGM KEY P2 = 0xFE` raised.
+/// It reads that byte with `meta_find`, which answers the same `None` for a head
+/// that was never written and for an EF_META read the flash could not serve — and
+/// an absent head resolves to TOUCHPOLICY_NEVER, so a faulted probe retired the
+/// owner's touch gate and the rebuild made that permanent.
+#[test]
+fn a_faulted_meta_probe_does_not_retire_the_management_touch_gate() {
+    let (backend, medium) = ProbeStuck::new();
+    let rng = RefCell::new(TestRng(7));
+    let pres = RefCell::new(AlwaysConfirm);
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    let mut app = PivApplet::new(SERIAL, HASH, None, &rng, &pres);
+    select(&mut app, &mut fs);
+    auth_mgm(&mut app, &mut fs);
+    // Re-key 0x9B with P2 = 0xFE — the one way to raise the touch gate.
+    let mut body = vec![ALGO_AES192, SLOT_CARDMGM, 24];
+    body.extend_from_slice(&DEFAULT_MGM);
+    assert_eq!(
+        run(&mut app, &mut fs, INS_SET_MGMKEY, 0xFF, 0xFE, &body).0,
+        Sw::OK
+    );
+    let mut head = [0u8; 8];
+    assert_eq!(
+        fs.meta_find(key_fid(SLOT_CARDMGM).get(), &mut head)
+            .map(|n| head[..n.min(head.len())][2]),
+        Some(TOUCHPOLICY_ALWAYS),
+        "the gate the owner raised"
+    );
+
+    let dev = Device {
+        serial_hash: &HASH,
+        serial_id: &SERIAL,
+        otp_key: None,
+    };
+    // ONE faulted EF_META read, not a stuck one: `meta_add` further down refuses a
+    // persistently unreadable blob on its own, which would mask this guard entirely.
+    medium.stick_once(rsk_fs::EF_META);
+    assert_eq!(
+        protect_mgm_key(&dev, &mut fs, &mut TestRng(3)),
+        Sw::MEMORY_FAILURE,
+        "a rebuild that could not read the head it carries forward must refuse"
+    );
+    let mut head = [0u8; 8];
+    assert_eq!(
+        fs.meta_find(key_fid(SLOT_CARDMGM).get(), &mut head)
+            .map(|n| head[..n.min(head.len())][2]),
+        Some(TOUCHPOLICY_ALWAYS),
+        "a faulted EF_META probe retired the management key's touch gate"
+    );
+}
+
+/// A provisioned card on a fault medium, management key and PIN open, with an
+/// EC P-256 key in 9A — the state `MOVE KEY` starts from.
+fn moved_card() -> (
+    PivApplet<'static>,
+    Fs<ProbeStuck>,
+    rsk_fs::storage::faults::ProbeMedium,
+    &'static RefCell<TestRng>,
+    &'static RefCell<AlwaysConfirm>,
+) {
+    let rng: &'static _ = Box::leak(Box::new(RefCell::new(TestRng(7))));
+    let pres: &'static _ = Box::leak(Box::new(RefCell::new(AlwaysConfirm)));
+    let (backend, medium) = ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    let mut app = PivApplet::new(SERIAL, HASH, None, rng, pres);
+    select(&mut app, &mut fs);
+    auth_mgm(&mut app, &mut fs);
+    verify_pin(&mut app, &mut fs);
+    assert_eq!(
+        run(
+            &mut app,
+            &mut fs,
+            INS_ASYM_KEYGEN,
+            0,
+            SLOT_AUTHENTICATION,
+            &gen_template(ALGO_ECCP256),
+        )
+        .0,
+        Sw::OK
+    );
+    (app, fs, medium, rng, pres)
+}
+
+/// Write a certificate object at `tag` (`5FC1xx`) with a recognisable body.
+fn put_cert<S: Storage>(app: &mut PivApplet, fs: &mut Fs<S>, tag: u8, fill: u8) {
+    let body = std::vec![fill; 40];
+    let mut obj = std::vec![0x5C, 0x03, 0x5F, 0xC1, tag, 0x53, body.len() as u8];
+    obj.extend_from_slice(&body);
+    assert_eq!(run(app, fs, INS_PUT_DATA, 0x3F, 0xFF, &obj).0, Sw::OK);
+}
+
+/// `MOVE KEY` reads the source certificate and, finding none, DELETES the
+/// destination's — then deletes the source's at the end of the move. `Fs::read`
+/// answers the same `None` for "no certificate" and "I could not read it", so one
+/// faulted probe destroyed both certificates and still answered 9000.
+#[test]
+fn a_faulted_certificate_probe_does_not_destroy_both_certificates() {
+    let (mut app, mut fs, medium, _rng, _pres) = moved_card();
+    put_cert(&mut app, &mut fs, 0x05, 0xA1); // 9A's certificate  -> 0xD205
+    put_cert(&mut app, &mut fs, 0x0D, 0xB2); // retired 82's      -> 0xD20D
+    let from = cert_fid_for_slot(SLOT_AUTHENTICATION).unwrap();
+    let to = cert_fid_for_slot(0x82).unwrap();
+    let (src, dst) = (medium.value(from), medium.value(to));
+    assert!(
+        src.is_some() && dst.is_some(),
+        "control: both are on the medium"
+    );
+
+    medium.stick(Some(from));
+    let sw = run(
+        &mut app,
+        &mut fs,
+        INS_MOVE_KEY,
+        0x82,
+        SLOT_AUTHENTICATION,
+        &[],
+    )
+    .0;
+    // The destruction first, then the status word: the loss is the finding, and the
+    // refusal is only how it is now avoided.
+    assert_eq!(
+        medium.value(to),
+        dst,
+        "the destination's certificate is gone"
+    );
+    assert_eq!(medium.value(from), src, "and so is the source's");
+    assert_eq!(
+        sw,
+        Sw::MEMORY_FAILURE,
+        "a move that could not read the certificate it carries must refuse"
+    );
+}
+
+/// The moved key's metadata head is what `GET METADATA` and the PIN/touch gate read.
+/// `meta_find` answers the same `None` for a key with no head and for an EF_META read
+/// the flash refused, so a faulted probe stranded the key at the destination with no
+/// head at all. Reached with `stick_after`: `drop_slot_meta` reads EF_META first, so a
+/// plain `stick_once` never gets past it.
+#[test]
+fn a_faulted_meta_head_does_not_strand_the_moved_key() {
+    let (mut app, mut fs, medium, _rng, _pres) = moved_card();
+    medium.stick_after(rsk_fs::EF_META, 1);
+    assert_eq!(
+        run(
+            &mut app,
+            &mut fs,
+            INS_MOVE_KEY,
+            0x82,
+            SLOT_AUTHENTICATION,
+            &[]
+        )
+        .0,
+        Sw::MEMORY_FAILURE,
+        "a move that could not read the head it carries forward must refuse"
+    );
+    medium.stick(None);
+    let (sw, md) = run(
+        &mut app,
+        &mut fs,
+        INS_GET_METADATA,
+        0,
+        SLOT_AUTHENTICATION,
+        &[],
+    );
+    assert_eq!(
+        sw,
+        Sw::OK,
+        "the source slot still holds the key and its head"
+    );
+    assert_eq!(find_tag(&md, 0x01).unwrap(), &[ALGO_ECCP256]);
+}
+
+/// The tail read-back exists because a `remove` that FAILED leaves the source holding
+/// a live key. It asked `has_key`, which answers `false` for a probe the medium could
+/// not serve — so the move fell through to `meta_delete` and reported OK over the key
+/// it had just copied to a second slot.
+#[test]
+fn a_faulted_readback_does_not_report_a_move_that_left_the_key() {
+    let (mut app, mut fs, medium, _rng, _pres) = moved_card();
+    let src = key_fid(SLOT_AUTHENTICATION).get();
+    medium.refuse_remove(Some(src));
+    // Read 1 is the blob the move carries; read 2 is the tail read-back.
+    medium.stick_after(src, 1);
+    assert_eq!(
+        run(
+            &mut app,
+            &mut fs,
+            INS_MOVE_KEY,
+            0x82,
+            SLOT_AUTHENTICATION,
+            &[]
+        )
+        .0,
+        Sw::MEMORY_FAILURE,
+        "a move whose source delete failed must not answer OK over the live key"
+    );
+    medium.refuse_remove(None);
+    assert!(
+        medium.value(src).is_some(),
+        "the source key really is still there"
+    );
+}
+
+/// `FILE_NOT_FOUND` over a slot the medium merely could not read tells the host the
+/// slot is EMPTY, and a host that believes it fills the slot — over a live key.
+#[test]
+fn a_faulted_source_probe_does_not_report_the_slot_empty() {
+    let (mut app, mut fs, medium, _rng, _pres) = moved_card();
+    medium.stick(Some(key_fid(SLOT_AUTHENTICATION).get()));
+    assert_eq!(
+        run(
+            &mut app,
+            &mut fs,
+            INS_MOVE_KEY,
+            0x82,
+            SLOT_AUTHENTICATION,
+            &[]
+        )
+        .0,
+        Sw::MEMORY_FAILURE,
+        "a source slot the medium could not read was reported as an empty one"
+    );
+}
+
+/// Every guard in [`scan_files`] writes a FACTORY DEFAULT over the record it reads
+/// absent, and the fallible probe is what stops a flash fault from taking that arm.
+/// One row per guard, each aimed at its OWN fid: a persistent fault on the first
+/// record shadows every later guard, which is how most of these came to be held by
+/// nothing at all while the suite stayed green.
+#[test]
+fn every_scan_files_guard_refuses_its_own_faulted_probe() {
+    let rng = RefCell::new(TestRng(7));
+    let pres = RefCell::new(AlwaysConfirm);
+    let (backend, medium) = ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    // A provisioned card: every record below is present, so every probe reaches the
+    // backend and the fault can land on it.
+    let mut app = PivApplet::new(SERIAL, HASH, None, &rng, &pres);
+    select(&mut app, &mut fs);
+
+    for (fid, what) in [
+        (EF_PIN, "the PIN verifier"),
+        (EF_PUK, "the PUK verifier"),
+        (EF_RETRIES, "the retry counters"),
+        (key_fid(SLOT_CARDMGM).get(), "the management key"),
+        (key_fid(SLOT_ATTESTATION).get(), "the F9 attestation key"),
+        (rsk_fs::EF_META, "the 9B metadata head"),
+    ] {
+        let before = medium.value(fid);
+        assert!(before.is_some(), "{what} is provisioned before the fault");
+        medium.stick(Some(fid));
+        let dev = Device {
+            serial_hash: &HASH,
+            serial_id: &SERIAL,
+            otp_key: None,
+        };
+        let sw = crate::files::scan_files(&dev, &mut fs, &mut TestRng(3));
+        medium.stick(None);
+        assert_eq!(
+            medium.value(fid),
+            before,
+            "a faulted probe replaced {what} with the factory default"
+        );
+        assert_eq!(
+            sw,
+            Err(Sw::MEMORY_FAILURE),
+            "a boot that could not read {what} must refuse, not re-provision"
+        );
+    }
+}
+
+/// `protect_mgm_key` rebuilds ADMIN DATA from the host's own record so the
+/// PIN-change timestamp and unrelated flag bits survive the on-panel protect.
+/// `Fs::read` answers the same `None` for "no host record" and for one the flash
+/// could not serve, and the absent arm rebuilds from EMPTY — so a faulted probe
+/// discarded the host's PivmanData and the rebuild made that permanent.
+#[test]
+fn a_faulted_pivman_probe_does_not_discard_the_host_record() {
+    let dev = Device {
+        serial_hash: &HASH,
+        serial_id: &SERIAL,
+        otp_key: None,
+    };
+    let (backend, medium) = ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    let mut inner = vec![PIVMAN_FLAGS_TAG, 0x01, 0x01];
+    inner.extend_from_slice(&[PIVMAN_TS_TAG, 0x04, 0xDE, 0xAD, 0xBE, 0xEF]);
+    let mut admin = vec![PIVMAN_TAG, inner.len() as u8];
+    admin.extend_from_slice(&inner);
+    fs.put(EF_PIVMAN_DATA, &admin).unwrap();
+
+    medium.stick(Some(EF_PIVMAN_DATA));
+    let sw = protect_mgm_key(&dev, &mut fs, &mut TestRng(42));
+    medium.stick(None);
+    let mut out = [0u8; 64];
+    let n = fs.read(EF_PIVMAN_DATA, &mut out).unwrap();
+    assert_eq!(
+        find_tag(&out[2..n], PIVMAN_TS_TAG as u16),
+        Some(&[0xDE, 0xAD, 0xBE, 0xEF][..]),
+        "a faulted probe rebuilt ADMIN DATA without the host's timestamp"
+    );
+    assert_eq!(
+        sw,
+        Sw::MEMORY_FAILURE,
+        "a rebuild that could not read the record it carries forward must refuse"
+    );
+}
+
+/// `scan_files`' `have_meta` probe decides whether to REBUILD the 9B head, and the
+/// rebuild's surviving-key arm publishes `TOUCHPOLICY_NEVER` — the published default,
+/// because a touch policy is not recoverable from the sealed key. So a faulted
+/// `meta_find` there retires the gate the owner raised with `SET MGM KEY P2 = 0xFE`,
+/// at SELECT, with no authentication in front of it.
+///
+/// `stick_once`, not `stick`: a PERSISTENT EF_META fault is caught further down by
+/// `meta_add`'s own faulted-read guard, which answers the same MEMORY_FAILURE. This
+/// guard's whole force would then rest on that neighbour, and the test would pass
+/// with it reverted — which is exactly what a whole-suite run reported for it.
+#[test]
+fn a_faulted_meta_probe_at_select_does_not_retire_the_management_touch_gate() {
+    let (backend, medium) = ProbeStuck::new();
+    let rng = RefCell::new(TestRng(7));
+    let pres = RefCell::new(AlwaysConfirm);
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    let mut app = PivApplet::new(SERIAL, HASH, None, &rng, &pres);
+    select(&mut app, &mut fs);
+    auth_mgm(&mut app, &mut fs);
+    let mut body = vec![ALGO_AES192, SLOT_CARDMGM, 24];
+    body.extend_from_slice(&DEFAULT_MGM);
+    assert_eq!(
+        run(&mut app, &mut fs, INS_SET_MGMKEY, 0xFF, 0xFE, &body).0,
+        Sw::OK
+    );
+    let mut head = [0u8; 8];
+    assert_eq!(
+        fs.meta_find(key_fid(SLOT_CARDMGM).get(), &mut head)
+            .map(|n| head[..n.min(head.len())][2]),
+        Some(TOUCHPOLICY_ALWAYS),
+        "control: the gate the owner raised"
+    );
+
+    let dev = Device {
+        serial_hash: &HASH,
+        serial_id: &SERIAL,
+        otp_key: None,
+    };
+    medium.stick_once(rsk_fs::EF_META);
+    let sw = crate::files::scan_files(&dev, &mut fs, &mut TestRng(3));
+    let mut head = [0u8; 8];
+    assert_eq!(
+        fs.meta_find(key_fid(SLOT_CARDMGM).get(), &mut head)
+            .map(|n| head[..n.min(head.len())][2]),
+        Some(TOUCHPOLICY_ALWAYS),
+        "a faulted EF_META probe rebuilt the head and retired the touch gate at SELECT"
+    );
+    assert_eq!(
+        sw,
+        Err(Sw::MEMORY_FAILURE),
+        "a boot that could not read the head it decides on must refuse"
+    );
+}
+
+/// SET MANAGEMENT KEY revokes the PIN-readable escrow last, and both of
+/// `mgm_clear_protected`'s `EF_PIVMAN_DATA` probes answered the same `None` for "no
+/// ADMIN DATA record" and for one the flash could not serve. The absent arm is
+/// `Ok(())` — nothing to revoke — so a faulted probe answered `9000` with the flag
+/// still standing, and the flag is what makes GET DATA PRINTED synthesize the key
+/// from the 0x9B slot. That slot now holds the key the HOST just chose, so the card
+/// hands it to the PIN while reporting the escrow gone.
+///
+/// The standing flag itself is not the defect: the ordering is key-then-flag on
+/// purpose (a torn write must not strand a PRINTED-only owner), so that state is
+/// reachable by a power cut too. What may not happen is reporting it as done — the
+/// status word is the only thing that lets the host repair it.
+///
+/// Both probes, each reached on its own: a persistent fault stops at the first
+/// (`try_mgm_is_protected`), so only `stick_after(.., 1)` reaches the second.
+#[test]
+fn a_faulted_pivman_probe_does_not_report_an_escrow_revoked() {
+    let dev = Device {
+        serial_hash: &HASH,
+        serial_id: &SERIAL,
+        otp_key: None,
+    };
+    let printed_id = [0x5C, 0x03, 0x5F, 0xC1, 0x09];
+    let new_key = [0x5Au8; 32];
+    let mut set_key = vec![ALGO_AES256, SLOT_CARDMGM, new_key.len() as u8];
+    set_key.extend_from_slice(&new_key);
+    let card = |medium: &rsk_fs::storage::faults::ProbeMedium,
+                app: &mut PivApplet,
+                fs: &mut Fs<ProbeStuck>| {
+        select(app, fs);
+        auth_mgm(app, fs);
+        verify_pin(app, fs);
+        assert_eq!(protect_mgm_key(&dev, fs, &mut TestRng(42)), Sw::OK);
+        assert!(mgm_is_protected(fs), "the escrow is live");
+        assert!(medium.value(EF_PIVMAN_DATA).is_some());
+    };
+
+    // Control: on a medium that answers, the revocation happens and PRINTED stops
+    // yielding a key at all.
+    {
+        let rng = RefCell::new(TestRng(7));
+        let pres = RefCell::new(AlwaysConfirm);
+        let (backend, medium) = ProbeStuck::new();
+        let mut fs = Fs::new(backend);
+        fs.scan();
+        let mut app = PivApplet::new(SERIAL, HASH, None, &rng, &pres);
+        card(&medium, &mut app, &mut fs);
+        assert_eq!(
+            run(&mut app, &mut fs, INS_SET_MGMKEY, 0xFF, 0xFF, &set_key).0,
+            Sw::OK
+        );
+        assert!(!mgm_is_protected(&mut fs), "control: the escrow is revoked");
+        assert_eq!(
+            run(&mut app, &mut fs, INS_GET_DATA, 0x3F, 0xFF, &printed_id).0,
+            Sw::FILE_NOT_FOUND,
+            "control: PRINTED is an ordinary absent object again"
+        );
+    }
+
+    for skip in [0u32, 1] {
+        let rng = RefCell::new(TestRng(7));
+        let pres = RefCell::new(AlwaysConfirm);
+        let (backend, medium) = ProbeStuck::new();
+        let mut fs = Fs::new(backend);
+        fs.scan();
+        let mut app = PivApplet::new(SERIAL, HASH, None, &rng, &pres);
+        card(&medium, &mut app, &mut fs);
+
+        medium.stick_after(EF_PIVMAN_DATA, skip);
+        let sw = run(&mut app, &mut fs, INS_SET_MGMKEY, 0xFF, 0xFF, &set_key).0;
+        medium.stick(None);
+
+        // What the status word is about, measured first: the escrow the command was
+        // asked to revoke still stands, and it now escrows the host's own new key.
+        assert!(
+            mgm_is_protected(&mut fs),
+            "skip={skip}: vacuous — the fault did not reach the revocation"
+        );
+        let (get_sw, body) = run(&mut app, &mut fs, INS_GET_DATA, 0x3F, 0xFF, &printed_id);
+        assert_eq!(get_sw, Sw::OK);
+        assert!(
+            body.windows(new_key.len()).any(|w| w == new_key),
+            "skip={skip}: vacuous — PRINTED does not hand back the host's new key"
+        );
+        assert_eq!(
+            sw,
+            Sw::MEMORY_FAILURE,
+            "skip={skip}: the card reported an escrow revoked that still hands the \
+             host's own new management key to the PIN"
+        );
+    }
+}
+
+/// PUT DATA refuses ordinary printed information while the escrow is live, because
+/// GET DATA would answer with the synthesized key and the stored object could never
+/// be read back. That refusal is a match guard over `mgm_is_protected`, so a faulted
+/// probe made it an unwritten branch: the write fell through to the generic object
+/// arm, was persisted, and was acknowledged `9000` — stored and hidden, the one
+/// outcome the arm exists to avoid.
+#[test]
+fn a_faulted_pivman_probe_does_not_admit_a_hidden_printed_write() {
+    let dev = Device {
+        serial_hash: &HASH,
+        serial_id: &SERIAL,
+        otp_key: None,
+    };
+    let rng = RefCell::new(TestRng(7));
+    let pres = RefCell::new(AlwaysConfirm);
+    let (backend, medium) = ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    let mut app = PivApplet::new(SERIAL, HASH, None, &rng, &pres);
+    select(&mut app, &mut fs);
+    auth_mgm(&mut app, &mut fs);
+    assert_eq!(protect_mgm_key(&dev, &mut fs, &mut TestRng(42)), Sw::OK);
+    let printed_fid = data_object_fid(0x09).unwrap();
+    let mut put = vec![TAG_DATA_PATH, 0x03, 0x5F, 0xC1, 0x09, TAG_DATA_OBJECT, 0x04];
+    put.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
+    assert_eq!(
+        run(&mut app, &mut fs, INS_PUT_DATA, 0x3F, 0xFF, &put).0,
+        Sw::CONDITIONS_NOT_SATISFIED,
+        "control: the escrow refuses the write on a medium that answers"
+    );
+    assert_eq!(medium.value(printed_fid), None, "control: nothing stored");
+
+    medium.stick_once(EF_PIVMAN_DATA);
+    let sw = run(&mut app, &mut fs, INS_PUT_DATA, 0x3F, 0xFF, &put).0;
+    medium.stick(None);
+    assert_eq!(
+        medium.value(printed_fid),
+        None,
+        "a faulted probe stored printed information under the live escrow, where \
+         GET DATA can never read it back"
+    );
+    assert_eq!(
+        sw,
+        Sw::MEMORY_FAILURE,
+        "a write that could not read the escrow it must not land under has to refuse"
     );
 }

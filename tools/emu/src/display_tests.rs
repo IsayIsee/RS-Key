@@ -31,6 +31,10 @@ use rsk_fido::consts::{
 
 use super::*;
 use crate::device::{Config, Job, Jobs, PanelLinks, Unplug, job_queue, serve_display};
+use crate::pin_client::{
+    CTAP2_OK, PROTO, PROTO_WIRE, Platform, bstr, get_key_agreement_req, mac_under, map,
+    parse_key_agreement, set_pin_req, u,
+};
 use crate::presence::PresenceMode;
 use crate::signals::Signals;
 use crate::taps::{Tap, TapPad};
@@ -39,36 +43,37 @@ use crate::taps::{Tap, TapPad};
 const PIN: &[u8] = b"1234";
 const WRONG_PIN: &[u8] = b"9999";
 
-/// pinUvAuthProtocol 2 — the one a current platform picks, and the one whose
-/// 16-byte IV and 32-byte MAC make every length below explicit. The wire byte is
-/// the same fact twice, so `drive` checks the two agree before using either.
-const PROTO: PinProto = PinProto::Two;
-const PROTO_WIRE: u8 = 2;
-
 /// `credentialManagement/getCredsMetadata`: the cheapest command that consumes a
 /// `pinUvAuthToken` and asks for nothing else — no touch, no user presence — so
 /// what it answers is the token's own health and nothing more.
 const CM_GET_CREDS_METADATA: u8 = 0x01;
-const CTAP2_OK: u8 = 0x00;
 
 /// A CTAPHID channel to be the host on.
 const CID: u32 = 0x0102_0304;
 
 /// How long the panel may take to answer a job. The display flow holds the single
-/// executor while a modal is open, so a queued command waits for it — bounded
-/// past `MENU_INACTIVITY_MS` (60 s) so a screen that never yields fails on the
-/// bound below with its real figure rather than on a receive timeout.
-const REPLY_TIMEOUT: Duration = Duration::from_secs(90);
+/// executor while a modal is open, so a queued command waits for it — bounded past
+/// `MENU_INACTIVITY_MS` so a screen that never yields fails on the bound below with
+/// its real figure rather than on a receive timeout.
+const REPLY_TIMEOUT_MS: u64 = 90_000;
+const REPLY_TIMEOUT: Duration = Duration::from_millis(REPLY_TIMEOUT_MS);
+// Checked, not argued: `MENU_INACTIVITY_MS` invites being generous, and past this
+// the diagnostic for a yield defect becomes "the device answered within the bound".
+const _: () = assert!(rsk_display::MENU_INACTIVITY_MS < REPLY_TIMEOUT_MS);
 
 /// What a queued command may wait for an open menu. A board hands the executor
 /// over on the first `TOUCH_POLL_MS` (16 ms) poll past `UI_YIELD_FLOOR_MS`; a
 /// screen that does not yield at all makes it wait out `MENU_INACTIVITY_MS`
 /// (60 s), so anything between the two separates them.
-const MENU_YIELD_BOUND: Duration = Duration::from_secs(20);
-// The bound only separates the two while it sits strictly between them. The lower
-// end is public and checked here; `MENU_INACTIVITY_MS` is private to `rsk-display`,
-// so the upper end is prose until it is not.
-const _: () = assert!(rsk_display::UI_YIELD_FLOOR_MS < 20_000);
+const MENU_YIELD_BOUND_MS: u64 = 20_000;
+const MENU_YIELD_BOUND: Duration = Duration::from_millis(MENU_YIELD_BOUND_MS);
+// The bound only separates the two while it sits strictly between them, and both
+// ends move in `rsk-display` where nothing here would notice: at
+// `MENU_INACTIVITY_MS = 15_000` a screen that never yields waits it out INSIDE this
+// bound and the two tests below pass over the defect they exist to catch.
+// One per end, so a build failure names which of the two moved.
+const _: () = assert!(rsk_display::UI_YIELD_FLOOR_MS < MENU_YIELD_BOUND_MS);
+const _: () = assert!(MENU_YIELD_BOUND_MS < rsk_display::MENU_INACTIVITY_MS);
 
 /// What the same command takes with the panel idle — the control that says the
 /// figure above is a modal holding the executor and not the emulator being slow.
@@ -215,102 +220,7 @@ fn settle(taps: &SyncSender<Tap>) {
     push(taps, Tap::at(p.x, p.y));
 }
 
-// --- the platform half of the pin protocol ---------------------------------
-
-struct Platform {
-    x: [u8; 32],
-    y: [u8; 32],
-    shared: [u8; 64],
-    slen: usize,
-}
-
-impl Platform {
-    /// Agree a shared secret with the authenticator's `getKeyAgreement` key. The
-    /// platform scalar is fixed: nothing here needs a fresh key, and a
-    /// deterministic one makes a failing run reproducible.
-    fn agree(peer_x: &[u8; 32], peer_y: &[u8; 32]) -> Self {
-        let mut scalar = [0u8; 32];
-        scalar[0] = 0x13;
-        scalar[31] = 0x42;
-        let (x, y) = pinproto::public_xy(&scalar).expect("a valid P-256 scalar");
-        let mut shared = [0u8; 64];
-        let slen = pinproto::ecdh(PROTO, &scalar, peer_x, peer_y, &mut shared)
-            .expect("the authenticator's key agreement point is on the curve");
-        Self { x, y, shared, slen }
-    }
-
-    fn secret(&self) -> &[u8] {
-        &self.shared[..self.slen]
-    }
-
-    fn enc(&self, plaintext: &[u8]) -> Vec<u8> {
-        let mut out = [0u8; 128];
-        let n = pinproto::encrypt(PROTO, self.secret(), &[0x55; 16], plaintext, &mut out)
-            .expect("the buffer holds an IV and 64 padded bytes");
-        out[..n].to_vec()
-    }
-
-    fn mac(&self, data: &[u8]) -> Vec<u8> {
-        mac_under(self.secret(), data)
-    }
-
-    fn key_agreement(&self) -> Vec<u8> {
-        cose_ecdh(&self.x, &self.y)
-    }
-}
-
-fn mac_under(key: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut out = [0u8; 32];
-    let n = pinproto::authenticate(PROTO, key, data, &mut out).expect("a 32-byte MAC fits");
-    out[..n].to_vec()
-}
-
-/// `{1:2, 3:-25, -1:1, -2:x, -3:y}` — the COSE ECDH key both sides put on the
-/// wire. Written out because the emulator does not depend on a CBOR encoder.
-fn cose_ecdh(x: &[u8; 32], y: &[u8; 32]) -> Vec<u8> {
-    let mut v = vec![
-        0xA5, 0x01, 0x02, 0x03, 0x38, 0x18, 0x20, 0x01, 0x21, 0x58, 0x20,
-    ];
-    v.extend_from_slice(x);
-    v.extend_from_slice(&[0x22, 0x58, 0x20]);
-    v.extend_from_slice(y);
-    v
-}
-
-/// A CBOR byte string. Every one here is 32 bytes or more, so the one-byte-length
-/// form is also the canonical one.
-fn bstr(b: &[u8]) -> Vec<u8> {
-    assert!((24..=255).contains(&b.len()), "not the 0x58 length form");
-    let mut v = vec![0x58, b.len() as u8];
-    v.extend_from_slice(b);
-    v
-}
-
-/// A CBOR map with small unsigned keys and pre-encoded values.
-fn map(entries: &[(u8, Vec<u8>)]) -> Vec<u8> {
-    assert!(entries.len() < 24, "not the single-byte map header");
-    let mut v = vec![0xA0 | entries.len() as u8];
-    for (k, val) in entries {
-        assert!(*k < 24, "not a single-byte key");
-        v.push(*k);
-        v.extend_from_slice(val);
-    }
-    v
-}
-
-/// A CBOR unsigned small enough to be its own header.
-fn u(n: u8) -> Vec<u8> {
-    assert!(n < 24, "not a single-byte unsigned");
-    vec![n]
-}
-
 // --- the requests ----------------------------------------------------------
-
-fn get_key_agreement_req() -> Vec<u8> {
-    let mut v = vec![CTAP_CLIENT_PIN];
-    v.extend(map(&[(1, u(PROTO_WIRE)), (2, u(2))]));
-    v
-}
 
 /// The cheapest ungated command there is — no PIN, no touch, no state. It is also
 /// the one audit run-35 named: a host looping it is what [`UI_YIELD_FLOOR_MS`]
@@ -331,22 +241,6 @@ fn selection_req() -> Vec<u8> {
 fn get_pin_retries_req() -> Vec<u8> {
     let mut v = vec![CTAP_CLIENT_PIN];
     v.extend(map(&[(1, u(PROTO_WIRE)), (2, u(1))]));
-    v
-}
-
-fn set_pin_req(plat: &Platform, pin: &[u8]) -> Vec<u8> {
-    let mut padded = [0u8; 64];
-    padded[..pin.len()].copy_from_slice(pin);
-    let new_pin_enc = plat.enc(&padded);
-    let puap = plat.mac(&new_pin_enc);
-    let mut v = vec![CTAP_CLIENT_PIN];
-    v.extend(map(&[
-        (1, u(PROTO_WIRE)),
-        (2, u(3)),
-        (3, plat.key_agreement()),
-        (4, bstr(&puap)),
-        (5, bstr(&new_pin_enc)),
-    ]));
     v
 }
 
@@ -377,22 +271,6 @@ fn spend_token_req(token: &[u8; 32]) -> Vec<u8> {
 }
 
 // --- the responses ---------------------------------------------------------
-
-/// `{1: COSE key}` — the authenticator's ephemeral public point.
-fn parse_key_agreement(body: &[u8]) -> ([u8; 32], [u8; 32]) {
-    assert_eq!(body[0], CTAP2_OK, "getKeyAgreement");
-    let head: &[u8] = &[
-        0xA1, 0x01, 0xA5, 0x01, 0x02, 0x03, 0x38, 0x18, 0x20, 0x01, 0x21, 0x58, 0x20,
-    ];
-    assert_eq!(&body[1..1 + head.len()], head, "COSE ECDH key layout moved");
-    let xs = 1 + head.len();
-    let mut x = [0u8; 32];
-    x.copy_from_slice(&body[xs..xs + 32]);
-    assert_eq!(&body[xs + 32..xs + 35], &[0x22, 0x58, 0x20]);
-    let mut y = [0u8; 32];
-    y.copy_from_slice(&body[xs + 35..xs + 67]);
-    (x, y)
-}
 
 /// `{2: encrypted pinUvAuthToken}` — 16 bytes of IV plus the 32-byte token.
 fn parse_token(plat: &Platform, body: &[u8]) -> [u8; 32] {

@@ -57,6 +57,19 @@ reach the binary, and demanding a bump for a crate README is the false alarm tha
 gets a guard deleted. Every other `.toml` there — the board knobs — is compared
 as parsed TOML like a manifest, so a comment edit is not a build input either.
 
+A cfg-gated **file** is excused; a cfg-gated **region** inside an ordinary file is
+not, and that is a limitation rather than an oversight. Only the attribute line
+itself is excused, so `#[cfg(kani)] pub const EF_META: u16 = 0x0017;` costs a bump
+for a constant the image cannot reach (it did, at 0x0994). Region parsing was
+measured before being refused: over the last 250 commits the line filter fires on
+51, and on **1** of those every deciding line sits inside a `cfg(test|kani)`
+region — the 0x0994 commit itself. Closing it means a Rust cfg-expression
+evaluator and item-extent finder in Python, whose own failure direction is to
+excuse a line that ships, which is the direction this file must not be wrong in.
+So it is left wrong the safe way round at a measured 1-in-51, and pinned as given
+up by `test_bcd_gate.py`'s `..._region_is_not_excused` rather than left to be
+rediscovered.
+
 Which files are cfg-gated is read out of the module graph, not off a name
 pattern: a crate root's `#[cfg(test)] mod tests;` carries no `#[path]`, and
 `tests.rs` then declares `put_tests`, `increasing_tests` … with no `cfg` of their
@@ -488,6 +501,31 @@ def image_changes(root, base):
     return hits
 
 
+def names_release(root, span, value):
+    """Whether a line the CHANGELOG *gained* over `span` records `value` as the bump.
+
+    The ADDED lines only. The file is append-only history, so a value some older
+    entry already names is not this bump's entry, and the `--name-only` test this
+    backs cannot tell an entry for THIS bump from an unrelated edit in the same
+    span — which is how 0x09BE, 0x09BF and 0x09C0 each shipped with the row
+    printing `ok` and no record anywhere of what the build carries.
+
+    The word and the value must share ONE line, which is how all 60-odd entries
+    spell it (`**bcdDevice → 0x09B0.**`). A bare hex anywhere in the added text is
+    NOT the record: this file discusses hex constantly, and the first cut of this
+    rule was satisfied by a sentence about the rule itself — measured, the row
+    printed `ok` over an entry whose own bcd line said `the manager will fill this
+    in`. Case-insensitive (`0x010a` and `0x010A` are one build) and bounded on the
+    right, so `0x09C1` is not satisfied by an entry that says `0x09C10`.
+    """
+    want = re.compile(rf"bcddevice.*0x{value:04x}(?![0-9a-f])")
+    diff = git(root, "diff", "--unified=0", span, "--", str(CHANGELOG))
+    return any(
+        line.startswith("+") and not line.startswith("+++") and want.search(line.lower())
+        for line in diff.splitlines()
+    )
+
+
 def audit(root):  # noqa: C901 — one clause per failure mode, each named
     """(problems, one-line summary) for how this checkout tracks its counter."""
     root = pathlib.Path(root)
@@ -534,6 +572,14 @@ def audit(root):  # noqa: C901 — one clause per failure mode, each named
         problems.append(
             f"{CHANGELOG} has not moved since {span}: a bump is a released"
             " behaviour change and owes an [Unreleased] entry"
+        )
+    elif not names_release(root, span, now):
+        problems.append(
+            f"{CHANGELOG} moved since {span} but no line it ADDS reads"
+            f" `bcdDevice … 0x{now:04X}`: that a file moved is not that this bump"
+            " was written down, and every neighbouring entry spells it that way."
+            " Three builds shipped with the row green and no record of what they"
+            " carry"
         )
     where = "the working tree" if tree_bumps else base[:8]
     debt = f"; carried from {LANDED_OVER[1]}: {len(carried)} files" if carried else ""

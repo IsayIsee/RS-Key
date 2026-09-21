@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 RS-Key contributors
 
-//! The wiring, off the board: the real applet set over a RAM `Fs`, with the four
+//! The wiring, off the board: the real applet set over a host `Fs`, with the four
 //! things only a device can supply — the board hooks, the presence source, the
 //! rescue platform and the vendor platform — as recording doubles.
 //!
@@ -15,8 +15,8 @@ extern crate std;
 use core::cell::RefCell;
 use std::vec::Vec;
 
-use rsk_fs::Fs;
 use rsk_fs::storage::ram::RamStorage;
+use rsk_fs::{Fs, Storage};
 
 use super::*;
 
@@ -45,8 +45,8 @@ pub struct Board {
     pub accelerator: bool,
 }
 
-impl Hooks<RamStorage> for Board {
-    fn config_written(&mut self, _fs: &mut Fs<RamStorage>) {
+impl<S: Storage> Hooks<S> for Board {
+    fn config_written(&mut self, _fs: &mut Fs<S>) {
         self.config_written += 1;
     }
     fn request_reboot(&mut self) {
@@ -178,9 +178,92 @@ pub struct VendorBoard;
 
 impl rsk_vendor::Platform for VendorBoard {}
 
-/// Everything a handler borrows, owned for the test's lifetime.
-pub struct Env {
-    pub fs: RefCell<Fs<RamStorage>>,
+/// A backend whose enumeration faults immediately: it yields nothing and reports
+/// the walk truncated, while every key stays live and readable. That is the
+/// interrupted-page-erase shape (`sequential-storage`'s `find_first_page` →
+/// `Error::Corrupted`, propagated by `fetch_all_items` before its auto-repair),
+/// and one of the two ways `Fs::factory_wipe` refuses — the other, a backend
+/// `remove` that errors, is `rsk_fs::storage::faults::RemoveStuck`.
+///
+/// Carries `factory_wipe`'s own gate: the strict-config image has no management
+/// RESET, so its only caller is compiled out there and the double is dead code.
+#[cfg(not(feature = "strict-config"))]
+#[derive(Default)]
+pub struct TruncatedScan(RamStorage);
+
+#[cfg(not(feature = "strict-config"))]
+impl TruncatedScan {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[cfg(not(feature = "strict-config"))]
+impl Storage for TruncatedScan {
+    fn read(&mut self, fid: u16, buf: &mut [u8]) -> Option<usize> {
+        self.0.read(fid, buf)
+    }
+    fn write(&mut self, fid: u16, data: &[u8]) -> rsk_sdk::error::Result<()> {
+        self.0.write(fid, data)
+    }
+    fn remove(&mut self, fid: u16) -> rsk_sdk::error::Result<()> {
+        self.0.remove(fid)
+    }
+    fn size(&mut self, fid: u16) -> Option<usize> {
+        self.0.size(fid)
+    }
+    fn for_each_key(&mut self, _f: &mut dyn FnMut(u16)) -> bool {
+        false
+    }
+}
+
+/// A backend that refuses every `write` and serves every read. `RamStorage` cannot
+/// fail, so a wrapper that folds a store error into a bool — `ctap_mgmt`'s WRITE
+/// CONFIG ack — is unobservable over it, and `.is_ok()` → `true` there leaves all
+/// 77 tests green while a refused `persist_dev_conf` is acked to ykman as a written
+/// config.
+///
+/// Local rather than in `rsk_fs::storage::faults`, unlike the two fault mediums the
+/// applet sweeps share: one crate needs this shape, and that module's cost is a bcd
+/// digit, because the counter's row reads FILES and `storage.rs` is a plain module
+/// even where its contents are gated. [`TruncatedScan`] above is local for the same
+/// reason. It carries the same gate too — WRITE CONFIG is a DEFAULT-build arm.
+#[cfg(not(feature = "strict-config"))]
+#[derive(Default)]
+pub struct WriteStuck(RamStorage);
+
+#[cfg(not(feature = "strict-config"))]
+impl WriteStuck {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[cfg(not(feature = "strict-config"))]
+impl Storage for WriteStuck {
+    fn read(&mut self, fid: u16, buf: &mut [u8]) -> Option<usize> {
+        self.0.read(fid, buf)
+    }
+    fn write(&mut self, _fid: u16, _data: &[u8]) -> rsk_sdk::error::Result<()> {
+        Err(rsk_sdk::error::Error::MemoryFatal)
+    }
+    fn remove(&mut self, fid: u16) -> rsk_sdk::error::Result<()> {
+        self.0.remove(fid)
+    }
+    fn size(&mut self, fid: u16) -> Option<usize> {
+        self.0.size(fid)
+    }
+    fn for_each_key(&mut self, f: &mut dyn FnMut(u16)) -> bool {
+        self.0.for_each_key(f)
+    }
+}
+
+/// Everything a handler borrows, owned for the test's lifetime. Generic over the
+/// backend because [`RamStorage`] cannot fail: a wrapper that folds a store error
+/// into a `bool` is only observable over one that can (`rsk_fs::storage::faults`,
+/// or the local [`TruncatedScan`]).
+pub struct Env<S: Storage = RamStorage> {
+    pub fs: RefCell<Fs<S>>,
     pub rng: RefCell<TestRng>,
     pub board: RefCell<Board>,
     pub finger: RefCell<Finger>,
@@ -190,16 +273,23 @@ pub struct Env {
     pub fido_state: RefCell<rsk_fido::FidoState>,
 }
 
-impl Default for Env {
+impl Default for Env<RamStorage> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Env {
+impl Env<RamStorage> {
     pub fn new() -> Self {
+        Self::with_storage(RamStorage::new())
+    }
+}
+
+impl<S: Storage> Env<S> {
+    /// The same wiring over a chosen backend.
+    pub fn with_storage(storage: S) -> Self {
         Self {
-            fs: RefCell::new(Fs::new(RamStorage::new())),
+            fs: RefCell::new(Fs::new(storage)),
             rng: RefCell::new(TestRng(0x0DDB_A11C_0FFE_E1E5)),
             board: RefCell::new(Board::default()),
             finger: RefCell::new(Finger::default()),
@@ -209,7 +299,7 @@ impl Env {
     }
 
     /// The CCID side: the full eight-applet set behind the dispatcher.
-    pub fn ccid(&self) -> CcidApplets<'_, RamStorage, TestRng, VendorBoard> {
+    pub fn ccid(&self) -> CcidApplets<'_, S, TestRng, VendorBoard> {
         CcidApplets::new(
             &self.fs,
             &self.rng,
@@ -229,7 +319,7 @@ impl Env {
     }
 
     /// The CTAPHID side: FIDO/U2F plus the vendor AID.
-    pub fn ctap(&self) -> AppletHandler<'_, RamStorage, TestRng, VendorBoard> {
+    pub fn ctap(&self) -> AppletHandler<'_, S, TestRng, VendorBoard> {
         AppletHandler::new(
             &self.fs,
             &self.rng,

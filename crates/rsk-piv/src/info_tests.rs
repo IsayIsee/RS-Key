@@ -165,3 +165,67 @@ fn on_device_generate_fills_an_empty_retired_slot() {
     assert!(generate_slot_key(&dev, &mut fs, &mut rng, SLOT_AUTHENTICATION, ALGO_ECCP256).is_err());
     assert!(generate_slot_key(&dev, &mut fs, &mut rng, 0x83, ALGO_RSA2048).is_err());
 }
+
+/// The panel's generate is fenced by presence alone — no management key — so
+/// `retired_slot_is_free` is the whole authorisation for overwriting nothing. Both its
+/// probes collapsed a failed read into "absent", so one faulted probe reported an
+/// OCCUPIED retired slot free and the generate wrote over the sealed key and the
+/// certificate the screen promises it never erases. One row per probe, each aimed at
+/// its OWN fid: a fault on the key shadows the cert probe behind it.
+#[test]
+fn a_faulted_retired_probe_does_not_overwrite_a_populated_slot() {
+    let dev = Device {
+        serial_hash: &[0x22; 32],
+        serial_id: &[1, 2, 3, 4, 5, 6, 7, 8],
+        otp_key: None,
+    };
+    // (slot, the fid to fault, the fid whose bytes must survive, what it holds)
+    for (slot, faulted, guarded, what) in [
+        (
+            0x82u8,
+            key_fid(0x82).get(),
+            key_fid(0x82).get(),
+            "the sealed key of a slot holding a key and no certificate",
+        ),
+        (
+            0x83,
+            cert_fid_for_slot(0x83).unwrap(),
+            cert_fid_for_slot(0x83).unwrap(),
+            "the certificate of a slot holding a certificate and no key",
+        ),
+    ] {
+        let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+        let mut fs = Fs::new(backend);
+        fs.scan();
+        fs.put(key_fid(0x82).get(), &[0xBB; 64]).unwrap();
+        fs.put(
+            cert_fid_for_slot(0x83).unwrap(),
+            &[0x30, 0x03, 0x01, 0x02, 0x03],
+        )
+        .unwrap();
+        let before = medium.value(guarded);
+        assert!(before.is_some(), "{what} is present before the fault");
+
+        medium.stick(Some(faulted));
+        // The picker must not offer a slot it could not confirm empty.
+        let offered = next_free_retired(&mut fs);
+        let sw = generate_slot_key(&dev, &mut fs, &mut TestRng(0xC0FFEE), slot, ALGO_ECCP256);
+        medium.stick(None);
+
+        assert_eq!(
+            medium.value(guarded),
+            before,
+            "a faulted probe let the panel generate destroy {what}"
+        );
+        assert_ne!(
+            offered,
+            Some(slot),
+            "the picker offered slot {slot:#04x}, which it could not confirm empty"
+        );
+        assert_eq!(
+            sw,
+            Err(Sw::MEMORY_FAILURE),
+            "a generate that could not confirm slot {slot:#04x} empty has to refuse"
+        );
+    }
+}

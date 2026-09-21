@@ -120,7 +120,14 @@ fn alg_to_curve(alg: i64) -> Option<(i64, u8)> {
 struct Request<'a> {
     client_data_hash: &'a [u8],
     rp_id: &'a str,
+    /// Whether `rp.id` / `user.id` were sent AT ALL. The value alone cannot say:
+    /// an absent sub-field and a present empty one both leave the default, and the
+    /// reference answers them differently — `MissingParameter` for the absence,
+    /// a length/parameter error for the empty value. The top-level keys need no
+    /// such flag; `parse`'s ordered-key check sees those.
+    rp_id_present: bool,
     user_id: &'a [u8],
+    user_id_present: bool,
     user_name: &'a str,
     user_display_name: &'a str,
     has_pubkey_param: bool,
@@ -172,7 +179,9 @@ fn parse(data: &[u8]) -> Result<Request<'_>, CtapError> {
     let mut req = Request {
         client_data_hash: &[],
         rp_id: "",
+        rp_id_present: false,
         user_id: &[],
+        user_id_present: false,
         user_name: "",
         user_display_name: "",
         has_pubkey_param: false,
@@ -224,6 +233,14 @@ fn parse(data: &[u8]) -> Result<Request<'_>, CtapError> {
             _ => skip_value(&mut d)?,
         }
     }
+    // The twin of `get_assertion`'s: the ordered check needs a LATER key to compare
+    // against, so `{}`, `{1}`, `{1,2}` and `{1,2,3}` all walked out unjudged and were
+    // answered downstream by the empty values they left. Those answers happened to
+    // read `MissingParameter` too, which is why nothing showed — until the guard
+    // below stopped saying it for every shape at once.
+    if expected <= 4 {
+        return Err(CtapError::MissingParameter);
+    }
     Ok(req)
 }
 
@@ -251,7 +268,10 @@ fn parse_rp_entity<'a>(d: &mut Decoder<'a>, req: &mut Request<'a>) -> Result<(),
     let m = def_map(d)?;
     for _ in 0..m {
         match cbor(d.str())? {
-            "id" => req.rp_id = cbor(d.str())?,
+            "id" => {
+                req.rp_id_present = true;
+                req.rp_id = cbor(d.str())?;
+            }
             // rp.name must be a text string when present (conformance
             // MakeCredential Req-2 F-2); read-as-text so a non-text value
             // surfaces as CBOR_UNEXPECTED_TYPE.
@@ -269,7 +289,10 @@ fn parse_user_entity<'a>(d: &mut Decoder<'a>, req: &mut Request<'a>) -> Result<(
     let m = def_map(d)?;
     for _ in 0..m {
         match cbor(d.str())? {
-            "id" => req.user_id = cbor(d.bytes())?,
+            "id" => {
+                req.user_id_present = true;
+                req.user_id = cbor(d.bytes())?;
+            }
             "name" => req.user_name = cbor(d.str())?,
             "displayName" => req.user_display_name = cbor(d.str())?,
             _ => skip_value(d)?,
@@ -360,15 +383,33 @@ pub fn make_credential<S: Storage, R: Rng>(
     out: &mut [u8],
 ) -> CtapResult {
     let mut req = parse(data)?;
-    if req.client_data_hash.len() != 32 || req.rp_id.is_empty() || req.user_id.is_empty() {
+    // Present but unusable, which is NOT missing: an absent mandatory key is already
+    // `MissingParameter` from `parse`'s ordered-key check, and measuring both sides
+    // shows the reference splits what is left by WHICH field — the fixed-size ones
+    // answer by length, the user entity answers by content (YubiKey 5.8.0: a 0/31/33
+    // byte clientDataHash and an empty rpId are `0x03`, an empty or 65-byte user.id
+    // is `0x02`; absent keys are `0x14` on both keys already).
+    if !req.rp_id_present || !req.user_id_present {
         return Err(CtapError::MissingParameter);
+    }
+    if req.client_data_hash.len() != 32 || req.rp_id.is_empty() {
+        return Err(CtapError::InvalidLength);
+    }
+    if req.user_id.is_empty() {
+        return Err(CtapError::InvalidParameter);
     }
     // rpId (a domain) and user.id have hard maxima; reject an over-long one
     // explicitly rather than let the sealed box overflow into a vague
     // `CtapError::Other`. Together with the name truncation below this makes
-    // `CRED_BOX_MAX` a true ceiling for every accepted request.
-    if req.rp_id.len() > RP_ID_MAX || req.user_id.len() > USER_ID_MAX {
+    // `CRED_BOX_MAX` a true ceiling for every accepted request. Split by the same
+    // rule as above — and `RP_ID_MAX` is KEPT despite the reference accepting a
+    // 300-char rpId (it answers `0x27` after a ceremony): that is the reference
+    // being looser, where parity does not earn a change.
+    if req.rp_id.len() > RP_ID_MAX {
         return Err(CtapError::InvalidLength);
+    }
+    if req.user_id.len() > USER_ID_MAX {
+        return Err(CtapError::InvalidParameter);
     }
     // No valid WebAuthn rpId contains whitespace — the spec requires a valid domain
     // string, and U+0020 is a forbidden host code point, so no browser can send one.
@@ -477,7 +518,10 @@ fn rp_eligible_for_vendor_ea<S: Storage>(fs: &mut Fs<S>, rp_id_hash: &[u8; 32]) 
         return true;
     }
     let mut buf = [0u8; 32 * MAX_EA_RPIDS];
-    let n = fs.read(EF_EA_RPIDS, &mut buf).unwrap_or(0);
+    // `Fs::read` answers the record's FULL length; a list written under a wider
+    // `MAX_EA_RPIDS` reads back longer than this buffer. Clamped rather than
+    // refused, because a shorter allowlist only ever DECLINES type-1 EA.
+    let n = fs.read(EF_EA_RPIDS, &mut buf).unwrap_or(0).min(buf.len());
     buf[..n].chunks_exact(32).any(|h| h == rp_id_hash)
 }
 
@@ -493,7 +537,9 @@ fn enforce_pin<S: Storage, R: Rng>(
     rp_id_hash: &[u8; 32],
     proto: Option<PinProto>,
 ) -> Result<UvOutcome, CtapError> {
-    let pin_set = ctx.fs.has_data(EF_PIN);
+    // A probe the flash could not serve must not read as "no PIN configured": that
+    // is the arm that makes a discoverable credential on user presence alone.
+    let pin_set = ctx.fs.try_has_data(EF_PIN).map_err(|_| CtapError::Other)?;
     match req.pin_uv_auth_param {
         // Zero-length probe: a selection gesture — wait for a touch, then report
         // the PIN state. With no button configured this confirms instantly. CTAP 2.1
@@ -775,7 +821,7 @@ fn make_credential_inner<S: Storage, R: Rng>(
     )?;
 
     if req.rk
-        && credential_store(
+        && let Err(err) = credential_store(
             seed,
             &ctx.dev,
             ctx.fs,
@@ -785,9 +831,14 @@ fn make_credential_inner<S: Storage, R: Rng>(
             req.user_id,
             &cached_pubkey[..cached_pubkey_len],
         )
-        .is_err()
     {
-        return Err(CtapError::KeyStoreFull);
+        // A full store and a medium that would not answer are different answers to
+        // the platform: `KeyStoreFull` tells it to delete passkeys, which cannot
+        // help a flash fault and destroys data to no end.
+        return Err(match err {
+            rsk_sdk::error::Error::MemoryFatal => CtapError::Other,
+            _ => CtapError::KeyStoreFull,
+        });
     }
     journal::append(ctx, journal::EV_MAKE_CRED, 0, &rp_id_hash[..8]);
     Ok(resp_len)

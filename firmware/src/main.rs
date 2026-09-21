@@ -241,6 +241,20 @@ const _: () = assert!(
 // knobs below (PWM slice/channel, I2C, wake button) stay `display`-gated.
 #[cfg(any(feature = "display", feature = "display-keys"))]
 const BUILD_DISPLAY_SPI_FREQ_HZ: u32 = env_u32(env!("PK_DISPLAY_SPI_FREQ_HZ"));
+/// The display build's system clock. The panel's PIO program spends two instructions
+/// per serial bit, so `clk_sys` has to be exactly twice `display.spi_freq_hz` for the
+/// divider to be 1 — which is what puts this above the RP2350's rated 150 MHz. The
+/// trade is written down in docs/limitations.md; the const assert below is what stops
+/// a board file from moving one half of it without the other.
+#[cfg(feature = "display")]
+const BUILD_DISPLAY_SYS_CLOCK_HZ: u32 = 160_000_000;
+
+#[cfg(feature = "display")]
+const _: () = assert!(
+    BUILD_DISPLAY_SYS_CLOCK_HZ == BUILD_DISPLAY_SPI_FREQ_HZ * 2,
+    "display.spi_freq_hz must be exactly half the system clock: the PIO emits one bit \
+     per two cycles, and any other ratio needs a divider the transport does not set"
+);
 #[cfg(any(feature = "display", feature = "display-keys"))]
 const BUILD_DISPLAY_CS: u8 = env_u16(env!("PK_DISPLAY_CS")) as u8;
 #[cfg(any(feature = "display", feature = "display-keys"))]
@@ -556,9 +570,8 @@ async fn main(spawner: Spawner) {
     let mut config = embassy_rp::config::Config::default();
     #[cfg(any(feature = "display", feature = "display-keys"))]
     {
-        // The display PIO emits one SPI bit per two system-clock cycles.
-        config.clocks = embassy_rp::clocks::ClockConfig::system_freq(160_000_000)
-            .expect("160 MHz display clock must have valid PLL parameters");
+        config.clocks = embassy_rp::clocks::ClockConfig::system_freq(BUILD_DISPLAY_SYS_CLOCK_HZ)
+            .expect("the display system clock must have valid PLL parameters");
     }
     if let Some(xosc) = config.clocks.xosc.as_mut() {
         xosc.delay_multiplier = XOSC_DELAY_MULT;
@@ -589,7 +602,6 @@ async fn main(spawner: Spawner) {
 
     let mut usb_vid = USB_VID;
     let mut usb_pid = USB_PID;
-    let mut usb_itf = rsk_phy::USB_ITF_ALL;
     // Explicit phy string overrides; `None` ⇒ the VID-derived default, then the
     // build const, are chosen at the identity assembly below. The product is
     // normalized against the ykman YK4_ crash; the manufacturer is copied verbatim
@@ -598,8 +610,13 @@ async fn main(spawner: Spawner) {
     // drives the LED hardware, applied at the spawn site below.
     let mut phy_product: Option<&str> = None;
     let mut phy_manufacturer: Option<&str> = None;
-    let phy = rsk_phy::load(&mut fs);
-    if let Some(phy) = &phy {
+    // Not `rsk_phy::load`: it folds "never written" into "the flash would not say",
+    // and the second one then takes the build defaults -- including the interface
+    // mask, which is the one field here that is a gate rather than an identity.
+    let phy_boot = rsk_phy::boot_load(&mut fs);
+    let usb_itf = phy_boot.usb_itf();
+    let phy = phy_boot.record();
+    if let Some(phy) = phy {
         if let Some((vid, pid)) = phy.vid_pid {
             (usb_vid, usb_pid) = (vid, pid);
         }
@@ -615,7 +632,6 @@ async fn main(spawner: Spawner) {
             let n = rsk_phy::clamp_usb_string(s.as_bytes(), buf);
             phy_manufacturer = core::str::from_utf8(&buf[..n]).ok();
         }
-        usb_itf = rsk_phy::effective_usb_itf(phy);
         // Touch-wait timeout (phy tag 0x08, seconds; 0/absent = default).
         presence::set_timeout_secs(phy.presence_timeout.unwrap_or(0));
     }
@@ -662,16 +678,25 @@ async fn main(spawner: Spawner) {
         rsk_fido::credential::migrate_rp_seal(&dev, &mut fs);
         let _ = rsk_fido::seed::ensure_seed(&dev, &mut fs, &mut rng);
         let _ = rsk_openpgp::scan_files(&dev, &mut fs, &mut rng);
-        // One-shot at-rest hardening: the seal migrations above re-key every secret
-        // off the chip-serial root, whose superseded copies a flash dump could still
-        // read until a full GC lap reclaims their pages (`FlashStorage::compact`).
-        // Gated on `EF_HARDENED` so it runs once and crash-safely (absent ⇒ re-run;
-        // the lap is idempotent). Runs here, before USB attach — except the screen
-        // builds, which defer it to the panel (below) so the ~30 s stall shows a
-        // working page instead of a black panel. See `flash_storage::compact` docs.
+        // One-shot at-rest hardening: the seal migrations above leave the superseded
+        // chip-serial-sealed copies recoverable from a flash dump until a GC lap
+        // reclaims the page. The marker, the write order and the crash-safety are
+        // `rsk_fs::run_at_rest_lap`; here because the lap is a multi-second stall
+        // that belongs before USB attach, at an attended provisioning boot, and
+        // because the OTP gate is ours — a pre-OTP board has nothing weaker to
+        // supersede. See `flash_storage::FlashStorage::compact`.
+        //
+        // Standing here AFTER the migrations is not what makes the order hold, and
+        // each of them re-arms before its own superseding write for that reason: a
+        // boot where one silently skipped a record — a faulted `read_key`, a refused
+        // `put` — latches the marker anyway, and the boot that finally migrates that
+        // record finds the lap gated shut for the life of the key. The re-arm costs
+        // nothing at this position: it clears the marker the lap below re-latches.
+        // The display-keys build defers the lap to the panel (lap_needed below): the
+        // ~30 s stall shows a working page instead of a black panel.
         #[cfg(not(feature = "display-keys"))]
-        if mkek.is_some() && !fs.has_data(rsk_fido::consts::EF_HARDENED) && fs.compact().is_ok() {
-            let _ = fs.put(rsk_fido::consts::EF_HARDENED, &[1u8]);
+        if mkek.is_some() {
+            rsk_fs::run_at_rest_lap(&mut fs);
         }
         #[cfg(feature = "display-keys")]
         {
@@ -746,20 +771,7 @@ async fn main(spawner: Spawner) {
     config.max_power = 100;
     config.max_packet_size_0 = 64;
     // bcdDevice build counter; also surfaced on the trusted-display Firmware screen.
-    // 0x098A: the panel init moved to the full register set (porch/gate/gamma)
-    // with a pre-display-on GRAM blank, and the touchless `display-keys` build
-    // landed (screen+button presence, status/confirm pages, 1-key gestures).
-    // 0x098D: the touchless build's no-host idle menu — after 30 s without a
-    // host configuring the device, the STARTING wash becomes a read-only,
-    // single-button browse of the device's own metadata.
-    // 0x098E: the PIV touch consent names the slot it asks for (`9A Auth`,
-    // `Retired #1`), and the consent text line became one shared rule across
-    // the two screen builds (refactor, no pixel change there) — bcdDevice
-    // counts builds, so the refactor owes the bump too.
-    // 0x098F: PIV serves a synthesized Card Capability Container (`5FC107`,
-    // mandatory per SP 800-73-4 pt1 §3.1.1) where it previously answered 6A82 —
-    // the object a Windows key-container open reads.
-    let device_release: u16 = 0x098F;
+    let device_release: u16 = 0x09DA;
     config.device_release = device_release;
 
     let mut builder = Builder::new(
@@ -1071,7 +1083,7 @@ async fn main(spawner: Spawner) {
 
     // Trusted display (the `display` build — always `LED_KIND=none` per the guard
     // above, so the LED block compiled out and PIO0/I2C1/GPIO16 are free). Build the
-    // panel + touch here, after the USB task is spawned, so its ~200 ms reset runs
+    // panel + touch here, after the USB task is spawned, so its ~370 ms reset runs
     // while the interrupt executor enumerates — never delaying it. `status_task`
     // mirrors the device status; the `TouchPresence` backend (the `presence::Presence`
     // below) paints the confirm prompt. Both share the panel via the `UI` cell on the

@@ -23,10 +23,10 @@ fn dev() -> Device<'static> {
     }
 }
 
-fn run_ctx<T>(
-    fs: &mut Fs<RamStorage>,
+fn run_ctx<S: Storage, T>(
+    fs: &mut Fs<S>,
     state: &mut FidoState,
-    f: impl FnOnce(&mut Ctx<RamStorage, SeqRng>) -> T,
+    f: impl FnOnce(&mut Ctx<S, SeqRng>) -> T,
 ) -> T {
     // The journal is opt-in (OFF by default); these tests drive the ring machinery
     // with logging ON. The default-OFF gate is covered by `append_is_noop_when_off`.
@@ -69,7 +69,7 @@ fn append_wrap_folds_and_head_matches_reference() {
         }
     });
 
-    let (head, m) = chain_head(&dev(), &mut fs);
+    let (head, m) = chain_head(&dev(), &mut fs).unwrap();
     assert_eq!(m.seq_next, 200);
     assert_eq!(m.start, 200 - AUDIT_RING_SLOTS);
     assert_eq!(head, reference_head(&reference));
@@ -83,7 +83,7 @@ fn boot_entry_logged_once_per_cycle() {
         append(ctx, EV_MAKE_CRED, 0, &[0xAA; 8]);
         append(ctx, EV_GET_ASSERT, 0, &[0xBB; 8]);
     });
-    let (_, m) = chain_head(&dev(), &mut fs);
+    let (_, m) = chain_head(&dev(), &mut fs).unwrap();
     assert_eq!(m.seq_next, 3); // BOOT + the two events
     let mut e = [0u8; ENTRY_LEN];
     read_slot(&mut fs, 0, &mut e).unwrap();
@@ -120,7 +120,7 @@ fn fold_and_scrub_keeps_chain_and_deletes_details() {
     });
 
     // Window empty, slots gone, epoch carries the whole history.
-    let (head, m) = chain_head(&dev(), &mut fs);
+    let (head, m) = chain_head(&dev(), &mut fs).unwrap();
     assert_eq!(m.start, m.seq_next);
     assert!(!fs.has_data(EF_AUDIT_RING));
     assert_eq!(head, reference_head(&reference));
@@ -130,7 +130,7 @@ fn fold_and_scrub_keeps_chain_and_deletes_details() {
         raw_append(&ctx.dev, ctx.fs, ctx.now_ms, EV_RESET, 0, &[]).unwrap();
         reference.push(build_entry(5, ctx.now_ms, EV_RESET, 0, &[]));
     });
-    let (head, _) = chain_head(&dev(), &mut fs);
+    let (head, _) = chain_head(&dev(), &mut fs).unwrap();
     assert_eq!(head, reference_head(&reference));
 }
 
@@ -151,7 +151,7 @@ fn config_write_run_costs_one_slot_and_evicts_nothing() {
         }
     });
 
-    let (_, m) = chain_head(&dev(), &mut fs);
+    let (_, m) = chain_head(&dev(), &mut fs).unwrap();
     assert_eq!(m.start, 0, "nothing evicted");
     assert_eq!(m.seq_next, 3, "BOOT + PIN_SET + one coalesced config write");
     let mut e = [0u8; ENTRY_LEN];
@@ -170,7 +170,7 @@ fn config_write_run_costs_one_slot_and_evicts_nothing() {
         append(ctx, EV_PIN_CHANGE, 0, &[]);
         append_config_write(ctx, T_LED);
     });
-    let (_, m) = chain_head(&dev(), &mut fs);
+    let (_, m) = chain_head(&dev(), &mut fs).unwrap();
     assert_eq!(m.seq_next, 5);
     read_slot(&mut fs, 2, &mut e).unwrap();
     assert_eq!(
@@ -190,7 +190,7 @@ fn config_write_does_not_coalesce_across_a_power_cycle() {
     state.audit_boot_logged = false; // power cycle
     run_ctx(&mut fs, &mut state, |ctx| append_config_write(ctx, T_LED));
 
-    let (_, m) = chain_head(&dev(), &mut fs);
+    let (_, m) = chain_head(&dev(), &mut fs).unwrap();
     assert_eq!(m.seq_next, 4); // BOOT, CONFIG_WRITE, BOOT, CONFIG_WRITE
     let mut e = [0u8; ENTRY_LEN];
     read_slot(&mut fs, 2, &mut e).unwrap();
@@ -243,7 +243,7 @@ fn silent_run_costs_one_slot_when_details_alternate() {
         }
     });
 
-    let (_, m) = chain_head(&dev(), &mut fs);
+    let (_, m) = chain_head(&dev(), &mut fs).unwrap();
     assert_eq!(m.start, 0, "nothing evicted");
     assert_eq!(m.seq_next, 3, "BOOT + BACKUP_EXPORT + one coalesced run");
     let mut e = [0u8; ENTRY_LEN];
@@ -277,7 +277,7 @@ fn interleaved_ungated_events_do_not_flush_the_ring() {
         }
     });
 
-    let (_, m) = chain_head(&dev(), &mut fs);
+    let (_, m) = chain_head(&dev(), &mut fs).unwrap();
     assert_eq!(m.start, 0, "nothing evicted");
     // BOOT + PIN_LOCKOUT + one slot per ungated class. CONFIG_WRITE only folds into
     // the newest entry, so the two run entries opening ahead of it cost it one restart.
@@ -301,7 +301,7 @@ fn append_run_does_not_coalesce_across_a_power_cycle() {
         append_run(ctx, EV_GET_ASSERT, 0, &[7; 8])
     });
 
-    let (_, m) = chain_head(&dev(), &mut fs);
+    let (_, m) = chain_head(&dev(), &mut fs).unwrap();
     assert_eq!(m.seq_next, 4); // BOOT, GET_ASSERT, BOOT, GET_ASSERT
     let mut e = [0u8; ENTRY_LEN];
     read_slot(&mut fs, 2, &mut e).unwrap();
@@ -331,7 +331,7 @@ fn append_is_noop_when_off() {
         append_run(&mut ctx, EV_GET_ASSERT, 0, &[0xBB; 8]);
     }
 
-    let (head, m) = chain_head(&dev(), &mut fs);
+    let (head, m) = chain_head(&dev(), &mut fs).unwrap();
     assert_eq!(m.seq_next, 0, "off: nothing appended");
     assert!(!fs.has_data(EF_AUDIT_META));
     assert!(!fs.has_data(EF_AUDIT_RING));
@@ -395,7 +395,7 @@ fn checkpoint_requires_devk_and_signature_verifies() {
 
     // The signed head matches the device state *before* the EV_CHECKPOINT
     // entry the call itself appends.
-    let (now_head, m) = chain_head(&dev(), &mut fs);
+    let (now_head, m) = chain_head(&dev(), &mut fs).unwrap();
     assert_eq!(m.seq_next, seq_next + 1);
     assert_ne!(head, now_head);
 
@@ -438,7 +438,7 @@ fn read_exports_window_that_folds_to_head() {
     for e in entries.chunks_exact(ENTRY_LEN) {
         epoch = chain(&epoch, e.try_into().unwrap());
     }
-    let (head, _) = chain_head(&dev(), &mut fs);
+    let (head, _) = chain_head(&dev(), &mut fs).unwrap();
     assert_eq!(epoch, head);
 }
 
@@ -502,5 +502,169 @@ fn the_checkpoint_reads_the_devk_per_call() {
         })
         .unwrap();
         assert_eq!(READS.load(Ordering::Relaxed), expected);
+    }
+}
+
+/// R3: `load_meta` reads `EF_AUDIT_META` with the collapsing `Fs::read`, and its
+/// absent arm is *genesis* — the state of a journal that has never been written. One
+/// faulted probe therefore rewound the ring to slot 0 and `put_meta` PERSISTED that,
+/// dropping the live window out of the chain and leaving the log looking freshly
+/// initialised.
+#[test]
+fn a_faulted_audit_meta_probe_does_not_reset_the_chain() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    let _ = set_enabled(&mut fs, true);
+    for i in 0..10u32 {
+        raw_append(&dev(), &mut fs, 12345, EV_GET_ASSERT, 0, &i.to_le_bytes()).unwrap();
+    }
+    let (head, m) = chain_head(&dev(), &mut fs).unwrap();
+    assert_eq!(m.seq_next, 10, "control: ten entries are in the window");
+
+    medium.stick_once(EF_AUDIT_META);
+    let _ = raw_append(&dev(), &mut fs, 12346, EV_GET_ASSERT, 0, &[0xFF]);
+
+    let (head2, m2) = chain_head(&dev(), &mut fs).unwrap();
+    assert_eq!(
+        m2.seq_next, 10,
+        "a faulted EF_AUDIT_META probe rewound the ring to slot 0"
+    );
+    assert_eq!(m2.start, 0);
+    assert_eq!(m2.epoch, m.epoch);
+    assert_eq!(
+        head, head2,
+        "so the chain head no longer covered the window"
+    );
+    assert_eq!(
+        for_each_event(&dev(), &mut fs, |_| true),
+        10,
+        "and the log the display renders read back as freshly initialised"
+    );
+}
+
+/// R3, second half: `raw_append` folds the evicted entry into the epoch only when its
+/// slot read answered. A faulted slot read at eviction therefore dropped an entry from
+/// the chain *without* folding it — and the head still verified over the shortened
+/// history, which is the property the chain exists to deny.
+#[test]
+fn a_faulted_slot_read_does_not_evict_an_unfolded_entry() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    let _ = set_enabled(&mut fs, true);
+    let mut reference = std::vec::Vec::new();
+    for i in 0..AUDIT_RING_SLOTS {
+        let detail = i.to_le_bytes();
+        raw_append(&dev(), &mut fs, 12345, EV_GET_ASSERT, 0, &detail).unwrap();
+        reference.push(build_entry(i, 12345, EV_GET_ASSERT, 0, &detail));
+    }
+
+    // The ring is full: the next append evicts slot `start` and must fold it first.
+    medium.stick_once(EF_AUDIT_RING);
+    let r = raw_append(&dev(), &mut fs, 12346, EV_GET_ASSERT, 0, &[0xEE]);
+    assert!(
+        r.is_err(),
+        "an append that could not read the entry it is about to evict must refuse"
+    );
+    let (head, m) = chain_head(&dev(), &mut fs).unwrap();
+    assert_eq!(
+        m.start, 0,
+        "the window must not have moved past an unfolded entry"
+    );
+    assert_eq!(m.seq_next, AUDIT_RING_SLOTS);
+    assert_eq!(head, reference_head(&reference));
+}
+
+/// A journal with `n` entries on a medium whose reads of one chosen record can be
+/// made to fault, plus the host-side reference entries.
+fn stuck_journal(
+    n: u32,
+) -> (
+    Fs<rsk_fs::storage::faults::ProbeStuck>,
+    rsk_fs::storage::faults::ProbeMedium,
+    std::vec::Vec<[u8; ENTRY_LEN]>,
+) {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    let _ = set_enabled(&mut fs, true);
+    let mut reference = std::vec::Vec::new();
+    for i in 0..n {
+        let detail = i.to_le_bytes();
+        raw_append(&dev(), &mut fs, 12345, EV_GET_ASSERT, 0, &detail).unwrap();
+        reference.push(build_entry(i, 12345, EV_GET_ASSERT, 0, &detail));
+    }
+    (fs, medium, reference)
+}
+
+/// `AUDIT_CHECKPOINT` signs the head, so an entry the medium could not read must
+/// not be silently dropped from the fold: the signature would then attest a history
+/// the device does not hold, which is the one verdict the chain exists to deny.
+#[test]
+fn a_faulted_probe_does_not_sign_a_short_chain_head() {
+    let (mut fs, medium, reference) = stuck_journal(4);
+    assert_eq!(
+        chain_head(&dev(), &mut fs).unwrap().0,
+        reference_head(&reference),
+        "control: the head folds the whole window"
+    );
+    medium.stick(Some(slot_fid(2)));
+    assert!(
+        chain_head(&dev(), &mut fs).is_err(),
+        "a head folded over a slot the medium refused was handed to the signer"
+    );
+    medium.stick(Some(EF_AUDIT_META));
+    assert!(
+        chain_head(&dev(), &mut fs).is_err(),
+        "and a faulted EF_AUDIT_META made it the GENESIS head, over an empty window"
+    );
+}
+
+/// `AUDIT_READ` is the export the host folds and matches against a checkpoint. An
+/// entry silently missing from it is a wrong verdict whichever way the host lands.
+#[test]
+fn a_faulted_probe_does_not_export_a_short_window() {
+    let (mut fs, medium, _reference) = stuck_journal(4);
+    let mut state = FidoState::new();
+    let mut out = [0u8; 1024];
+    assert!(run_ctx(&mut fs, &mut state, |ctx| vendor_read(ctx, &mut out)).is_ok());
+    medium.stick(Some(slot_fid(1)));
+    assert_eq!(
+        run_ctx(&mut fs, &mut state, |ctx| vendor_read(ctx, &mut out)),
+        Err(CtapError::Other),
+        "AUDIT_READ exported a window with an entry silently missing from it"
+    );
+    medium.stick(Some(EF_AUDIT_META));
+    assert_eq!(
+        run_ctx(&mut fs, &mut state, |ctx| vendor_read(ctx, &mut out)),
+        Err(CtapError::Other),
+        "and a faulted EF_AUDIT_META exported an empty window as the whole journal"
+    );
+}
+
+/// `fold_and_scrub` deletes every slot after committing the fold. A slot it could
+/// not read must stop it where a failed `put_meta` already does — folding past an
+/// entry and then erasing it is the silent chain break.
+#[test]
+fn a_faulted_probe_does_not_scrub_a_window_it_could_not_fold() {
+    let (mut fs, medium, reference) = stuck_journal(4);
+    let mut state = FidoState::new();
+    let head = chain_head(&dev(), &mut fs).unwrap().0;
+    for (fid, why) in [
+        (slot_fid(2), "a slot it could not fold was scrubbed anyway"),
+        (
+            EF_AUDIT_META,
+            "a faulted EF_AUDIT_META scrubbed the window it hid",
+        ),
+    ] {
+        medium.stick(Some(fid));
+        run_ctx(&mut fs, &mut state, fold_and_scrub);
+        medium.stick(None);
+        let (head2, m) = chain_head(&dev(), &mut fs).unwrap();
+        assert_eq!(m.start, 0, "{why}");
+        assert_eq!(m.seq_next, 4, "{why}");
+        assert_eq!(head2, head, "{why}");
+        assert_eq!(head2, reference_head(&reference), "{why}");
     }
 }

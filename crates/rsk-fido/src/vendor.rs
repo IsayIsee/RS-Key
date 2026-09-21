@@ -11,7 +11,8 @@
 //! - `BACKUP_EXPORT` (0x02) — hand the seed to the host over that channel (gated).
 //! - `BACKUP_LOAD` (0x03) — install a seed from the host, re-sealed to this chip.
 //! - `BACKUP_FINALIZE` (0x04) — seal the one-time export window.
-//! - `BACKUP_STATE` (0x05) — read `{sealed, has_seed, locked, unlocked}`.
+//! - `BACKUP_STATE` (0x05) — read `{sealed, has_seed, locked, unlocked,
+//!   rescrub_refused}`.
 //! - `UNLOCK` (0x06) — soft-lock: decrypt `EF_KEY_DEV_ENC` into RAM for this
 //!   power cycle. The lock is engaged and released by `authenticatorConfig`
 //!   vendor ids AUT_ENABLE / AUT_DISABLE ([`crate::config`]).
@@ -241,9 +242,13 @@ fn config_read<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>, req: &Req, out: &mut [u8
     match req.target {
         CONFIG_TARGET_PHY => {
             let mut buf = [0u8; rsk_phy::PHY_MAX_SIZE];
+            // A probe the flash could not answer is not an empty record. This
+            // response IS the baseline `rsk hw` read-modify-writes on the host, and
+            // an empty one displays "(build default)" for every field the owner set.
             let n = ctx
                 .fs
-                .read(rsk_phy::EF_PHY, &mut buf)
+                .try_read(rsk_phy::EF_PHY, &mut buf)
+                .map_err(|_| CtapError::Other)?
                 .unwrap_or(0)
                 .min(buf.len());
             // Key 1: the raw stored record (overrides only) for read-modify-write.
@@ -273,9 +278,13 @@ fn config_read<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>, req: &Req, out: &mut [u8
         }
         CONFIG_TARGET_LED => {
             let mut buf = [0u8; LED_CONF_LEN];
+            // Same rule as the phy target: `rsk led` reads this block to modify it.
+            // The short answer an absence gives is one the host refuses by length;
+            // an unreadable record must not borrow that arm to say so.
             let n = ctx
                 .fs
-                .read(EF_LED_CONF, &mut buf)
+                .try_read(EF_LED_CONF, &mut buf)
+                .map_err(|_| CtapError::Other)?
                 .unwrap_or(0)
                 .min(buf.len());
             encode(out, |e| {
@@ -436,7 +445,16 @@ fn att_clear<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>, req: &Req) -> CtapResult {
 fn att_state<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>, out: &mut [u8]) -> CtapResult {
     let mut chain = [0u8; cert::ATT_CHAIN_REC_MAX];
     let present = ctx.fs.has_key(EF_ATT_KEY);
-    let n = ctx.fs.read(EF_ATT_CHAIN, &mut chain).unwrap_or(0);
+    // `Fs::read` answers the record's FULL length, so `n` can exceed the buffer:
+    // `cert::ATT_CHAIN_MAX` is a `min3` whose response term moves with the message
+    // surface, and a key provisioned under a larger cap keeps its longer record.
+    // Refused rather than clamped — a hash of a prefix is a wrong answer wearing a
+    // right one — which is `makeCredential`'s reading of the same record.
+    let n = ctx
+        .fs
+        .read(EF_ATT_CHAIN, &mut chain)
+        .filter(|&n| n <= chain.len())
+        .unwrap_or(0);
     encode(out, |e| {
         e.map(if present && n > 0 { 2 } else { 1 })?
             .u8(1)?
@@ -546,6 +564,15 @@ pub(crate) fn open_channel_key<S: Storage, R: Rng>(
 /// and FIDO operations work until power-off. No PIN or touch gate — knowing
 /// the 256-bit lock key *is* the authorization, and this runs on every
 /// power-up of a locked device.
+///
+/// The ONE producer of the RAM seed copy, which is the antecedent of the seed
+/// ordering: `lock_engaged` requires the plain record ABSENT, so the copy is
+/// minted only where a wrapped seed stands behind it. The tag was on
+/// `seed::ensure_seed` alone, which owns the CONSEQUENT and takes no
+/// `FidoState` — it can make the right side true and can never falsify the
+/// implication.
+///
+/// Refines `RSKeySecurityState!RamNeverOutlivesFlashSeed` — SEC-FIDO-007.
 fn unlock<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>, req: &Req) -> CtapResult {
     if !ctx.state.mse_ready() {
         return Err(CtapError::NotAllowed);
@@ -729,7 +756,10 @@ fn gate<S: Storage, R: Rng>(
 /// that case, so the second factor is collected where it belongs: on the device's own
 /// pad, out of the host's reach.
 fn pin_gate<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>, req: &Req) -> Result<(), CtapError> {
-    if ctx.fs.has_data(EF_PIN) {
+    // `try_*` on BOTH probes: this is the only PIN half of the gate on the seed
+    // export, the attestation identity and the audit chain, and a probe that read as
+    // "no PIN configured" waived it outright.
+    if ctx.fs.try_has_data(EF_PIN).map_err(|_| CtapError::Other)? {
         // A present-but-unsupported protocol is judged first — `0` is a value the
         // platform sent — and an absent one only where the token needs it.
         let proto = crate::clientpin::checked_proto(req.proto_present.then_some(req.proto))?;
@@ -749,7 +779,19 @@ fn pin_gate<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>, req: &Req) -> Result<(), Ct
         ctx.state.mark_token_used(ctx.now_ms);
         return Ok(());
     }
-    if crate::clientpin::device_pin_is_set(ctx.fs) && ctx.presence.uv_available() {
+    if crate::clientpin::try_device_pin_is_set(ctx.fs).map_err(|_| CtapError::Other)? {
+        // A device PIN this build cannot COLLECT is still a gate the owner set.
+        // `uv_available()` is false on every backend but the trusted display
+        // (`rsk-sdk/src/presence.rs`), and `EF_DEVICE_PIN` is not a display-only
+        // record — `is_fido_fid` keeps it — so it survives a reflash from a
+        // display image to a screenless one. Falling through here made the second
+        // factor on BACKUP_EXPORT, ATT_IMPORT/CLEAR and the audit commands "a
+        // touch", silently, on a device whose owner had set a PIN. Refused
+        // instead: recoverable by reflashing the display image and clearing the
+        // PIN, or by a factory reset, which is the restrictive side.
+        if !ctx.presence.uv_available() {
+            return Err(CtapError::PuatRequired);
+        }
         return device_pin_gate(ctx);
     }
     Ok(())
@@ -802,7 +844,7 @@ fn backup_export<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>, req: &Req, out: &mut [
     if cfg!(feature = "fips-profile") {
         return Err(CtapError::NotAllowed);
     }
-    if ctx.fs.has_data(EF_BACKUP_SEALED) {
+    if try_backup_sealed(ctx.fs).map_err(|_| CtapError::Other)? {
         return Err(CtapError::NotAllowed);
     }
     // Name the operation explicitly: this hands the master seed to the host. A generic
@@ -909,17 +951,23 @@ fn backup_finalize<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>, req: &Req) -> CtapRe
     Ok(0)
 }
 
-/// `BACKUP_STATE`: `{1: sealed, 2: has_seed, 3: locked, 4: unlocked}` — ungated,
-/// for host-side status. `locked` is the flash state (the wrapped blob is what's
-/// stored); `unlocked` says a RAM copy from a vendor UNLOCK is live this power
+/// `BACKUP_STATE`: `{1: sealed, 2: has_seed, 3: locked, 4: unlocked, 5: rescrub_refused}`
+/// — ungated, for host-side status. `locked` is the flash state (the wrapped blob is
+/// what's stored); `unlocked` says a RAM copy from a vendor UNLOCK is live this power
 /// cycle.
+///
+/// Key 5 is medium health, and it rides here because this is the only ungated status
+/// map the host already reads: `authenticatorReset` re-arms the at-rest lap
+/// best-effort and answers success whatever the medium said, so the refusal has to
+/// leave by another door than the wipe's own status (`Fs::rescrub_refused`).
 fn backup_state<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>, out: &mut [u8]) -> CtapResult {
-    let sealed = ctx.fs.has_data(EF_BACKUP_SEALED);
+    let sealed = backup_sealed(ctx.fs);
     let has_seed = ctx.fs.has_key(EF_KEY_DEV);
     let locked = lock_engaged(ctx.fs);
     let unlocked = ctx.state.keydev_dec.is_some();
+    let rescrub_refused = ctx.fs.rescrub_refused();
     encode(out, |e| {
-        e.map(4)?
+        e.map(5)?
             .u8(1)?
             .bool(sealed)?
             .u8(2)?
@@ -927,7 +975,9 @@ fn backup_state<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>, out: &mut [u8]) -> Ctap
             .u8(3)?
             .bool(locked)?
             .u8(4)?
-            .bool(unlocked)?;
+            .bool(unlocked)?
+            .u8(5)?
+            .bool(rescrub_refused)?;
         Ok(())
     })
 }
@@ -956,7 +1006,7 @@ pub struct BackupStatus {
 /// flags — no CBOR — so the display task can read it directly while the worker is parked.
 pub fn backup_status<S: Storage>(fs: &mut rsk_fs::Fs<S>) -> BackupStatus {
     BackupStatus {
-        sealed: fs.has_data(EF_BACKUP_SEALED),
+        sealed: backup_sealed(fs),
         has_seed: fs.has_key(EF_KEY_DEV),
         exportable: !cfg!(feature = "fips-profile"),
         locked: lock_engaged(fs),
@@ -974,11 +1024,25 @@ pub fn mark_backup_sealed<S: Storage>(fs: &mut rsk_fs::Fs<S>) -> bool {
     fs.put(EF_BACKUP_SEALED, &[1]).is_ok()
 }
 
-/// Whether the seed-backup export window is sealed — the cheap `has_data` probe the
-/// Security list row uses for its "Sealed / Review" status, without the `has_seed`
-/// key lookup [`backup_status`] also does.
+/// Whether the seed-backup export window is sealed — the cheap probe the Security
+/// list row uses for its "Sealed / Review" status, without the `has_seed` key lookup
+/// [`backup_status`] also does.
+///
+/// A probe the medium could not answer reads as SEALED. `!sealed` is what re-opens
+/// the export and the on-device recovery-phrase reveal, and `BACKUP_FINALIZE` is
+/// irreversible short of a reset, so the failed probe must not re-open the window it
+/// shut (see [`try_backup_sealed`]).
 pub fn backup_sealed<S: Storage>(fs: &mut rsk_fs::Fs<S>) -> bool {
-    fs.has_data(EF_BACKUP_SEALED)
+    try_backup_sealed(fs).unwrap_or(true)
+}
+
+/// [`backup_sealed`] with a failed probe kept apart from an absence — `Fs::has_data`
+/// answers the same `false` for both, and the absent arm here is the one that hands
+/// out the master seed.
+pub fn try_backup_sealed<S: Storage>(
+    fs: &mut rsk_fs::Fs<S>,
+) -> Result<bool, rsk_sdk::error::Error> {
+    fs.try_has_data(EF_BACKUP_SEALED)
 }
 
 #[cfg(test)]

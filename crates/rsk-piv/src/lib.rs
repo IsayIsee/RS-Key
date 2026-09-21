@@ -51,7 +51,7 @@ pub const PIV_AID: &[u8] = &[
 ];
 
 /// Reported PIV application version — the shared [`rsk_sdk::FIRMWARE_VERSION`]
-/// (default 5.7.4, `FW_VERSION`-overridable).
+/// (default 5.8.0, `FW_VERSION`-overridable).
 pub const VERSION: (u8, u8, u8) = rsk_sdk::FIRMWARE_VERSION;
 
 /// The status word each [`RsaError`] answers with. This table **is** wire
@@ -604,15 +604,26 @@ impl PivApplet<'_> {
         if apdu.p1 == 0 || apdu.p2 == 0 {
             return Sw::WRONG_DATA;
         }
+        // This one write leads the re-arm below and stays there: four plaintext
+        // counter bytes supersede no chip-serial-rooted copy, so a refused re-arm
+        // leaves a retriable command — new totals, both references in force.
         if fs
             .put(EF_RETRIES, &[apdu.p1, apdu.p1, apdu.p2, apdu.p2])
             .is_err()
         {
             return Sw::MEMORY_FAILURE;
         }
-        if put_pin_verifier(dev, fs, EF_PIN, &DEFAULT_PIN).is_err()
-            || put_pin_verifier(dev, fs, EF_PUK, &DEFAULT_PUK).is_err()
-        {
+        // Re-arm the one-shot at-rest lap (rsk-fs `EF_HARDENED`): the PUK is never
+        // verified on this path, so the record the writes below supersede is still
+        // keyed under the pre-OTP arm. Before them and gating them — a reset between
+        // the two appends keeps whichever landed, and a REFUSED re-arm reaches that
+        // same end state with no reset in it, so the re-seed must not go ahead.
+        if rsk_fs::request_rescrub(fs).is_err() {
+            return Sw::MEMORY_FAILURE;
+        }
+        let stored = put_pin_verifier(dev, fs, EF_PIN, &DEFAULT_PIN)
+            .and_then(|()| put_pin_verifier(dev, fs, EF_PUK, &DEFAULT_PUK));
+        if stored.is_err() {
             return Sw::MEMORY_FAILURE;
         }
         self.sess.set_pin(false);
@@ -829,9 +840,17 @@ impl PivApplet<'_> {
             // never be read back. Refused rather than acknowledged and hidden —
             // and a YubiKey's alternative, overwriting the escrow, loses the only
             // copy of a management key the owner may never have seen.
-            (0x5F, 0xC1, 0x09) if !obj.is_empty() && mgm_is_protected(fs) => {
-                return Sw::CONDITIONS_NOT_SATISFIED;
-            }
+            // `try_mgm_is_protected`: a probe the medium could not answer reads as
+            // "no escrow", and this refusal is then the branch that never runs —
+            // the write lands, hidden under the synthesized key it was refused for.
+            (0x5F, 0xC1, b @ 0x09) if !obj.is_empty() => match try_mgm_is_protected(fs) {
+                Ok(true) => return Sw::CONDITIONS_NOT_SATISFIED,
+                Err(sw) => return sw,
+                Ok(false) => match data_object_fid(b) {
+                    Some(fid) => fid,
+                    None => return Sw::WRONG_DATA,
+                },
+            },
             (0x5F, 0xC1, b) => match data_object_fid(b) {
                 Some(fid) => fid,
                 None => return Sw::WRONG_DATA,
@@ -936,9 +955,13 @@ impl PivApplet<'_> {
                 Sw::OK
             }
             s if is_key(s) => {
-                // meta_find below gates existence (delete clears the meta record
-                // unconditionally), so the old separate has_key probe here was a
-                // redundant per-slot flash fetch on every GET METADATA — dropped.
+                // meta_find gates existence, and SEC-STORE-006 says that is not the
+                // same as the key being there: a faulted EF_META drop leaves an
+                // ORPHAN head, which both producers report rather than prevent.
+                //
+                // Over one this answers 9000 with the head and the cached point
+                // (EC) or 6400 (RSA), never 6A88 — measured. Kept, because the
+                // has_key probe it replaced is a flash fetch per slot per call.
                 // Sized to hold a cached EC public point trailing the 4-byte
                 // [algo, pin_pol, touch_pol, origin] head (see slot_pubkey_tlv).
                 let mut meta = [0u8; 4 + MAX_EC_POINT];
@@ -1112,8 +1135,12 @@ impl PivApplet<'_> {
         // verbatim. Sized to the largest sealed record (RSA-4096 `P ‖ Q`); a
         // smaller buffer would truncate/overrun-slice a 3072/4096 key's blob.
         let mut blob = [0u8; seal::MAX_BLOB];
-        let Some(blob_n) = fs.read_key(key_fid(from), &mut blob) else {
-            return Sw::FILE_NOT_FOUND;
+        // `try_read_key`: FILE_NOT_FOUND over a slot the medium merely could not
+        // read tells the host the slot is EMPTY, and its next move is to fill it.
+        let blob_n = match fs.try_read_key(key_fid(from), &mut blob) {
+            Ok(Some(n)) => n,
+            Ok(None) => return Sw::FILE_NOT_FOUND,
+            Err(_) => return Sw::MEMORY_FAILURE,
         };
         let (cert_from, cert_to) = (cert_fid_for_slot(from), cert_fid_for_slot(to));
         if to != 0xFF {
@@ -1132,7 +1159,17 @@ impl PivApplet<'_> {
                 return Sw::MEMORY_FAILURE;
             }
             let mut obj = [0u8; MAX_OBJECT];
-            let cert = cert_from.and_then(|f| fs.read(f, &mut obj));
+            // `try_read`: the absent arm below DELETES the destination's certificate
+            // and the source's goes at the end of the move, so a probe read as "no
+            // certificate" destroyed both and still answered 9000.
+            let cert = match cert_from.map(|f| fs.try_read(f, &mut obj)) {
+                Some(Ok(n)) => n,
+                None => None,
+                Some(Err(_)) => {
+                    blob.zeroize();
+                    return Sw::MEMORY_FAILURE;
+                }
+            };
             // Clamp the full stored length to the buffer (flash-corruption guard,
             // as in get_data); host-written certs are already <= MAX_OBJECT.
             if let (Some(n), Some(tofid)) = (cert, cert_to) {
@@ -1146,8 +1183,18 @@ impl PivApplet<'_> {
             // Sized to read the full source record (head + any cached point).
             // The point is carried to the destination best-effort — kept when
             // EF_META has room, else dropped to the head alone (see meta_add_slot).
+            // `try_meta_find`: a head the medium could not read is not "this key has
+            // no metadata" — the moved key would land at the destination with none,
+            // and GET METADATA and the PIN/touch gate both answer off that head.
             let mut meta = [0u8; 4 + MAX_EC_POINT];
-            if let Some(n) = fs.meta_find(key_fid(from).get(), &mut meta) {
+            let head = match fs.try_meta_find(key_fid(from).get(), &mut meta) {
+                Ok(n) => n,
+                Err(_) => {
+                    blob.zeroize();
+                    return Sw::MEMORY_FAILURE;
+                }
+            };
+            if let Some(n) = head {
                 let n = n.min(meta.len());
                 if let Err(e) = keygen::meta_add_slot(fs, key_fid(to).get(), &meta[..n]) {
                     blob.zeroize();
@@ -1176,8 +1223,12 @@ impl PivApplet<'_> {
         // read can fault where the next lands, so the head earns a retry; the key
         // is read back too, because a `remove` that failed leaves the source
         // holding a live key and that is not an OK move either.
+        // The read-back resolves to STILL THERE on a probe the medium could not
+        // serve: the collapsed `false` let a failed `remove` answer OK over a key
+        // that is still live, which is the shape `Fs::delete` closed one layer up.
         if dropped.is_err()
-            && (fs.has_key(key_fid(from)) || fs.meta_delete(key_fid(from).get()).is_err())
+            && (fs.try_has_key(key_fid(from)).unwrap_or(true)
+                || fs.meta_delete(key_fid(from).get()).is_err())
         {
             return Sw::MEMORY_FAILURE;
         }
@@ -1286,13 +1337,17 @@ fn check_ref<S: Storage>(dev: &Device, fs: &mut Fs<S>, fid: u16, retry: usize, p
         // kbase-migration fallback: the correct PIN against a verifier stored
         // before the OTP key was provisioned — re-store it under the OTP arm
         // (sealed key slots migrate in the boot pass, not here).
+        // Re-arm the one-shot at-rest lap: the verifier the write below supersedes
+        // is keyed under the pre-OTP arm, which the public chip serial alone derives
+        // (rsk-fs `EF_HARDENED` invariant; audit run-35). Ahead of the write and
+        // gating it — the two are separate appends, and neither a reset between them
+        // nor a medium that refuses the re-arm may leave the marker over the copy.
+        if rsk_fs::request_rescrub(fs).is_err() {
+            return Sw::MEMORY_FAILURE;
+        }
         if put_pin_verifier(dev, fs, fid, pin).is_err() {
             return Sw::MEMORY_FAILURE;
         }
-        // Re-arm the one-shot at-rest lap: the superseded verifier is keyed under
-        // the pre-OTP arm, which the public chip serial alone derives (rsk-fs
-        // `EF_HARDENED` invariant; audit run-35).
-        rsk_fs::request_rescrub(fs);
         matched = true;
     }
     if matched {
@@ -1408,7 +1463,16 @@ pub fn unblock_pin_with_puk<S: Storage>(
     if let Err(sw) = check_new_reference(new) {
         return sw;
     }
-    if put_pin_verifier(dev, fs, EF_PIN, new).is_err() {
+    // Re-arm the one-shot at-rest lap (rsk-fs `EF_HARDENED`): only the PUK is
+    // verified here, so a PIN blocked before it ever migrated is superseded while
+    // still keyed under the pre-OTP arm. Before the write and gating it — a reset
+    // between the two appends must not be able to keep the marker, and a medium that
+    // refuses the re-arm reaches that state outright.
+    if rsk_fs::request_rescrub(fs).is_err() {
+        return Sw::MEMORY_FAILURE;
+    }
+    let stored = put_pin_verifier(dev, fs, EF_PIN, new);
+    if stored.is_err() {
         return Sw::MEMORY_FAILURE;
     }
     reset_counter(fs, RETRY_PIN)
@@ -1458,37 +1522,58 @@ fn is_mgm_key_len(len: usize) -> bool {
 /// Whether the management key is marked PIN-protected (the ADMIN-DATA `0x02`
 /// flag). The PRINTED object only yields the key when this is set, so a default
 /// or plain management key is never PIN-readable.
+///
+/// Collapsing, and only for GET DATA, where an unreadable record costs the `6A82`
+/// an absent object already answers. The other direction is the one that must not
+/// happen there: a `true` over no escrow would synthesize the LIVE management key
+/// for the PIN. Every site that writes on the answer takes
+/// [`try_mgm_is_protected`].
 fn mgm_is_protected<S: Storage>(fs: &mut Fs<S>) -> bool {
+    try_mgm_is_protected(fs).unwrap_or(false)
+}
+
+/// [`mgm_is_protected`] with the failed probe kept apart from the absence.
+fn try_mgm_is_protected<S: Storage>(fs: &mut Fs<S>) -> Result<bool, Sw> {
     // Sized to hold a real ykman PivmanData (flags + 16-byte salt + 4-byte timestamp ≈ 29B);
     // `Storage::read` returns the value's FULL stored length, so clamp to the bytes we hold
     // before slicing — a larger record must not panic, and an unparsable one fails closed
     // (read as not protected), the safe direction.
     let mut obj = [0u8; 64];
-    let Some(n) = fs.read(EF_PIVMAN_DATA, &mut obj) else {
-        return false;
+    let Some(n) = fs
+        .try_read(EF_PIVMAN_DATA, &mut obj)
+        .map_err(|_| Sw::MEMORY_FAILURE)?
+    else {
+        return Ok(false);
     };
     let body = &obj[..n.min(obj.len())];
     if body.len() < 2 || body[0] != PIVMAN_TAG {
-        return false;
+        return Ok(false);
     }
     let inner_len = (body[1] as usize).min(body.len() - 2);
-    matches!(
+    Ok(matches!(
         find_tag(&body[2..2 + inner_len], PIVMAN_FLAGS_TAG as u16),
         Some(f) if !f.is_empty() && f[0] & PIVMAN_FLAG_MGM_PROTECTED != 0
-    )
+    ))
 }
 
 /// Revoke the PIN-readable escrow: clear the ADMIN-DATA `0x02` flag, carrying
 /// the rest of the record forward ([`pivman_set_protected`] with the bit off).
 /// A record without the flag is left untouched, so a host's PivmanData is only
 /// rewritten when there is an escrow to revoke.
+///
+/// Fallible on BOTH probes: its one caller has already replaced the key the flag
+/// escrows, so a record read absent out of a fault leaves the flag standing over
+/// the host's own new key — PIN-readable, under the `9000` that says revoked.
 fn mgm_clear_protected<S: Storage>(fs: &mut Fs<S>) -> Result<(), Sw> {
-    if !mgm_is_protected(fs) {
+    if !try_mgm_is_protected(fs)? {
         return Ok(());
     }
-    // Sized as in `mgm_is_protected`: a real ykman record (flags + salt + timestamp).
+    // Sized as in `try_mgm_is_protected`: a real ykman record (flags + salt + timestamp).
     let mut prior = [0u8; 64];
-    let Some(n) = fs.read(EF_PIVMAN_DATA, &mut prior) else {
+    let Some(n) = fs
+        .try_read(EF_PIVMAN_DATA, &mut prior)
+        .map_err(|_| Sw::MEMORY_FAILURE)?
+    else {
         return Ok(());
     };
     let mut admin = [0u8; PIVMAN_MAX];
@@ -1521,7 +1606,10 @@ pub fn protect_mgm_key<S: Storage>(dev: &Device, fs: &mut Fs<S>, rng: &mut dyn R
     // Read any existing PivmanData up front (before the writes below), so the new
     // record can carry its timestamp / flags forward.
     let mut prior_buf = [0u8; 64];
-    let prior = match fs.read(EF_PIVMAN_DATA, &mut prior_buf) {
+    let Ok(prior_len) = fs.try_read(EF_PIVMAN_DATA, &mut prior_buf) else {
+        return Sw::MEMORY_FAILURE;
+    };
+    let prior = match prior_len {
         Some(n) => &prior_buf[..n.min(prior_buf.len())],
         None => &[][..],
     };
@@ -1533,8 +1621,15 @@ pub fn protect_mgm_key<S: Storage>(dev: &Device, fs: &mut Fs<S>, rng: &mut dyn R
     // property of the key bytes, so re-keying does not retire it; anything but a
     // stored ALWAYS resolves to the published default, which keeps a spurious or
     // torn record from inventing one.
+    // `try_meta_find`, not `meta_find`: a head the medium could not read answers the
+    // same `None` as one that was never written, and the default it resolves to is
+    // TOUCHPOLICY_NEVER — so a faulted probe would retire the owner's touch gate on
+    // the way through, and the rebuild below would make that permanent.
     let mut cur = [0u8; 8];
-    let touch = match fs.meta_find(key_fid(SLOT_CARDMGM).get(), &mut cur) {
+    let Ok(head) = fs.try_meta_find(key_fid(SLOT_CARDMGM).get(), &mut cur) else {
+        return Sw::MEMORY_FAILURE;
+    };
+    let touch = match head {
         Some(n) if n >= 3 && cur[2] == TOUCHPOLICY_ALWAYS => TOUCHPOLICY_ALWAYS,
         _ => TOUCHPOLICY_NEVER,
     };

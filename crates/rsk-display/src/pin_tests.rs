@@ -12,7 +12,10 @@
 use std::vec;
 
 use super::*;
-use crate::tests::{Env, NEW_PIN, PIN, Pad, WRONG_PIN, center, dev, pin_entry, pin_key};
+use crate::tests::{
+    Env, NEW_PIN, PIN, Pad, WRONG_PIN, center, dev, pin_cells_of, pin_entry, pin_entry_on, pin_key,
+    shuffled_layout,
+};
 
 /// The T9 group the tests type from: `"2abc"`, so a cycle is visible in one press.
 const ABC: usize = 1;
@@ -316,6 +319,120 @@ fn a_new_device_pin_replaces_the_old_one() {
     );
 }
 
+/// The Settings → Security scramble exists for exactly one path — a PIN typed on a pad
+/// whose digits moved — and until this nothing drove it: every coordinate-typed PIN in
+/// this crate was laid out through `PinLayout::identity()`, so the shuffled pad was
+/// painted by no test and hit-tested by none.
+///
+/// Three entries, three shuffles (`pin.rs`: one layout per entry, so "New" and "Confirm"
+/// differ): the gate on the current PIN, then New and Confirm. The taps are laid out
+/// through the predicted layouts, which is the *hit-test's* side — so on its own a stored
+/// PIN proves only that the pad hit-tested the order the fixture guessed, not that it
+/// painted it. Two assertions tie the fixture to the run: `served` says the panel drew the
+/// one seed the prediction came from and nothing else, and the pixels the pad left on the
+/// panel say each entry *painted* the cell the tap was aimed at.
+#[test]
+fn a_pin_typed_on_the_scrambled_pad_is_the_pin_that_gets_stored() {
+    let env = Env::new();
+    let cfg = rsk_ui::DisplayConfig {
+        scramble_pin: true,
+        ..Default::default()
+    };
+    env.fs
+        .borrow_mut()
+        .put(EF_DISPLAY, &cfg.encode())
+        .expect("EF_DISPLAY");
+    env.set_device_pin(PIN);
+
+    // `Pad` is scripted, so every tap exists before the flow does. The pad no longer
+    // draws per entry from the shared DRBG — that borrow is a BorrowMutError when a host
+    // ceremony raised the panel (#107) — so the prediction follows the seed the panel
+    // takes once, at construction, and the counter it steps per pad.
+    let seed: [u8; 32] = env.rng.borrow().peek_fills(1, 32)[0]
+        .as_slice()
+        .try_into()
+        .expect("32-byte seed");
+    let laid: Vec<_> = (0u32..3)
+        .map(|ctr| shuffled_layout(&rsk_crypto::hmac_sha256(&seed, &ctr.to_le_bytes())))
+        .collect();
+    for (step, layout) in laid.iter().enumerate() {
+        assert_ne!(
+            *layout,
+            rsk_ui::PinLayout::identity(),
+            "entry {step} drew the printed order — the case degenerates into the unscrambled one"
+        );
+    }
+    assert_ne!(laid[0], laid[1], "the gate and New must not share a layout");
+    assert_ne!(laid[1], laid[2], "New and Confirm must not share a layout");
+
+    let mut taps = pin_entry_on(PIN, &laid[0]); // the gate on the current PIN
+    taps.extend(pin_entry_on(NEW_PIN, &laid[1]));
+    taps.extend(pin_entry_on(NEW_PIN, &laid[2]));
+    let mut ui = env.ui(Pad::taps(&taps));
+    ui.run_set_pin(PinScope::Device);
+
+    // Asserted narrowest first, so a red run names the side that broke. The shared DRBG is
+    // touched once, at construction, and never per pad: that borrow is what #107 turned
+    // into a dead board, and a pad that went back to it would still paint a shuffled order
+    // and pass everything below.
+    assert_eq!(
+        env.rng.borrow().served.len(),
+        1,
+        "the flow drew {} blocks from the shared DRBG; the seed is the only one allowed",
+        env.rng.borrow().served.len()
+    );
+    assert_eq!(
+        env.rng.borrow().served.first().map(|b| b.as_slice()),
+        Some(&seed[..]),
+        "the one draw was not the boot seed the prediction came from"
+    );
+    // The paint side, read back off the pixels. Every tap above is the cell the *hit-test*
+    // will read, so a pad painted from one order and tapped through another agrees with
+    // itself all the way to the store — the owner's eyes are the only witness left.
+    let painted = ui.panel.pin_pads_painted();
+    // `zip` stops at the shorter side, so a paint-side oracle that reads back fewer
+    // pads than the flow drew would compare the ones it has and pass on the rest.
+    // That is not hypothetical: the retained compositor replays its background as a
+    // `fill_solid` instead of a `clear`, which is where a finished frame gets
+    // fingerprinted, and it left this list holding one pad for a three-entry flow.
+    assert!(
+        painted.len() >= laid.len(),
+        "the paint-side oracle went blind: {} pads read off the glass for {} entries",
+        painted.len(),
+        laid.len()
+    );
+    // This is also what catches a pad that shuffles once and reuses it: entry 1 would be
+    // painted in entry 0's order, which is `laid[0]`, and `laid[0] != laid[1]` is asserted
+    // above. Nothing else downstream can tell the two apart — the store agrees either way.
+    for (step, (shown, layout)) in painted.iter().zip(&laid).enumerate() {
+        assert_eq!(
+            shown,
+            &pin_cells_of(layout),
+            "entry {step} painted a pad the taps were not laid out through — the owner reads \
+             one order off the glass while the hit-test takes another"
+        );
+    }
+    assert!(
+        matches!(
+            rsk_fido::passkeys::spend_and_verify_device_pin(
+                &dev(),
+                &mut env.fs.borrow_mut(),
+                NEW_PIN
+            ),
+            rsk_fido::passkeys::LocalPin::Ok
+        ),
+        "the digits the scrambled cells paint are not the digits that were stored"
+    );
+    // The zip above is only as wide as the shorter side, so this is what says every entry
+    // was judged. It is reached only once paint and store have both agreed, which is why a
+    // wrong pad names itself above instead of arriving here as an unexplained re-prompt.
+    assert_eq!(
+        painted.len(),
+        laid.len(),
+        "one pad is painted per entry, and every one of them is judged above"
+    );
+}
+
 #[test]
 fn changing_the_device_pin_needs_the_current_one() {
     let env = Env::new();
@@ -346,6 +463,15 @@ fn setting_the_fido_pin_from_the_panel_revokes_live_tokens() {
     ui.run_set_pin(PinScope::Fido);
     assert!(rsk_fido::passkeys::pin_is_set(&mut env.fs.borrow_mut()));
     assert_eq!(ui.hooks.pin_changed, 1);
+    // Which PIN, not just that one exists: revoking the live tokens is worth nothing if
+    // the clientPIN the host must now be told is not the one typed on the panel.
+    assert!(
+        matches!(
+            rsk_fido::passkeys::spend_and_verify_local_pin(&dev(), &mut env.fs.borrow_mut(), PIN),
+            rsk_fido::passkeys::LocalPin::Ok
+        ),
+        "the stored clientPIN is not the PIN that was typed"
+    );
 }
 
 // --- the hold-to-confirm gesture -------------------------------------------
@@ -391,4 +517,51 @@ fn the_back_chevron_abandons_a_hold_screen() {
     let env = Env::new();
     let mut ui = env.ui(Pad::taps(&[center(rsk_ui::PK_BACK_RECT)]));
     assert!(!ui.hold_to_confirm("Delete", rsk_ui::theme::DANGER_FILL));
+}
+
+/// Issue #107. The panel is not only the device's own UI: `Ctx` hands it to the CTAP
+/// dispatch as the `UserPresence` backend, and that dispatch holds `fs` AND `rng`
+/// borrowed for the whole command. `collect_pin_impl`'s comment already forbids
+/// touching `fs` here; nobody extended it to `rng`, and the scrambled pad grew a
+/// `self.rng.borrow_mut()` — a BorrowMutError, which under `panic-halt` is a board
+/// that dies mid-ceremony and comes back only on the reset button. Measured on a
+/// display board: `makeCredential {rk:true, uv:true}` with no token killed it inside
+/// the scrambled-pad branch of `Ui::collect_pin`, named by a panic handler that rode
+/// the file hash and line out in the USB serial string.
+///
+/// The cells are taken AFTER the panel is built, which is the real order: the seed
+/// is drawn at boot, every pad after that is a ceremony away.
+#[test]
+fn a_pad_raised_mid_dispatch_touches_no_shared_cell() {
+    for scramble in [false, true] {
+        let env = Env::new();
+        let mut ui = env.ui(Pad::taps(&pin_entry(PIN)));
+        ui.scramble_pin = scramble;
+        let _fs = env.fs.borrow_mut();
+        let _rng = env.rng.borrow_mut();
+        let mut out = [0u8; 64];
+        // Reaching this line at all is the property: a shared-cell borrow in here is a
+        // BorrowMutError, and the assertion never runs.
+        let got = ui.collect_pin(title(), None, FLOOR, FLOOR as u8, &mut out, false);
+        assert!(
+            matches!(got, rsk_sdk::PinEntry::Entered(n) if n == PIN.len()),
+            "scramble_pin = {scramble}: {got:?}"
+        );
+        // Only the identity layout maps those taps back to those digits; a shuffled pad
+        // turns the same positions into different ones, which is the whole point of it.
+        if !scramble {
+            assert_eq!(&out[..PIN.len()], PIN);
+        }
+    }
+}
+
+/// …and the layout it draws still moves: a pad that always shuffled the same way
+/// would satisfy the test above while losing the property the toggle exists for.
+#[test]
+fn the_pad_shuffle_does_not_repeat() {
+    let env = Env::new();
+    let mut ui = env.ui(Pad::taps(&[]));
+    let first = ui.shuffle_entropy();
+    let second = ui.shuffle_entropy();
+    assert_ne!(first, second, "consecutive pads share a layout");
 }

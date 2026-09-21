@@ -81,8 +81,12 @@ pub(crate) fn read_advertised_algo<'a, S: Storage>(
     // private companion EF (`algo_tag_to_priv` = `0x1000 | tag`), so undo that or
     // every lookup falls through to the `_ => false` arm and refuses valid keys.
     let tag = priv_fid & !0x1000;
-    match fs.read(priv_fid, buf) {
-        Some(n) if n > 0 => {
+    // Three states, not two. Absent and empty are "nothing configured" and must keep
+    // resolving to `DEFAULT_ALGO` — that is the documented path for a slot the owner
+    // never set. A probe the flash could not answer is neither: collapsed into the
+    // default it made GENERATE mint and SEAL RSA-2048 under an Ed25519 slot.
+    match fs.try_read(priv_fid, buf) {
+        Ok(Some(n)) if n > 0 => {
             let algo = &buf[..n.min(buf.len())];
             if crate::dobj::advertised_algo(tag, algo) {
                 Ok(algo)
@@ -90,7 +94,8 @@ pub(crate) fn read_advertised_algo<'a, S: Storage>(
                 Err(Sw::WRONG_DATA)
             }
         }
-        _ => Ok(DEFAULT_ALGO),
+        Ok(_) => Ok(DEFAULT_ALGO),
+        Err(_) => Err(Sw::MEMORY_FAILURE),
     }
 }
 
@@ -166,7 +171,11 @@ fn keygen_tail<S: Storage>(
     let _ = origin::mark(fs, fid, origin::ORIGIN_GENERATED);
     if fid == EF_PK_SIG {
         reset_sig_count(fs)?;
-    } else if fid == EF_PK_DEC && !fs.has_key(EF_AES_KEY) {
+    // A probe that FAILED is not an empty `D5` slot, and this arm WRITES: one faulted
+    // read minted a fresh card-level key over the live one, and every ciphertext made
+    // under it then deciphered to garbage at `9000`. Skipping the seed is the cheap
+    // wrong answer — the next DEC generate makes it again.
+    } else if fid == EF_PK_DEC && matches!(fs.try_has_key(EF_AES_KEY), Ok(false)) {
         let mut aes = [0u8; 32];
         rng.fill(&mut aes);
         let _ = store_aes_key(dev, fs, sess, &aes);

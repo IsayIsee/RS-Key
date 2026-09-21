@@ -406,7 +406,16 @@ pub fn reset_sig_count<S: Storage>(fs: &mut Fs<S>) -> Result<(), Sw> {
 /// one signature" flag is set (`EF_PW_PRIV[0] == 0`), clears the PW1 session.
 pub fn inc_sig_count<S: Storage>(fs: &mut Fs<S>, sess: &mut Session) -> Result<(), Sw> {
     let mut pw = [0u8; 8];
-    if fs.read(EF_PW_PRIV, &mut pw).is_some() && pw[0] == 0 {
+    // A probe that FAILED is not a status byte reading "valid for several": the
+    // collapsed `read` left PW1 standing, so one flash fault bought unlimited
+    // further signatures on a single PIN entry. Fail closed by spending PW1 rather
+    // than refusing — the signature this call has already produced was authorised,
+    // and only the NEXT one is in question.
+    let one_shot = match fs.try_read(EF_PW_PRIV, &mut pw) {
+        Ok(v) => v.is_some() && pw[0] == 0,
+        Err(_) => true,
+    };
+    if one_shot {
         sess.has_pw1 = false;
     }
     let mut c = [0u8; 3];

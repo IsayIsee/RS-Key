@@ -70,6 +70,7 @@ import os
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 from collections import namedtuple
 
@@ -496,13 +497,28 @@ def cmd_residue(args):
     print("\nThe board is in BOOTSEL — reflash it before using it again.")
 
 
-def main():
+def make_dump_path(given):
+    """The caller's `--dump`, or a fresh 0700 directory outside the checkout.
+
+    Never a relative default: this file is a 520 KiB image of live RAM, and on a
+    configuration that keeps SRAM it holds an unwrapped key. A bare `sram.bin`
+    put it — and the `.text`/`.pattern`/`.back` windows derived from it — in
+    whatever directory the run started from, which for the recorded runs was the
+    repository root, one `git add -A` from a public push. Left behind on purpose:
+    the dump is the run's evidence, and the path is printed for the transcript.
+    """
+    return given or os.path.join(tempfile.mkdtemp(prefix="rs-key-sram-"), "sram.bin")
+
+
+def parse_args(argv):
+    """The parsed command line. Split from `main` so the defaults are assertable."""
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     # On a shared parent these would have to precede the subcommand, which reads
     # backwards for a one-shot test script; give both subparsers their own.
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--elf", default=DEFAULT_ELF, help="the FLASHED firmware ELF")
-    common.add_argument("--dump", default="sram.bin", help="where to write the SRAM image")
+    common.add_argument("--dump", help="where to write the SRAM image "
+                                       "(default: a fresh private temp directory)")
     sub = ap.add_subparsers(dest="mode", required=True)
     sub.add_parser("control", parents=[common],
                    help="can this board's SRAM be read back at all?")
@@ -510,7 +526,12 @@ def main():
                          help="is a private factor left in it?")
     res.add_argument("--expect", choices=["present", "absent"], default="absent",
                      help="what this build should show; the exit code follows it")
-    args = ap.parse_args()
+    return ap.parse_args(argv)
+
+
+def main():
+    args = parse_args(sys.argv[1:])
+    args.dump = make_dump_path(args.dump)
     (cmd_control if args.mode == "control" else cmd_residue)(args)
 
 

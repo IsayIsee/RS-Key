@@ -113,18 +113,154 @@ fn pin_keys_disjoint() {
     assert!(!(PIN_EYE_RECT.contains(p) && pin_key_rect(c, r).contains(p)));
 }
 
-/// No tap selects two settings controls at once: any two distinct Root rows are
+/// A tap types the digit the cell **paints**, under every [`PinLayout`] — not only the
+/// printed order, and not only the 24 shuffles the host test samples. Cancel and the
+/// reveal toggle stay exactly their own rects whatever the digits say, and a tap in the
+/// pad's margin selects nothing.
+///
+/// `digits` is left unconstrained deliberately: paint and hit-test both read
+/// [`pin_grid_key`] through the same value, so the claim owes nothing to the array being
+/// a permutation (that is `a_shuffled_layout_still_carries_every_digit`'s job). The
+/// geometry is layout-independent by construction — [`pin_key_rect`] takes no layout —
+/// and this is the part that says the dispatch over it is too, which is what the
+/// scramble setting rests on.
+#[kani::proof]
+fn pin_pad_types_the_digit_its_cell_paints_for_any_layout() {
+    // The private field is in reach because this module is a `#[path]` child of the one
+    // that defines it; a sibling crate could only test the layouts it can construct.
+    let layout = PinLayout {
+        digits: kani::any(),
+    };
+    let p = Point::new(kani::any(), kani::any());
+    let hit = hit_pin(p, &layout);
+
+    // Neither is a grid key under any layout, and Cancel is tested before the eye — so
+    // these two hold only while the header targets stay clear of each other.
+    assert!(
+        (hit == Some(PinKey::Cancel)) == PIN_CANCEL_RECT.contains(p),
+        "Cancel is not exactly the Cancel rect"
+    );
+    assert!(
+        (hit == Some(PinKey::Reveal)) == PIN_EYE_RECT.contains(p),
+        "Reveal is not exactly the eye rect"
+    );
+
+    let mut on_grid = false;
+    let mut row = 0;
+    while row < PIN_ROWS {
+        let mut col = 0;
+        while col < PIN_COLS {
+            if pin_key_rect(col, row).contains(p) {
+                on_grid = true;
+                assert!(
+                    hit == Some(pin_grid_key(col, row, &layout)),
+                    "a cell paints one key and types another"
+                );
+            }
+            col += 1;
+        }
+        row += 1;
+    }
+    assert!(
+        hit.is_none() == !(on_grid || PIN_CANCEL_RECT.contains(p) || PIN_EYE_RECT.contains(p)),
+        "a tap in the pad's margin still selected a key"
+    );
+    kani::cover!(
+        matches!(hit, Some(PinKey::Digit(_))),
+        "a tap that types a digit"
+    );
+    kani::cover!(hit == Some(PinKey::Ok), "a tap that commits");
+    kani::cover!(hit.is_none(), "a tap in the pad's margin");
+}
+
+/// No tap selects two settings controls at once: any two distinct list rows are
 /// disjoint, and the −/+/Back adjust controls are mutually disjoint — so a stray
 /// touch can't, say, both decrement and go Back.
+///
+/// Bounded by [`SECURITY_ROWS`], not [`SETTINGS_ROWS`]: one row geometry serves three
+/// pages at three lengths, and the Root's three were the shortest — rows 3–6, up to and
+/// including Factory reset, sat outside every bound this file had.
 #[kani::proof]
 fn settings_keys_disjoint() {
     let p = Point::new(kani::any(), kani::any());
     let (i, j): (u16, u16) = (kani::any(), kani::any());
-    kani::assume(i < SETTINGS_ROWS && j < SETTINGS_ROWS && i != j);
+    kani::assume(i < SECURITY_ROWS && j < SECURITY_ROWS && i != j);
     assert!(!(settings_row_rect(i).contains(p) && settings_row_rect(j).contains(p)));
     assert!(!(ADJ_MINUS_RECT.contains(p) && ADJ_PLUS_RECT.contains(p)));
     assert!(!(ADJ_MINUS_RECT.contains(p) && TITLE_BACK_RECT.contains(p)));
     assert!(!(ADJ_PLUS_RECT.contains(p) && TITLE_BACK_RECT.contains(p)));
+}
+
+/// Each settings page answers on exactly its own rows and nowhere else: the Root's three,
+/// the Display sub-page's three, and the Security sub-page's seven — the last four of
+/// which, [`SecurityEntry::ScramblePin`] through the danger [`SecurityEntry::FactoryReset`],
+/// sit below where either short list ends.
+///
+/// The geometry cannot promise this and the disjointness above does not either:
+/// [`settings_row_rect`] is defined for a row a short page never walks, so the band under
+/// its list is a live rect — the space where the longer sibling paints. Only the dispatch
+/// can say a tap there selects nothing on the short page, which is
+/// [`confirm_hit_selects_at_most_one_button`]'s security-margin clause over a row geometry
+/// three pages share.
+#[kani::proof]
+fn settings_pages_answer_on_their_own_rows_only() {
+    let p = Point::new(kani::any(), kani::any());
+    let root = hit_settings_root(p);
+    let display = hit_display(p);
+    let security = hit_security(p);
+
+    // Walked to the longest list, so the rows only Security has are inside the bound.
+    let (mut on_root, mut on_display, mut on_security) = (false, false, false);
+    let mut i = 0;
+    while i < SECURITY_ROWS {
+        if settings_row_rect(i).contains(p) {
+            if i < SETTINGS_ROWS {
+                on_root = true;
+                assert!(
+                    root == Some(settings_row_entry(i)),
+                    "the Root list answered another row's entry"
+                );
+            }
+            if i < DISPLAY_ROWS {
+                on_display = true;
+                assert!(
+                    display == Some(display_row_entry(i)),
+                    "the Display list answered another row's entry"
+                );
+            }
+            on_security = true;
+            assert!(
+                security == Some(security_row_entry(i)),
+                "the Security list answered another row's entry"
+            );
+        }
+        i += 1;
+    }
+    assert!(
+        root.is_some() == on_root,
+        "the Root list answered off its own rows"
+    );
+    assert!(
+        display.is_some() == on_display,
+        "the Display list answered off its own rows"
+    );
+    assert!(
+        security.is_some() == on_security,
+        "the Security list answered off its own rows"
+    );
+
+    kani::cover!(
+        security.is_some() && root.is_none() && display.is_none(),
+        "a row only the Security list has"
+    );
+    kani::cover!(
+        security == Some(SecurityEntry::FactoryReset),
+        "the danger row, past where both short lists end"
+    );
+    kani::cover!(
+        root.is_none() && display.is_none() && security.is_none(),
+        "a tap in the margin around the rows"
+    );
 }
 
 /// No tap selects two nav tabs at once, no tap selects two list rows at once (for

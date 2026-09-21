@@ -147,14 +147,19 @@ pub fn load_or_generate<S: Storage>(
         return SigningKey::from_bytes(devk.into()).ok();
     }
     let mut buf = [0u8; GCM_LEN];
-    let key = match fs.read_key(EF_DEVCERT_KEY, &mut buf) {
-        Some(n) => {
+    let key = match fs.try_read_key(EF_DEVCERT_KEY, &mut buf) {
+        Ok(Some(n)) => {
             let mut scalar = unseal_scalar(dev, &buf[..n.min(GCM_LEN)])?;
             let k = SigningKey::from_bytes(&scalar.into()).ok();
             scalar.zeroize();
             k
         }
-        None => {
+        // Only a CONFIRMED absence mints. A probe the flash could not answer is not
+        // a device without a key, and the arm below PERSISTS: it would retire every
+        // certificate the standing key ever issued, permanently, and KEYDEV_SIGN
+        // P1=0x02 reaches here with no presence at all.
+        Err(_) => None,
+        Ok(None) => {
             // Draw until the scalar is a valid non-zero field element
             // (overwhelmingly the first draw), then persist it GCM-sealed.
             let mut scalar = [0u8; 32];
@@ -194,12 +199,21 @@ pub fn migrate_kbase<S: Storage>(dev: &Device, fs: &mut Fs<S>, rng: &mut dyn Rng
         buf.zeroize();
         return;
     }
+    // The current-arm GCM case returned above, so a GCM-length blob here opened
+    // under `without_otp`, and a bare 32-byte CBC record is pre-OTP by construction
+    // (33 is OTP-armed): both are copies the public chip serial alone derives.
+    let weak = dev.otp_key.is_some() && matches!(n, GCM_LEN | 32);
     // Otherwise recover via the pre-OTP GCM arm or a legacy CBC record and
     // re-seal as GCM under the current arm.
     if let Some(mut scalar) = unseal_scalar(dev, &buf[..n]) {
         let rec = seal_gcm(dev, rng, &scalar);
         scalar.zeroize();
-        let _ = fs.put_key(EF_DEVCERT_KEY, Sealed::wrap(&rec));
+        // Ahead of the write and gating it, per `rsk_fs::request_rescrub`: this pass
+        // runs before the boot's lap, but a boot that could not read this slot has
+        // already latched the marker, and the lap gates on it and nothing else.
+        if !weak || rsk_fs::request_rescrub(fs).is_ok() {
+            let _ = fs.put_key(EF_DEVCERT_KEY, Sealed::wrap(&rec));
+        }
     }
     buf.zeroize();
 }

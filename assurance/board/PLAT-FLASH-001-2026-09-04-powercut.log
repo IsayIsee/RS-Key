@@ -1,0 +1,24 @@
+# Operator console, 2026-09-04, pasted rather than harness-captured: the run was
+# driven from the maintainer's own terminal because the cut needs a hand on the
+# cable and the interactive `input()` cannot be reached from a background shell.
+# Board: Waveshare RP2350-Zero, 4 MB, RP2350 A4, chipid 0x6e4a9b82bbbc05a7,
+# secure boot off, nix firmware-no-touch build of 7904f01 (bcdDevice 0x09C4).
+# The cut delay was a human yank riding the Enter press and is NOT measured --
+# which is why this run does not discharge the row. See the record's `note`.
+
+Phase-6 HIL — use a throwaway key; this intentionally tears a flash wipe.
+
+👉 UNPLUG the key, then plug it straight back in — the phase-6 clean-slate setup needs the CTAP 2.1 §6.6 power-up window (10s from the attach).
+device: RS-Key Security Key  1209:0001  serial=rs-key-0001  path=DevSrvsID:4295085732
+   unplugged — plug it back in…
+device: RS-Key Security Key  1209:0001  serial=rs-key-0001  path=DevSrvsID:4295085996
+   reset inside the window (0.3s after enumeration)
+MSE channel: hybrid P-256 + ML-KEM-768
+provisioned: sealed owner seed + PIN + alwaysUv + resident credential
+Press Enter when your hand is on the cable; yank it at the CUT line…
+
+>>> CUT POWER NOW — then plug the key back in once it disappears <<<
+device: RS-Key Security Key  1209:0001  serial=rs-key-0001  path=DevSrvsID:4295086042
+reset interrupted as intended (OSError('read error'))
+post-cut: clientPin=True alwaysUv=True sealed=True old-assertion=0x36
+PASS — torn reset remained fail-closed across the real reboot

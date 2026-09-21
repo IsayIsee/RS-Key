@@ -3,6 +3,7 @@
 [![ci](https://github.com/TheMaxMur/RS-Key/actions/workflows/ci.yml/badge.svg)](https://github.com/TheMaxMur/RS-Key/actions/workflows/ci.yml)
 [![deep-checks](https://github.com/TheMaxMur/RS-Key/actions/workflows/deep-checks.yml/badge.svg)](https://github.com/TheMaxMur/RS-Key/actions/workflows/deep-checks.yml)
 [![docs](https://github.com/TheMaxMur/RS-Key/actions/workflows/pages.yml/badge.svg)](https://themaxmur.github.io/RS-Key/)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/14195/badge)](https://www.bestpractices.dev/projects/14195/silver)
 
 **An open-source hardware passkey.** Flash one file onto a Raspberry Pi
 **RP2350** board and it becomes a USB security key: passkey logins in the

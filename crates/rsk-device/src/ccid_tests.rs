@@ -3,6 +3,10 @@
 
 use super::*;
 use crate::tests::{Env, TestRng, VendorBoard, apdu, dev_conf, select, sw};
+#[cfg(not(feature = "strict-config"))]
+use crate::tests::{TruncatedScan, WriteStuck};
+#[cfg(not(feature = "strict-config"))]
+use rsk_fs::storage::faults::RemoveStuck;
 
 /// The eight AIDs in registration order, so a test can walk the whole set.
 const AIDS: [(&str, &[u8]); 8] = [
@@ -23,11 +27,8 @@ const AIDS: [(&str, &[u8]); 8] = [
 /// reports a range clear it never enumerated, with the trusted display painting
 /// "RS-Key erased" over live credentials.
 ///
-/// This pins the honest direction only: a wipe that really happened answers
-/// `true`. The other one needs a backend that can fail, and `Env` is wired to
-/// `RamStorage` — the layer below already has it
-/// (`rsk-fs::factory_wipe_fails_on_a_truncated_enumeration`); the wrapper's
-/// laundering of that refusal is still unowned.
+/// This pins the honest direction: a wipe that really happened answers `true`.
+/// The refusing direction is the sibling below.
 // `factory_wipe` is a DEFAULT-build entry point; the strict-config image has
 // no management RESET at all.
 #[cfg(not(feature = "strict-config"))]
@@ -44,6 +45,49 @@ fn a_completed_factory_wipe_reports_true_and_leaves_nothing() {
     assert!(
         !env.fs.borrow_mut().has_data(rsk_fido::consts::EF_CRED),
         "and must actually have erased the credential it reported clear"
+    );
+}
+
+/// The refusing direction, which no fixture could observe while `Env` was wired to
+/// `RamStorage`. `Fs::factory_wipe` has exactly two ways to say no — a walk it
+/// could not finish, which must not be reported as a range clear, and a backend
+/// `remove` that errored — and `.is_ok()` has to carry both out to the worker,
+/// whose `reboot(1)` is conditioned on this bool. Laundering either one is a
+/// device that comes up looking factory-clean over live credentials.
+#[cfg(not(feature = "strict-config"))]
+#[test]
+fn a_refused_factory_wipe_is_never_reported_as_a_completed_one() {
+    // The walk faulted before yielding anything, so nothing was deleted either.
+    let env = Env::with_storage(TruncatedScan::new());
+    env.fs
+        .borrow_mut()
+        .put(rsk_fido::consts::EF_CRED, &[0xC0; 32])
+        .unwrap();
+    assert!(
+        !env.ccid().factory_wipe(),
+        "a wipe that never enumerated the store must not report the range clear"
+    );
+    assert!(
+        env.fs.borrow_mut().has_data(rsk_fido::consts::EF_CRED),
+        "and the credential it never saw is still live"
+    );
+
+    // The medium refused one removal. `live` reads the medium, not `Fs`'s present
+    // cache, which a delete marks absent whether or not the backend `remove` ran.
+    let (backend, medium) = RemoveStuck::new();
+    let env = Env::with_storage(backend);
+    env.fs
+        .borrow_mut()
+        .put(rsk_fido::consts::EF_CRED, &[0xC0; 32])
+        .unwrap();
+    medium.refuse(Some(rsk_fido::consts::EF_CRED));
+    assert!(
+        !env.ccid().factory_wipe(),
+        "a wipe the medium refused must not report success"
+    );
+    assert!(
+        medium.live(rsk_fido::consts::EF_CRED),
+        "and the credential the medium kept is still live"
     );
 }
 
@@ -254,6 +298,32 @@ fn write_config_over_the_fido_transport_round_trips() {
     assert!(
         ccid.ctap_mgmt(0x42, &[]).is_some(),
         "and READ still answers"
+    );
+}
+
+/// The ack is all the host hears and `.is_ok()` decides it, so mutating it to
+/// `true` acked a `persist_dev_conf` the medium refused and ykman then reported a
+/// capability set the card does not have — `factory_wipe`'s laundering shape.
+/// Measured here, of 78, both directions are 77 passed / 1 failed: `true` fails
+/// this test, `false` fails `write_config_over_the_fido_transport_round_trips`.
+///
+/// The verdict is the FIRST assertion; the second is belt-and-braces, never a
+/// second one — `WriteStuck` lands no record, so `read_enabled_caps` answers
+/// `SUPPORTED_CAPS` by construction and all 78 pass with the first neutered.
+#[cfg(not(feature = "strict-config"))]
+#[test]
+fn a_refused_config_write_is_never_acked_as_a_written_one() {
+    let env = Env::with_storage(WriteStuck::new());
+    let mut ccid = env.ccid();
+    let blob = dev_conf(rsk_devconf::CAP_FIDO2 | rsk_devconf::CAP_PIV);
+    assert!(
+        ccid.ctap_mgmt(0x43, &blob).is_none(),
+        "a config the medium refused must not be acked as stored"
+    );
+    assert_eq!(
+        rsk_devconf::read_enabled_caps(&mut env.fs.borrow_mut()),
+        rsk_devconf::SUPPORTED_CAPS,
+        "and the card still reports what it actually has"
     );
 }
 
@@ -748,4 +818,60 @@ fn disabling_both_fido_applications_removes_the_aid() {
         rsk_sdk::Sw::FILE_NOT_FOUND,
         "with neither application enabled the applet is not there at all"
     );
+}
+
+/// Issue #111: YubiKit selects OATH and OTP by the whole 8-byte instance AID, ykman
+/// by a 7-byte prefix of it. A YubiKey 5.8.0 answers both and refuses anything past
+/// or beside those 8 bytes — the same cells, measured there, are pinned here.
+#[test]
+fn oath_and_otp_select_by_the_aids_yubikit_and_ykman_send() {
+    const OK: rsk_sdk::Sw = rsk_sdk::Sw::OK;
+    const NOT_FOUND: rsk_sdk::Sw = rsk_sdk::Sw::FILE_NOT_FOUND;
+    let env = Env::new();
+    let mut ccid = env.ccid();
+    for (who, aid, want) in [
+        (
+            "YubiKit OATH",
+            &[0xA0, 0x00, 0x00, 0x05, 0x27, 0x21, 0x01, 0x01][..],
+            OK,
+        ),
+        (
+            "ykman OATH",
+            &[0xA0, 0x00, 0x00, 0x05, 0x27, 0x21, 0x01][..],
+            OK,
+        ),
+        (
+            "YubiKit OTP",
+            &[0xA0, 0x00, 0x00, 0x05, 0x27, 0x20, 0x01, 0x01][..],
+            OK,
+        ),
+        (
+            "ykman OTP",
+            &[0xA0, 0x00, 0x00, 0x05, 0x27, 0x20, 0x01][..],
+            OK,
+        ),
+        (
+            "OATH, last byte wrong",
+            &[0xA0, 0x00, 0x00, 0x05, 0x27, 0x21, 0x01, 0x00][..],
+            NOT_FOUND,
+        ),
+        (
+            "OATH, one byte past",
+            &[0xA0, 0x00, 0x00, 0x05, 0x27, 0x21, 0x01, 0x01, 0x00][..],
+            NOT_FOUND,
+        ),
+        (
+            "OTP, last byte wrong",
+            &[0xA0, 0x00, 0x00, 0x05, 0x27, 0x20, 0x01, 0x00][..],
+            NOT_FOUND,
+        ),
+        (
+            "OTP, one byte past",
+            &[0xA0, 0x00, 0x00, 0x05, 0x27, 0x20, 0x01, 0x01, 0x00][..],
+            NOT_FOUND,
+        ),
+    ] {
+        let res = ccid.handle_apdu(&select(aid), 0).to_vec();
+        assert_eq!(sw(&res), want, "{who}");
+    }
 }

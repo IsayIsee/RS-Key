@@ -106,6 +106,35 @@ def test_an_assumption_no_action_reads_is_a_comment_with_a_type(tree):
     assert any("reaches a definition that reads it" in p for p in problems())
 
 
+def test_an_assumption_whose_two_branches_are_the_same_text_is_caught(tree):
+    """`read_by_an_action` answers "is it read", which an inert arm satisfies.
+    This answers "does reading it change anything" — the defect `fc7491a` shipped
+    and had to delete by hand, one registry out."""
+    formal, _ = tree
+    (formal / "Probe.tla").write_text(
+        MODULE.replace(
+            'IF PowerOnClearsScratch2 THEN "clear" ELSE recorded',
+            'IF PowerOnClearsScratch2 THEN recorded ELSE recorded',
+        ),
+        encoding="utf-8")
+    assert any("the same text" in p for p in problems()), problems()
+
+
+def test_the_swapped_arms_are_NOT_caught_and_that_is_recorded(tree):
+    """The limit, driven rather than asserted. Swap the branches and the text
+    differs, so every rule here is satisfied while the constant means the
+    opposite of what the registry says — nothing but a reader of the wall clock
+    catches it, and the docstring says so."""
+    formal, _ = tree
+    (formal / "Probe.tla").write_text(
+        MODULE.replace(
+            'IF PowerOnClearsScratch2 THEN "clear" ELSE recorded',
+            'IF PowerOnClearsScratch2 THEN recorded ELSE "clear"',
+        ),
+        encoding="utf-8")
+    assert problems() == [], problems()
+
+
 def test_a_constant_only_a_block_comment_names_is_still_a_comment(tree):
     """`(* … *)` prose sits below the first definition in every real module."""
     formal, _ = tree

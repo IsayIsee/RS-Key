@@ -791,11 +791,11 @@ fn every_credential_mutation_moves_the_store_tag() {
     use crate::credential::cred_store_state;
 
     let (mut fs, mut rng) = setup();
-    let empty = cred_store_state(&mut fs);
+    let empty = cred_store_state(&mut fs).unwrap();
     assert_eq!(empty, [0u8; 16], "a store nothing has written to is zero");
 
     let (id_a, ..) = register(&mut fs, &mut rng, "example.com", &[1, 1], "alice");
-    let after_create = cred_store_state(&mut fs);
+    let after_create = cred_store_state(&mut fs).unwrap();
     assert_ne!(after_create, empty, "makeCredential must move the tag");
 
     let mut state = armed(PERM_CM);
@@ -811,7 +811,7 @@ fn every_credential_mutation_moves_the_store_tag() {
     )
     .unwrap();
     assert_eq!(
-        cred_store_state(&mut fs),
+        cred_store_state(&mut fs).unwrap(),
         after_create,
         "enumerateCredentials changed nothing and must say so"
     );
@@ -827,7 +827,7 @@ fn every_credential_mutation_moves_the_store_tag() {
         &mut out,
     )
     .unwrap();
-    let after_update = cred_store_state(&mut fs);
+    let after_update = cred_store_state(&mut fs).unwrap();
     assert_ne!(
         after_update, after_create,
         "updateUserInformation leaves the slot count alone, so nothing but the tag reports it"
@@ -841,7 +841,7 @@ fn every_credential_mutation_moves_the_store_tag() {
     )
     .unwrap();
     assert_ne!(
-        cred_store_state(&mut fs),
+        cred_store_state(&mut fs).unwrap(),
         after_update,
         "deleteCredential must move the tag"
     );
@@ -858,12 +858,12 @@ fn the_store_tag_survives_a_remount() {
 
     let (mut fs, mut rng) = setup();
     register(&mut fs, &mut rng, "example.com", &[1, 1], "alice");
-    let live = cred_store_state(&mut fs);
+    let live = cred_store_state(&mut fs).unwrap();
     assert_ne!(live, [0u8; 16]);
 
     let mut fs = Fs::new(fs.into_storage());
     assert_eq!(
-        cred_store_state(&mut fs),
+        cred_store_state(&mut fs).unwrap(),
         live,
         "power is what a platform's cache has to survive"
     );
@@ -880,7 +880,7 @@ fn a_refused_delete_never_under_reports() {
 
     let (mut fs, mut rng) = setup();
     register(&mut fs, &mut rng, "example.com", &[1, 1], "alice");
-    let before = cred_store_state(&mut fs);
+    let before = cred_store_state(&mut fs).unwrap();
     let mut state = armed(PERM_CM);
     let mut out = [0u8; 256];
     let bogus = [0u8; CRED_RESIDENT_LEN];
@@ -895,7 +895,7 @@ fn a_refused_delete_never_under_reports() {
     );
     // It never reached the bump — the lookup refused first — so the tag stands. What
     // matters is the direction: it must not have moved *backwards*.
-    assert_eq!(cred_store_state(&mut fs), before);
+    assert_eq!(cred_store_state(&mut fs).unwrap(), before);
 }
 
 #[test]
@@ -1259,6 +1259,64 @@ fn legacy_plaintext_rp_migrates_and_stays_usable() {
         &buf[..m.min(buf.len())],
         &before[..],
         "migration not idempotent"
+    );
+}
+
+/// The collapsing probe in [`crate::credential::migrate_rp_seal`], priced. A faulted
+/// EF_RP read drops that rp out of THIS boot's pass and nothing else: the arm writes
+/// no record, latches no flag and consumes no defaulted value, and the pass runs
+/// again unconditionally on the next boot (`firmware/src/main.rs`), which seals it.
+/// The cost is one more boot of a domain that was already in cleartext — a repeated
+/// repair, which is where `Fs::try_read`'s policy leaves the collapsing probe. A
+/// `try_*` twin would be inert: a pass that cannot read the record cannot re-box it
+/// either, and turning the skip into an early return would strand every rp BEHIND
+/// the faulted one in cleartext too — which is what the middle assertion pins.
+#[test]
+fn a_faulted_migration_probe_costs_one_boot_not_the_seal() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    let mut rng = SeqRng(1);
+    ensure_seed(&dev(), &mut fs, &mut rng).unwrap();
+    // Two pre-migration records: count(1) ‖ rpIdHash(32) ‖ cleartext domain.
+    let legacy = |domain: &str| {
+        let mut rec = std::vec::Vec::new();
+        rec.push(1u8);
+        rec.extend_from_slice(&sha256(domain.as_bytes()));
+        rec.extend_from_slice(domain.as_bytes());
+        rec
+    };
+    fs.put(EF_RP, &legacy("example.com")).unwrap();
+    fs.put(EF_RP + 1, &legacy("other.example")).unwrap();
+    // Read the MEDIUM, not the cache: what a flash dump would still show.
+    let in_cleartext = |fid: u16, domain: &str| {
+        medium
+            .value(fid)
+            .is_some_and(|v| v.windows(domain.len()).any(|w| w == domain.as_bytes()))
+    };
+    assert!(
+        in_cleartext(EF_RP, "example.com") && in_cleartext(EF_RP + 1, "other.example"),
+        "control: both domains start in cleartext"
+    );
+
+    // The faulted boot.
+    medium.stick(Some(EF_RP));
+    crate::credential::migrate_rp_seal(&dev(), &mut fs);
+    medium.stick(None);
+    assert!(
+        in_cleartext(EF_RP, "example.com"),
+        "control: the record the pass could not read is the one left unsealed"
+    );
+    assert!(
+        !in_cleartext(EF_RP + 1, "other.example"),
+        "the pass stopped on the fault, leaving every rp behind it in cleartext"
+    );
+
+    // The next boot runs the same pass with no fault.
+    crate::credential::migrate_rp_seal(&dev(), &mut fs);
+    assert!(
+        !in_cleartext(EF_RP, "example.com"),
+        "a faulted probe left the rpId domain in cleartext PERMANENTLY — the boot \
+         pass never came back for it"
     );
 }
 
@@ -1825,6 +1883,16 @@ fn enumerate_credentials_reads_are_linear_not_quadratic() {
     let mut rng = SeqRng(1);
     ensure_seed(&dev(), &mut fs, &mut rng).unwrap();
     const N: usize = 32;
+    // Reads per rp the linear path may spend. The bound is `PER_RP * N`, and it
+    // separates linear from quadratic only while it stays under what the pre-index
+    // path actually COSTS — `N * N + N`, measured with the index and the prefix skip
+    // deleted, not the `N * N` the message below rounds it to. At N = 7 the two are
+    // equal at 56 and the regression walks through; at N = 8 it is 72 vs 64 and dies.
+    const PER_RP: usize = 8;
+    const _: () = assert!(
+        PER_RP * N < N * N + N,
+        "the pass bound reaches the pre-index cost, so a quadratic regression fits inside it"
+    );
     let mut hashes = std::vec::Vec::new();
     for i in 0..N {
         let rp = std::format!("rp{i:04}.example");
@@ -1845,7 +1913,7 @@ fn enumerate_credentials_reads_are_linear_not_quadratic() {
     }
     let total = reads.get();
     assert!(
-        total <= 8 * N,
+        total <= PER_RP * N,
         "enumerateCredentials read the store {total} times for N={N} rps; \
          expected ~O(N), quadratic (pre-index) would be ~{}",
         N * N

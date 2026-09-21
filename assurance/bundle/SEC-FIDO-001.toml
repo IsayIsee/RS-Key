@@ -1,0 +1,643 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 RS-Key contributors
+#
+# THE FIRST CLOSED P0-LAUNCH SLICE, as raw evidence.
+#
+# Stage 1A п.3's ten-group contract in current formats, unabridged, so that
+# stage 1B's schema gets a real migration fixture instead of data scattered
+# across logs. `scripts/bundle_gate.py` holds it: ten groups, a leaf floor per
+# group, every artifact still in the tree at the byte count recorded beside it,
+# every mutation verdict carrying the assertion that fell AND its direction, and
+# every cost a NUMBER — a range is an estimate wearing a measurement's field.
+#
+# What this bundle does NOT do, said here because the roadmap says it in as many
+# words: it does not close stage 4 or `FV-M4`, and it raises no public status.
+# `SEC-FIDO-001` is `BOUNDED` before it and `BOUNDED` after it. What it closes is
+# a continuous requirement -> model -> production-source path for one property,
+# with the cost of that path measured rather than estimated.
+
+# ---- 1. Property, subject and owners -----------------------------------------
+
+[property]
+id = "SEC-FIDO-001"
+invariant = "NoAuthorizationBypass"
+statement = "No protected operation completes without the live authorization its own gate requires."
+# §4.1's subject classes. Three are covered; the other four are named because a
+# bundle that lists only what it has is a bundle whose gaps are invisible.
+subjects = ["requirement", "abstract model", "Rust source"]
+subjects_absent = ["FFI", "binary", "hardware", "integration"]
+requirement = [
+  "CTAP 2.3 §6.1 authenticatorMakeCredential",
+  "CTAP 2.3 §6.2 authenticatorGetAssertion",
+  "CTAP 2.3 §6.5.5.7 obtaining a pinUvAuthToken",
+  "CTAP 2.3 §6.6 authenticatorReset",
+  "CTAP 2.3 §6.8 authenticatorCredentialManagement",
+  "CTAP 2.3 §6.11 authenticatorConfig",
+]
+threat_clause = "docs/threat-model.md#TM-HOST-GATES"
+# The four clauses the invariant is, and where each is owned. Before this slice
+# only the first had a ledger anywhere.
+clause_token = "assurance/token_refinement.toml volatile_writer/persistent_writer/outcome_producer"
+clause_walk_owner = "assurance/token_refinement.toml walk_owner — 4 sites"
+clause_retry_softlock = "assurance/token_refinement.toml softlock_owner — 12 sites"
+clause_reset_window = "assurance/token_refinement.toml reset_window_owner — 2 sites"
+clause_ghost = "assurance/ghost_actions.toml — 21 model actions over 24 routes"
+# The files carrying the `Refines … — SEC-FIDO-001` tag the registry greps for.
+owners_tagged = [
+  "crates/rsk-fido/src/state.rs:172 CredMgmtState::may_walk_rps",
+  "crates/rsk-fido/src/state.rs:286 PinLock",
+  "crates/rsk-fido/src/clientpin.rs:724 spend_and_verify_pin_hash",
+]
+# And the files co-refutation patches, which the derived column cannot see.
+owners_co_refuted = [
+  "crates/rsk-fido/src/state.rs",
+  "crates/rsk-fido/src/clientpin.rs",
+  "crates/rsk-fido/src/makecredential.rs",
+  "crates/rsk-fido/src/reset.rs",
+  "crates/rsk-device/src/presence.rs",
+  "crates/rsk-device/src/ctap.rs",
+  "crates/rsk-display/src/gates.rs",
+]
+
+# ---- 2. Exact commit, build and features -------------------------------------
+
+[build]
+commit = "f52b7208915b3efd19f7fe19cfcbdd8009b3f4df"
+tree_state = "clean but for the untracked FORMAL_VERIFICATION_ROADMAP.md and this bundle"
+matrix_column = "firmware"
+cargo_features = "none — the default workspace feature set"
+board_knobs = "none — BOARD unset, LED_KIND unset, the default 4 MB layout"
+host_triple = "aarch64-apple-darwin"
+firmware_triple = "thumbv8m.main-none-eabihf"
+machine = "Mac17,8, 18 cores, 48 GiB, macOS 27.0"
+# The two columns the matrix derives this evidence onto, and the reason: an
+# identical cargo feature closure, not a second run.
+equivalent_columns = ["firmware-pico", "waveshare-one"]
+
+# ---- 3. Method and scope/bounds ----------------------------------------------
+
+[[method]]
+obligation = "tier A: the requirement gate over the abstract relation"
+method = "model-check"
+artifact = "formal/RSKeyTokenGate.tla + TokenGate.cfg"
+bound_states = 44
+stops_states = "nothing by omission: the 44 are the WHOLE A domain and the number is a pin that they are reached, not a shrink of them. What no bound on this row can reach is the level above it — that the shipped machine holds no state this eight-boolean record cannot express"
+bound_ops = 11
+stops_ops = "any protected operation the abstract alphabet does not name; and, inside the eleven, every requirement tier A has no vocabulary for — presence, the reset window, the retry counter, an rpId identity — because the oracle answers those TRUE and hands the obligation to tier B"
+bound_outcomes = 3
+stops_outcomes = "the difference between a silent drop and a rejection. The alphabet is Silent, Authorized and Rejected and the invariant reads only the Authorized edges, so a defect that turns one refusal into the other is admitted here"
+bound_relation_tuples = 63888
+stops_relation_tuples = "nothing by omission — the comprehension is enumerated whole. What its size costs is the FORM of the statement: read over the whole of it the predicate names no variable and TLC answers at startup with no counterexample, so the invariant is written as the slice at the current state and the 44 have to be pinned reachable instead"
+shipped_relation = "44 A states is the WHOLE domain, so this bound is not a shrink; the floor is a pin at 44 because the invariant is the relation's slice at the current state"
+cfg = "none"
+features = "none"
+
+[[method]]
+obligation = "tier A: the oracle is not the relation"
+method = "exhaustive sweep"
+artifact = "TokenGateOracle.cfg + TokenGateDisagreement.cfg"
+bound_states = 22
+stops_states = "anything about the other half of the domain. The walk is exactly the set on which the requirement gate and the relation-read gate differ, so on every A state outside it the two definitions agree and this row cannot tell a second definition from the relation read back to itself"
+bound_pairs = 31
+stops_pairs = "nothing by sampling — the 31 are the whole disagreement set, computed by the model rather than chosen. What the count does not say is that any one of them is a defect: it is the measurement that the oracle is a SECOND definition, which the refuted per-FID projection is the reason for"
+shipped_relation = "the disagreement set is exact, not sampled: every (state, op) pair of AStates × Ops is compared"
+cfg = "none"
+features = "none"
+
+[[method]]
+obligation = "tier B: every invariant Shipped.cfg names, over the shipped constants"
+method = "model-check"
+artifact = "Shipped.cfg"
+bound_rps = 2
+stops_rps = "an rpId-binding defect needing a third relying party. The measured minimum is 1 and no mutant in the roster backs the module's own `>= 2` comment"
+bound_channels = 2
+stops_channels = "a three-channel interleaving, at B"
+bound_max_retries = 8
+stops_max_retries = "nothing individually. The soft lock is unreachable unless MaxRetries exceeds MismatchLimit, so the real constraint is a relation between two constants and a per-constant minimum cannot express it — which is why formal/scopes.txt records `-` for both"
+bound_mismatch_limit = 3
+stops_mismatch_limit = "nothing individually — see stops_max_retries; the pair is what is bounded, not either constant"
+bound_max_clock = 1
+stops_max_clock = "anything about elapsed time. At 0 the Tick action is measured dead, so 1 is the smallest non-degenerate value and not a claim about the clock"
+bound_reset_window = 0
+stops_reset_window = "the INSIDE-the-window arm. RESET_WINDOW_MS (10000) is the shipped value; at 0 the model only ever sees a closed window, so the reset-window clause is exercised on re-opening and never on a legitimate in-window reset"
+bound_symmetry_permutations = "permutations of RPs and Channels"
+stops_symmetry_permutations = "soundness under liveness. Safety configurations only"
+bound_credentials_per_rp = 1
+stops_credentials_per_rp = "anything about slot exhaustion or MAX_RESIDENT_CREDENTIALS (256)"
+shipped_relation = "MaxRetries and MismatchLimit ARE the shipped MAX_PIN_RETRIES (8) and PIN_MISMATCH_LIMIT (3); RPs and Channels are 2 against an unbounded device; ResetWindow 0 exercises the window closed only, so a legitimate in-window reset is never seen; MaxClock 1 is the smallest value at which Tick is not dead"
+cfg = "none"
+features = "none"
+
+[[method]]
+obligation = "tier B: AS-AUTH-2's other arm"
+method = "model-check"
+artifact = "AlwaysUv.cfg"
+bound_rps = 2
+stops_rps = "an rpId-binding defect needing a third relying party, on the alwaysUv arm"
+bound_channels = 2
+stops_channels = "a three-channel interleaving, on the alwaysUv arm"
+bound_max_retries = 2
+stops_max_retries = "the ladder as the image walks it. Two rungs against the shipped eight, so a defect that needs a third failed PIN attempt to be reached is outside this arm's reachable set and Shipped.cfg is the row that runs the ladder"
+bound_mismatch_limit = 1
+stops_mismatch_limit = "the two rungs between one mismatch and the shipped three, and any approach to the soft lock that needs them"
+shipped_relation = "the retry ladder is REDUCED on this arm and the shipped one is not: the arm buys the alwaysUv reachability question, and Shipped.cfg is the row that is about the ladder"
+cfg = "none"
+features = "always-uv (modelled as the compiled default, not built)"
+
+[[method]]
+obligation = "tier C: the walk guard over a symbolic operation sequence"
+method = "bounded proof"
+artifact = "crates/rsk-fido/src/state_kani.rs::no_authorization_bypass_walk_owner"
+bound_sequence = 5
+stops_sequence = "any defect needing a sixth dispatch — Begin, Next, unrelated command, Begin, Next, Next is already six"
+bound_channels = 2
+stops_channels = "a three-channel interleaving. Two is the measured model minimum for BugCmWalkIgnoresChannel; it has never been measured at the code level"
+bound_clock_values = 2
+stops_clock_values = "a leg landing inside the idle window after a partial advance; the window is exercised as open or fully expired, never partially. The two values are T0 and T0 + PUAT_MAX_USAGE_PERIOD_MS (600000)"
+bound_totals = "full symbolic u16 — not a shrink, and saying so is the point"
+stops_totals = "nothing — this one is not a shrink, and saying so is the point of listing it"
+shipped_relation = "5 operations against a device that dispatches unboundedly; Begin/Next/other/Begin/Next/Next is already six"
+cfg = "kani"
+features = "kani-soft"
+
+[[method]]
+obligation = "tier C: the Begin's own decision, at its call site"
+method = "bounded proof"
+artifact = "crates/rsk-fido/src/credmgmt_kani.rs::no_authorization_bypass_rps_begin_at_call_site + …_creds_begin_at_call_site"
+bound_sequence = 1
+stops_sequence = "any defect needing a second dispatch after the Begin; this row proves one Begin out of one starting state and the walk harness (#5) is what covers a sequence"
+bound_channels = 2
+stops_channels = "a three-channel interleaving at the call site"
+bound_symbolic_bytes = 1
+stops_symbolic_bytes = "every pinUvAuthParam whose difference from the genuine MAC is not that one bit — a symbolic-length payload makes the compression function symbolic with it, and one harness over both Begins had not converged after 40 minutes and 8 GiB"
+bound_totals = "full symbolic u16"
+stops_totals = "nothing — not a shrink"
+shipped_relation = "one Begin from one starting state; the pinUvAuthParam is a genuine 32-byte v2 MAC with ONE symbolic bit, because a symbolic-length payload makes the compression function symbolic with it — measured, one harness over both Begins had not converged after 40 minutes and 8 GiB"
+cfg = "kani"
+features = "kani-soft"
+
+[[method]]
+obligation = "the cfg(kani) constant shrinks on this path"
+method = "review"
+artifact = "docs/assurance-bounds.md"
+bound_ctap_max_message = 3
+stops_ctap_max_message = "a pinUvAuthParam arriving across more than two continuation frames. Shipped is one INIT plus 128 continuations; rsk-device's RESP_CAP IS this constant, so every harness in rsk-device — including the seven in presence_kani.rs — proves over a transport two frames wide"
+bound_chain_buf_size = 16
+stops_chain_buf_size = "any chained APDU over 16 bytes. Shipped is 2038, and rsk-device's FidoCcidApplet is an rsk_sdk::Applet, so the FIDO applet's CCID chaining is proved at 16"
+bound_resp_chain_cap = 16
+stops_resp_chain_cap = "any chained response over 16 bytes; shipped is 2048"
+bound_cfg_not_kani_assertions = 2
+stops_cfg_not_kani_assertions = "the equality of the two widths the getInfo response and the transport publish. crates/rsk-device/src/ctap.rs gates MAX_MSG_SIZE == RESP_CAP behind cfg(not(kani)), and rsk-usb does the same for the frame-multiple assertion; neither is a proof obligation and both are about the SHIPPED width, so under Kani the two constants are not held equal to each other"
+shipped_relation = "CTAP_MAX_MESSAGE is 129 frames shipped and 3 under cfg(kani), and rsk-device's RESP_CAP IS that constant, so all seven presence_kani.rs harnesses prove over a two-continuation transport; rsk-sdk's CHAIN_BUF_SIZE/RESP_CHAIN_CAP are 2038/2048 shipped and 16 here. What stops being proved: a pinUvAuthParam arriving across more than two continuation frames, and any chained APDU over 16 bytes"
+cfg = "kani"
+features = "kani-soft"
+
+[[method]]
+obligation = "the ghost's completeness"
+method = "exhaustive sweep"
+artifact = "scripts/ghost_gate.py over formal/RSKeySecurityState.tla"
+bound_actions = 21
+stops_actions = "nothing by omission — the 21 are every operator Next reaches, derived on each run rather than listed beside the module. What the equality cannot say is whether an action that records is recording the RIGHT thing; the Solo_ configurations and the code twins are what that is for"
+bound_routes = 24
+stops_routes = "the value written. The rule compares which occurrences of the name exist inside a viol assignment and which policy each consults, never what the recorded name means once the guard is satisfied"
+bound_guards = 11
+stops_guards = "any defect INSIDE a policy operator. The assignment is held to the guard it consults by NAME, so swapping one policy for another is a finding and weakening the body of one is not"
+shipped_relation = "the whole module: every operator Next reaches, and every occurrence of the name inside a viol' assignment"
+cfg = "none"
+features = "none"
+
+# ---- 4. Tool, version, invocation and execution environment ------------------
+
+[[tool]]
+name = "rustc"
+version = "1.96.0 (ac68faa20 2026-05-25)"
+provenance = "flake.lock"
+invocation = "cargo test --workspace --exclude firmware --exclude rsk-wipe --target aarch64-apple-darwin"
+environment = "nix develop"
+
+[[tool]]
+name = "cargo"
+version = "1.96.0 (30a34c682 2026-05-25)"
+provenance = "flake.lock"
+invocation = "see rustc"
+environment = "nix develop"
+
+[[tool]]
+name = "cargo-kani"
+version = "0.67.0"
+# The one tool on this path the flake does NOT pin. A bundle that records the
+# number without the provenance records a version nothing in the tree holds.
+provenance = "NOT in flake.lock — not packaged in nixpkgs. Installed with `cargo install --locked kani-verifier --version $KANI_VERSION`, and KANI_VERSION is a workflow variable in .github/workflows/ci.yml and deep-checks.yml"
+invocation = "cargo kani -p rsk-fido --features kani-soft --harness <name>"
+environment = 'RUSTFLAGS=--cfg sha2_backend="soft" --cfg poly1305_force_soft --cfg sha1_force_soft'
+
+[[tool]]
+name = "tlaplus"
+version = "1.7.4"
+provenance = "flake.lock; tla2tools.jar sha256 936a262061c914694dfd… (the prefix formal/run-tlc.sh records)"
+invocation = "java -XX:+UseParallelGC -Xmx4g -cp $TLA2TOOLS_JAR tlc2.TLC -nowarning -workers 2 -config <cfg> <module>"
+environment = "WORKERS=2, HEAP=4g (12g for the liveness tier, which this slice does not run)"
+
+[[tool]]
+name = "openjdk"
+version = "1.8.0_492"
+provenance = "flake.lock"
+invocation = "see tlaplus"
+environment = "nix develop"
+
+[[tool]]
+name = "python"
+version = "3.13.13"
+provenance = "flake.lock"
+invocation = "python scripts/<gate>.py"
+environment = "nix develop"
+
+[[tool]]
+name = "cbmc"
+version = "6.8.0 (cbmc-6.8.0) 64-bit arm64 macos — the banner it prints; CaDiCaL 2.0.0 is the SAT back end `--sat-solver cadical` selects, read out of the binary itself as `cadical-2.0.0`. Re-measured off ~/.kani/kani-0.67.0/bin/, which also ships kissat 4.0.1 beside it, because the three bundles carrying this row wrote one banner at three different specificities and prose is not a pin (PLAT-TOOL-003)"
+provenance = "a prebuilt binary inside the CBMC/SAT bundle `cargo kani setup` FETCHES, beside kissat 4.0.1; nothing in this tree hashes that bundle, which is the gap PLAT-TOOL-003 names. Not the same as unpinned: the kani-verifier VERSION above is pinned"
+invocation = "driven by cargo kani, not by hand"
+environment = "--object-bits 16 --sat-solver cadical --slice-formula"
+
+# ---- 5. Principal result -----------------------------------------------------
+
+[result]
+# TIER A — the requirement gate. Every row is `formal/run-tlc.sh <cfg>`, WORKERS=2,
+# HEAP=4g, and the invariant column is what floors.txt holds the run to.
+a_gate = "TokenGate.cfg GREEN — 875 states, 44 distinct, depth 3, 1 s; invariants TypeOK + NoAuthorizationBypassA. 44 distinct IS the whole A domain, which is what makes the state-sliced invariant cover AllowedRelation"
+a_oracle = "TokenGateOracle.cfg GREEN — 506 states, 22 distinct, depth 1, 1 s; the probe's initial states ARE the disagreement set"
+a_disagreement = "TokenGateDisagreement.cfg RED: RequiredGateAgreesWithRelation, 1 s — the non-degeneracy, and it must be RED"
+a_disagreement_set = "31 disagreeing (state, operation) pairs over 22 states, in two families: ClearPin on all 22 (the relation's `pre.pinSet` is a FRAME condition — there was a record to delete — while §6.6's actual gate is the 10 s window and a touch, neither of which tier A can see), and UseCm on 9 of them (§6.8.2 step 4 lets the persistent grant authorize on its own; the relation also demands pinSet, because authorized_by_ppuat refuses a grant with no EF_PIN behind it — the shipped tree being STRICTER than the requirement, which an oracle taken from the code could not have shown)"
+a_mutant = "TokenGateMut_BugUnauthorizedEdge.cfg RED: NoAuthorizationBypassA, 1 s"
+
+# TIER B — every invariant Shipped.cfg names over the shipped constants, and the
+# assumption's other arm. Read that set out of the cfg, never out of this
+# sentence: formal/gen-configs.sh assembles it from TypeOK, `ALL_INV` and
+# `EXTRA_INV` in both configurations, plus `CLAUSE_INV` in Shipped.cfg alone —
+# the one row `emit` is given `clauses=1` for, and the reason the two blocks
+# differ at all. This paragraph called both of them nine until 2026-09-02: the
+# three clause names joined Shipped.cfg after the runs below were recorded, and
+# SEC-FIDO-006B's `stops_invariants` had already said so, in this bundle's name.
+# Shipped.cfg's distinct count is IDENTICAL to the one recorded before
+# `AlwaysUvShipped` was introduced, which is what says the constant changed no
+# behaviour on the arm the image ships.
+b_shipped = "Shipped.cfg GREEN — 986 836 197 states, 77 563 872 distinct, depth 58, 1915 s"
+b_shipped_unchanged = "77 563 872 distinct against 77 563 872 before AlwaysUvShipped — bit-identical, measured rather than argued"
+b_always_uv = "AlwaysUv.cfg GREEN — 273 124 081 states, 23 521 512 distinct, depth 51, 535 s; all nine invariants with alwaysUv as the compiled default. The seconds are the runner's, which is what the cost row below carries; TLC's own closing line in the attached log says 08min 54s = 534 s, and the runner wraps the invocation in `date +%s` so its figure can only be the larger. It read 526 s until 2026-08-31 — a figure neither artifact can produce, corrected to the one the shipped log supports"
+b_mutants = "24 rows, 12 Solo_* and 12 Mut_*, every one RED: NoAuthorizationBypass — BugCmWalkIgnoresChannel, BugConsumeKeepsMcGa, BugForceChangeIgnored, BugHostPreemptsLocalWait, BugLocalPinIgnoresBudget, BugNoConsumeAfterUp, BugNoTouchRequired, BugSetPinOverExisting, BugSoftLockLostOnWarmReset, BugTokenlessIgnoresAlwaysUv, BugUvNotRqdIgnoresRk, BugWarmResetReopensWindow. The roster is not this row's to keep: it is every formal/*.cfg whose INVARIANTS block targets this invariant, and formal/runs.toml's safety tier carries a RED row for each of them. It read 11 and 11 until 2026-09-02 — BugForceChangeIgnored arrived with f5577ab, ran with the rest, and reached both the recorded tier and the derived mut=12 in §5 without ever reaching this line"
+
+# B -> A, the native refinement, and the two negatives that say it can refuse.
+ba_state = "TokenRefinement.cfg GREEN — 34 038 747 states, 3 472 034 distinct, depth 44, 190 s"
+ba_outcome = "TokenRefinementOutcome.cfg GREEN — same space, 212 s, with R1oOutcomeCoverage as an invariant"
+ba_negatives = "TokenRefinementBadMap.cfg RED (the action property in RSKeyTokenAbstract), TokenRefinementDeadToken.cfg RED: R1oTokenOutcomes"
+
+# The recorded session, replayed. Seven registered RED and one deliberate GREEN.
+trace = "TraceSecurity.cfg GREEN — 77 states, 75 distinct, depth 75; TraceSecurityBadBeta RED: R4aRawRefinesB; BadAlpha RED: R4bAlphaMatchesGamma; BadAlphaNoR4b GREEN (the control); BadOutcome RED: R4bEventConsensus; BadUvNotRqd / BadResetWindow / BadAlwaysUvArm / BadPinSet all RED: R4cGateAnswers"
+
+# TIER C — the bounded proofs. `kani::cover!` verdicts are per harness.
+c_walk_owner = "no_authorization_bypass_walk_owner SUCCESSFUL, 44 s — B1/B2 over a five-operation interleaving, 3 of 3 covers"
+c_rps_begin = "no_authorization_bypass_rps_begin_at_call_site SUCCESSFUL, 269 s — D1/D2/D4, 2 of 2 covers; 11 715 952 640 B peak run alone"
+c_creds_begin = "no_authorization_bypass_creds_begin_at_call_site SUCCESSFUL, 303 s — D1/D2/D4/D5, 2 of 2 covers; 14 331 904 000 B peak run alone. Its FIRST run was RED on D5 and the assertion was wrong, not the code"
+c_mac_flag = "no_authorization_bypass_begin_mac_is_the_flag SUCCESSFUL, 233 s — D3, 1 of 1 cover. Its own harness because a third HMAC inside a Begin harness cost 448 s and 14.5 GiB"
+
+# The gates this slice added or extended, each with the number it now derives.
+gate_ghost = "ghost-gate: ok — 21 action(s) record NoAuthorizationBypass over 24 route(s), consulting 11 guard(s) — this slice's own row, and the ledger behind it is `assurance/ghost_actions.toml`; the invariant the gate is fixed to at module level is this property's"
+gate_ledger = "token-refinement-gate: GREEN keys=2 api=11 volatile=11/10 persistent=14/5 outcomes=7/6 walk=4 softlock=12 window=2 testonly=1 — the token axes this slice owns: the walk, soft-lock and window sites are held against their tags there and nowhere else"
+gate_assumption = "5 standing assumption(s) AlwaysUvShipped TRUE=5 FALSE=91 ForceChangeModelled TRUE=3 FALSE=93 PowerOnClearsScratch2 TRUE=11 FALSE=4 RekeyOrderModelled TRUE=2 FALSE=13 WidePerms TRUE=3 FALSE=93 — re-derived, not edited, and the rot this time is the mirror of last time's. The earlier line went stale in the ASSIGNMENT while the total held; this one went stale in the TOTAL as well — `RekeyOrderModelled` joined the registry and `PowerOnClearsScratch2`'s TRUE arm grew by the two `Historical_Boot*` configurations that carry it — so both halves moved at once, and it was the pair rule that saw it, because the total is a bare integer and the bare-integer rule matches it anywhere in the derived line"
+gate_matrix = "matrix-gate: ok — 40 P0-family properties × 31 build configurations = 1240 cells (37 covered, 143 equivalent, 0 conditional, 106 out-of-scope, 954 gap) — UNCHANGED by this slice, and the reason is recorded in the firmware-always-uv settling question"
+gate_registry = "SEC-FIDO-001   NoAuthorizationBypass                    BOUNDED       cfgs=50  mut=12 co=12 kani=4 fuzz=0 rust=2 test=0 — `cfgs` counts the configurations CHECKING this invariant, which is not evidence about it; `mut` and `co` are the mutants that redden it and the code twins that were killed, and the freshness axis carries what a growing `cfgs` costs. Re-derived: the count this line used to carry was one short"
+
+# ---- 6. Raw artifact or log --------------------------------------------------
+
+[[artifact]]
+run = "formal/run-tlc.sh Shipped.cfg — every invariant that configuration names over the shipped constants, and the row that says AlwaysUvShipped changed no behaviour"
+path = "assurance/bundle/logs/tlc-Shipped.log"
+bytes = 7163
+sha256 = "bfeac29120312065dcfa38913224635887b44aebc942c0094fec3b44b0ff5a6c"
+
+[[artifact]]
+run = "formal/run-tlc.sh AlwaysUv.cfg — AS-AUTH-2's other arm, the whole invariant set with alwaysUv as the compiled default"
+path = "assurance/bundle/logs/tlc-AlwaysUv.log"
+bytes = 3137
+sha256 = "6bfc1e8453e1a884d6a3723f496d30f1aeb3d2c7f13ee766266d071f0d1480df"
+
+[[artifact]]
+run = "formal/run-tlc.sh TokenGate.cfg — tier A's requirement gate"
+path = "assurance/bundle/logs/tlc-TokenGate.log"
+bytes = 1689
+sha256 = "e34363fd079491405ef7263e9b42467423a35d9018ed7f1cf6c4a15fec9ea0e5"
+
+[[artifact]]
+run = "formal/run-tlc.sh TokenGateOracle.cfg — the disagreement set, one PrintT per member; this log IS the enumeration"
+path = "assurance/bundle/logs/tlc-TokenGateOracle.log"
+bytes = 7383
+sha256 = "47e5a7b31996385904d799d0a1dbf02b6a5362c315a836afbbc5eb8615d6fea5"
+
+[[artifact]]
+run = "formal/run-tlc.sh TokenGateDisagreement.cfg — E4a's non-degeneracy row, RED"
+path = "assurance/bundle/logs/tlc-TokenGateDisagreement.log"
+bytes = 1394
+sha256 = "dab687dbeffe25efd263b0cb895131fa8094761764b1a16740a44da8483d1e03"
+
+[[artifact]]
+run = "formal/run-tlc.sh TokenGateMut_BugUnauthorizedEdge.cfg — the A-level mutant, RED"
+path = "assurance/bundle/logs/tlc-TokenGateMut_BugUnauthorizedEdge.log"
+bytes = 1383
+sha256 = "81c9e7857c4cb1cb6a023e058f843e92ad9045a42f273a02269b66a74b174c0e"
+
+[[artifact]]
+run = "the whole 40-row slice matrix in one run: Shipped, 22 mutants, the four tier-A rows, the four refinement rows and the nine trace rows"
+path = "assurance/bundle/logs/tlc-slice-matrix.log"
+bytes = 8293
+sha256 = "cc4085330d36b0fab74f85c9c50c2bac1266d6b3ec05c0887869fe423a48bdda"
+
+[[artifact]]
+run = "gzip -9 -n of the unedited output of `/usr/bin/time -l ./scripts/kani.sh state` — 29 harnesses, their floors, their covers and the tier's peak. Gzip because the raw log is 15.8 MB of CBMC unwinding lines; it is lossless, so the artifact is whole"
+path = "assurance/bundle/logs/kani-state-tier.log.gz"
+bytes = 339043
+sha256 = "12365e4bcbcf67e221e4cd327105f83ceeec8c48ac83e0785ebaefb1c028fb1d"
+
+[[artifact]]
+run = "E5 and E4b in one script: `comutate.py run BugCmWalkIgnoresChannel` (slice AND proof half), then the rps harness under a verify_cm_token with its PERM_CM conjunct removed"
+path = "assurance/bundle/logs/comutate-and-e4b.log"
+bytes = 657
+sha256 = "273e78eb120732055c64e6cfdfbb36cb8fe0d5d08466af3ce9f9036f1bc464b0"
+
+[[artifact]]
+run = "cargo test -p rsk-fido --features always-uv — the 172 failures that keep the firmware-always-uv matrix cell a gap"
+path = "assurance/bundle/logs/cargo-test-always-uv.log"
+bytes = 105396
+sha256 = "42c09dd9aa064c189aaeb2e1fbc6e7a13a249c9f972721106948664f0dd963de"
+# ---- 7. Assumptions and TCB / trust dependencies -----------------------------
+
+[[assumption]]
+id = "AS-AUTH-1"
+statement = "tools/emu implements the same authorization gates as the firmware, so a recorded session is evidence about the firmware."
+kind = "tool fidelity"
+discharger = "a board recording of the same session, compared boundary by boundary"
+expressible = "no — not a model constant"
+registered = "yes — assurance/platform.toml PLAT-TOOL-002, pending, and it refines the emulator-wide PLAT-TOOL-001"
+
+[[assumption]]
+id = "AS-AUTH-2"
+statement = "The shipped image is built without --features always-uv, so gate.alwaysUv is a free state variable rather than the compiled default every reset restores."
+kind = "build configuration"
+discharger = "firmware/Cargo.toml's default feature set, and the firmware-always-uv matrix column"
+expressible = "yes"
+registered = "yes — assurance/assumptions.toml AlwaysUvShipped, whose TRUE/FALSE split over formal/*.cfg is the re-derived gate_assumption line in §5 and not a second copy here; read by Init, GatesLive and ResetSweepGates; the fact underneath it is assurance/platform.toml PLAT-BUILD-001, one of that registry's discharged rows. This field read `FALSE by 89 configurations and TRUE by AlwaysUv.cfg` until 2026-09-02, when both halves were wrong at once — 91 and 5 — twenty lines from a derived line in this same file that had them right"
+
+[[assumption]]
+id = "AS-AUTH-3"
+statement = "A CTAPHID channel id is a routing label the sender writes, so channel ownership is a scoping rule and never an authentication one."
+kind = "threat model"
+discharger = "a clause of docs/threat-model.md; state.rs states it in prose today"
+expressible = "no"
+registered = "yes — assurance/platform.toml PLAT-THREAT-001, pending on a threat-model clause"
+
+[[assumption]]
+id = "AS-AUTH-4"
+statement = "PowerOnClearsScratch2 — a real power-on clears the watchdog word the soft lock rides in."
+kind = "platform"
+discharger = "the board measurement assurance/assumptions.toml already describes"
+expressible = "yes, and registered — but in RSKeyBootHardening, and the overlap between the 13 configurations that assign it and those that check NoAuthorizationBypass is ZERO"
+registered = "yes — assurance/platform.toml PLAT-RESET-001, which discharges the constant and is itself pending on a board. The constant lives in RSKeyBootHardening and the overlap between the 13 configurations that assign it and those that check NoAuthorizationBypass is still ZERO"
+
+[[assumption]]
+id = "AS-AUTH-5"
+statement = "PermSets, five of the sixteen subsets, is the set a host can actually obtain."
+kind = "model fidelity"
+discharger = "reading the two production sites that mint permissions"
+expressible = "no — a set, not a boolean"
+registered = "yes — assurance/platform.toml PLAT-MODEL-001, pending on stage 2 п.7"
+
+[[assumption]]
+id = "AS-AUTH-6"
+statement = "One credential per relying party."
+kind = "model abstraction"
+discharger = "the store slice; MAX_RESIDENT_CREDENTIALS (256) is the shipped cardinality"
+expressible = "no — a cardinality, not a boolean"
+registered = "yes — assurance/platform.toml PLAT-MODEL-002, pending on the stage 5 store slice"
+
+[[assumption]]
+id = "AS-AUTH-7"
+statement = "Kani/CBMC is sound for the harness's arithmetic and the pinned solver is the one that ran."
+kind = "tool TCB"
+discharger = "the pinned toolchain and a recorded tool hash"
+expressible = "no — a fact about a tool, not about the model"
+registered = "yes — assurance/platform.toml PLAT-TOOL-003, pending; cargo-kani is the one tool on this path outside the hermetic shell, and the half that row says is missing is the HASH, not the version"
+
+[[assumption]]
+id = "AS-AUTH-8"
+statement = "ea-conformance-rpid's enterprise-attestation allowlist is not an authorization gate."
+kind = "build configuration"
+discharger = "the matrix's own settling question for that column"
+expressible = "no"
+registered = "yes — assurance/platform.toml PLAT-BUILD-002, pending on the matrix column’s own settling question"
+
+[[assumption]]
+id = "TCB-1"
+statement = "The compiler on the path is rustc 1.96.0 and its output is what the proofs are about; Kani proves over MIR, not over the emitted image."
+kind = "compiler"
+discharger = "stage 11's source-to-binary work; nothing here"
+expressible = "no"
+registered = "yes — assurance/platform.toml PLAT-TOOLCHAIN-001, pending on stage 11"
+
+[[assumption]]
+id = "TCB-2"
+statement = "The HMAC-SHA-256 under pinproto is correct; the harnesses replay one concrete MAC and say nothing about it as a MAC."
+kind = "crypto primitive"
+discharger = "rsk-crypto's own vectors, and the soft backends the kani rows force"
+expressible = "no"
+registered = "yes — assurance/platform.toml PLAT-CRYPTO-001, pending on rsk-crypto’s own vectors"
+
+# ---- 8. Mutation verdicts ----------------------------------------------------
+
+[[mutation]]
+level = "A"
+mutant = "BugUnauthorizedEdge — one Authorized UseAcfg edge from a state with no PIN and no live token"
+invocation = "formal/run-tlc.sh TokenGateMut_BugUnauthorizedEdge.cfg"
+expected = "RED: NoAuthorizationBypassA"
+verdict = "RED: NoAuthorizationBypassA, 1 s"
+fell = "NoAuthorizationBypassA — the implication AuthorizedFrom(a, op, post) => RequiredGate(op, a)"
+direction = "modelled"
+reading = "the failure is an operation AUTHORIZED without the gate its requirement names, which is the defect. The inverse — the requirement refusing something the relation admits as Rejected — cannot fail this invariant at all, because it quantifies over Authorized edges only."
+
+[[mutation]]
+level = "A"
+mutant = "the oracle read off the relation instead of the requirement — the degeneracy §4.3 condition 11 refuses"
+invocation = "formal/run-tlc.sh TokenGateDisagreement.cfg"
+expected = "RED: RequiredGateAgreesWithRelation"
+verdict = "RED: RequiredGateAgreesWithRelation, 1 s"
+fell = "RequiredGateAgreesWithRelation, at a state with ~pinSet where ClearPin disagrees"
+direction = "modelled"
+reading = "the direction is the whole content: RequiredGate is TRUE where GateFromRelation is FALSE, i.e. the REQUIREMENT is weaker. The inverse — a requirement stricter than the relation on an Authorized edge — would have reddened NoAuthorizationBypassA instead, and did not. Driven the other way as well: with the oracle defined as GateFromRelation this row goes GREEN, run-tlc.sh reports `!! expected RED`, and exit is 1."
+
+[[mutation]]
+level = "B"
+mutant = "the eleven switches this property names as their target"
+invocation = "formal/run-tlc.sh Solo_<Bug>.cfg and Mut_<Bug>.cfg, 22 rows"
+expected = "RED: NoAuthorizationBypass on every one"
+verdict = "22 of 22 RED: NoAuthorizationBypass"
+fell = "NoAuthorizationBypass — on the Solo_ rows it is the ONLY invariant checked, so a RED there cannot be a sibling's"
+direction = "modelled"
+reading = "each Solo_ configuration checks TypeOK and this invariant and nothing else, which is what tells a kill from a kill by a neighbouring invariant. The 11 Mut_ twins check the whole set and report the same name first."
+
+[[mutation]]
+level = "B"
+mutant = "deleting every route by which one action writes the name — 21 actions, and every single route, 24 of them"
+invocation = "python -m pytest scripts/test_ghost_gate.py"
+expected = "the ghost row names the action, and a HALF-deleted guard names the route"
+verdict = "55 cases green: 21 delete-every-route, 24 single-route, 3 half-deleted-guard, plus a swapped policy, a new alias, a new recorder, a stale entry, an empty reason and an empty derivation"
+fell = "`<Action>: owned in assurance/ghost_actions.toml and records NoAuthorizationBypass nowhere`, and for the two-route actions `<Action>: … gone: <route>`"
+direction = "modelled"
+reading = "the arm that matters is the half-deleted one: RegisterStart, RegisterNdStart and AssertStart each record TWICE, so after one deletion the action still records and a name-set equality is GREEN. `test_a_half_deleted_guard_is_not_a_pass` asserts the derivation still finds the action recording BEFORE it asserts the row goes red, so the failure cannot be the inverse."
+
+[[mutation]]
+level = "B->A"
+mutant = "MutateTokenGamma and BugDeadTokenAuthorized"
+invocation = "formal/run-tlc.sh TokenRefinementBadMap.cfg / TokenRefinementDeadToken.cfg"
+expected = "RED on the refinement and on the outcome clause"
+verdict = "RED (the action property in RSKeyTokenAbstract) and RED: R1oTokenOutcomes"
+fell = "the B->A step obligation, and the labelled-outcome obligation"
+direction = "modelled"
+reading = "a wrong gamma breaks the STATE refinement and a dead token authorizing breaks the OUTCOME one; the two rows fall on different properties, which is what says they model different defects."
+
+[[mutation]]
+level = "trace"
+mutant = "MutateUvNotRqd, MutateResetWindow, MutateAlwaysUvArm, MutatePinSet"
+invocation = "formal/run-tlc.sh TraceSecurityBad{UvNotRqd,ResetWindow,AlwaysUvArm,PinSet}.cfg"
+expected = "RED: R4cGateAnswers, at one of the seven gate boundaries"
+verdict = "4 of 4 RED: R4cGateAnswers, at depths 44, 75, 51 and 12"
+fell = "R4cGateAnswers — the replay's own prediction of the gate's answer"
+direction = "modelled"
+reading = "the four fall at four DIFFERENT depths, which is what says each reaches its own boundary rather than all four tripping on the first one. The GREEN control TraceSecurityBadAlphaNoR4b.cfg is what says R4b alone catches the alpha shift."
+
+[[mutation]]
+level = "C"
+mutant = "BugCmWalkIgnoresChannel, re-driven against the HARNESS rather than the unit suite — the first recorded mutant in this tree to redden a Kani proof"
+invocation = "python scripts/comutate.py run BugCmWalkIgnoresChannel"
+expected = "killed by the slice AND by the proof, on NoAuthorizationBypass/B1"
+verdict = "killed — test result: FAILED. 617 passed; 1 failed; proof: Failed Checks: NoAuthorizationBypass/B1"
+fell = "NoAuthorizationBypass/B1: the RP walk is servable to the wrong set of channels"
+direction = "modelled"
+reading = "the patch drops the channel conjunct out of `may_walk_rps`, so B1's EQUALITY must fail on the NON-OWNING probe — servable where the ghost says it should not be. B2 (the credential walk) is untouched and did not fall, which is what says the kill is this defect and not a neighbour's. The first attempt at this row reported `proof-broke` instead: `not currently supported` appears in a Kani codegen WARNING and in the description of unreachable checks on a run that PASSED, so the tool-limit matcher had to be scoped to the `Failed Checks:` lines."
+
+[[mutation]]
+level = "C"
+mutant = "verify_cm_token loses its `state.paut.permissions & PERM_CM == 0` conjunct — the requirement (§6.8) demands the permission and the code no longer does"
+invocation = "cargo kani -p rsk-fido --features kani-soft --harness no_authorization_bypass_rps_begin_at_call_site, over the patched tree"
+expected = "RED on D1, the decision clause, and on nothing else"
+verdict = "VERIFICATION:- FAILED — Complete - 0 successfully verified harnesses, 1 failures, 1 total"
+fell = "NoAuthorizationBypass/D1: the Begin's gate admitted the wrong set of requests"
+direction = "modelled"
+reading = "E4b, and the direction is the whole content. D1 is an EQUALITY between the real decision and a ghost computed from the request, so it falls in both directions — but the message that fell says ADMITTED, and the input class is a request with a valid MAC and a satisfied rpId binding whose token does NOT carry `cm`. That is an authorization bypass, not an over-refusal. D2 did not fall separately, which is what says the cursor writes are downstream of the decision rather than a second defect."
+
+[[mutation]]
+level = "gate"
+mutant = "the three guard axes' derivation stopped reading the tree"
+invocation = "python -m pytest scripts/test_token_refinement_gate.py"
+expected = "each axis's floor trips, naming the axis and the count"
+verdict = "green; the walk and window arms derive 0 sites, and the soft-lock arm derives 2 of 12 when the scan is restricted to rsk-fido"
+fell = "`walk: 0 site(s) derived, under the floor of 3`, `reset_window: 0 …`, `softlock: 2 site(s) derived, under the floor of 8`"
+direction = "modelled"
+reading = "the soft-lock arm is the one worth reading: restricting UNITS to the applet is exactly the mistake a hand-written scan would make, and it loses the board half rather than everything — a floor and not a zero test is what catches that."
+
+[[mutation]]
+level = "gate"
+mutant = "a group of the bundle keeps its heading and loses its body"
+invocation = "python -m pytest scripts/test_bundle_gate.py"
+expected = "the leaf floor trips for that group"
+verdict = "green over all ten groups, both directions (heading gone, and body gone)"
+fell = "`group `<name>` carries 1 leaf/leaves, under the floor of N`"
+direction = "modelled"
+reading = "the missing-group arm and the empty-group arm are separate, because ten headings with one line each satisfy the first and are exactly what the second exists to refuse."
+
+# ---- 9. Timestamp, freshness and revalidation inputs -------------------------
+
+[freshness]
+measured = "2026-08-27, Europe/Moscow"
+expires_on_toolchain_bump = "rustc/cargo 1.96.0 — every Kani result and every host test"
+expires_on_prover_bump = "cargo-kani 0.67.0 or tlaplus 1.7.4 — every proof and every TLC verdict"
+expires_on_stepping = "an RP2350 stepping change — nothing here, because no hardware result is in this bundle; that absence is itself the trigger for stage 7's HIL work"
+expires_on_owner_change = "any file in property.owners_tagged or property.owners_co_refuted, and any site in assurance/token_refinement.toml's six axes"
+expires_on_feature_change = "the default feature set of firmware/Cargo.toml, or any cfg(kani) constant in the method table's shrink row"
+expires_on_schema_change = "formal/TraceSecurityData.tla's shape, or assurance/properties.toml's field set"
+
+# ---- 10. Measured costs ------------------------------------------------------
+
+[[cost]]
+artifact = "assurance/bundle/logs/tlc-Shipped.log"
+human_minutes = 4
+runner_seconds = 1915
+peak_memory_mb = 2137
+basis = "runner from run-tlc.sh's own timer; peak SAMPLED at 2 s intervals with `ps -o rss` during the run, not /usr/bin/time -l — the only figure here taken that way, and the run is too long to repeat for it. human is attended time, reconstructed from the work log"
+
+[[cost]]
+artifact = "assurance/bundle/logs/tlc-AlwaysUv.log"
+human_minutes = 22
+runner_seconds = 535
+peak_memory_mb = 2665
+basis = "runner and peak from /usr/bin/time -l over a re-run that reproduced the row exactly; human is attended time, reconstructed"
+
+[[cost]]
+artifact = "assurance/bundle/logs/tlc-TokenGate.log"
+human_minutes = 31
+runner_seconds = 1
+peak_memory_mb = 222
+basis = "/usr/bin/time -l; human is attended time, reconstructed — it carries the module's design and the disagreement analysis"
+
+[[cost]]
+artifact = "assurance/bundle/logs/tlc-TokenGateOracle.log"
+human_minutes = 7
+runner_seconds = 1
+peak_memory_mb = 212
+basis = "/usr/bin/time -l; human is attended time, reconstructed"
+
+[[cost]]
+artifact = "assurance/bundle/logs/tlc-TokenGateDisagreement.log"
+human_minutes = 6
+runner_seconds = 1
+peak_memory_mb = 198
+basis = "/usr/bin/time -l; human is attended time, reconstructed"
+
+[[cost]]
+artifact = "assurance/bundle/logs/tlc-TokenGateMut_BugUnauthorizedEdge.log"
+human_minutes = 4
+runner_seconds = 1
+peak_memory_mb = 199
+basis = "/usr/bin/time -l; human is attended time, reconstructed"
+
+[[cost]]
+artifact = "assurance/bundle/logs/tlc-slice-matrix.log"
+human_minutes = 6
+runner_seconds = 2361
+peak_memory_mb = 2137
+basis = "runner is the SUM of the 40 rows' own timers; peak is the Shipped sample above, which is the largest of them. human is attended time, reconstructed"
+
+[[cost]]
+artifact = "assurance/bundle/logs/kani-state-tier.log.gz"
+human_minutes = 74
+runner_seconds = 1365
+peak_memory_mb = 15658
+basis = "/usr/bin/time -l over the whole tier; human is attended time and is the largest single figure here — it carries three harness rewrites and two refutations, one of the harness's own assertion"
+
+[[cost]]
+artifact = "assurance/bundle/logs/comutate-and-e4b.log"
+human_minutes = 27
+runner_seconds = 372
+peak_memory_mb = 11836
+basis = "/usr/bin/time -l over the script; human is attended time, reconstructed"
+
+[[cost]]
+artifact = "assurance/bundle/logs/cargo-test-always-uv.log"
+human_minutes = 4
+runner_seconds = 7
+peak_memory_mb = 821
+basis = "/usr/bin/time -l; human is attended time, reconstructed"
+
+[[cost]]
+artifact = "the work that produced no artifact of its own — the ghost gate, the three ledger axes, the bundle gate, the assumption, and the adversarial review of all three guards"
+human_minutes = 115
+runner_seconds = 1200
+peak_memory_mb = 2137
+basis = "human is attended time, reconstructed from the work log; runner is the pytest and gate-script time across the session and is a LOWER BOUND — the individual invocations were not timed and that is not recoverable. peak is the Shipped sample, which bounds every process in this row"

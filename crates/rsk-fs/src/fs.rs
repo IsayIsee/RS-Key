@@ -35,6 +35,54 @@ const FID_PRESENT_BYTES: usize = 3;
 #[cfg(not(kani))]
 const _: () = assert!(((u16::MAX >> 3) as usize) < FID_PRESENT_BYTES);
 
+/// Where `fid` lives in the present/decided maps: byte index and bit mask.
+///
+/// One definition because the theorem below is about THIS function. Spelled out
+/// at each of its five call sites — four helpers plus the copy inside `scan`'s
+/// closure, which cannot borrow `self` — the arithmetic could drift at one site
+/// and leave a compile-time assertion about the other four still passing.
+#[inline]
+const fn slot(fid: u16) -> (usize, u8) {
+    ((fid >> 3) as usize, 1u8 << (fid & 7))
+}
+
+/// And no two FIDs share a bit. [`slot`] is injective because its two halves
+/// RECOMPOSE `fid`, so equal slots force equal FIDs — which is exactly "a put
+/// never aliases another file", over the whole shipped domain rather than the
+/// 24 bits `cfg(kani)` leaves. Enumerated for all 65 536 rather than argued for
+/// a symbolic pair: at this width enumerating is cheaper than reasoning, and it
+/// holds in the shrunk arm too, which is where the proofs cannot look.
+const _: () = {
+    let mut fid: u32 = 0;
+    while fid <= u16::MAX as u32 {
+        let (i, m) = slot(fid as u16);
+        assert!(((i as u32) << 3) | (m.trailing_zeros()) == fid);
+        fid += 1;
+    }
+};
+
+/// Fids one [`Fs::factory_wipe`] pass collects before removing them. Named
+/// because the wrap to a second pass is a code path, and the test that crosses it
+/// has to size its fixture off this rather than off a copy of the number.
+const WIPE_BATCH: usize = 64;
+
+/// The two answers a removal gives, kept apart for the callers that must act on
+/// them differently. [`Fs::force_delete`] folds them into one `Result`, which is
+/// the right default; a reset sweep cannot use it, because the two failures pull
+/// it in opposite directions.
+#[must_use]
+pub struct Removal {
+    /// The backend removal. `Err` is "the medium refused, and the value may
+    /// still be live" — a sweep must stop on it, because `for_each_key` keeps
+    /// re-yielding a fid it could not remove.
+    pub value: Result<()>,
+    /// The EF_META drop. `Err` is "the value is gone, a record may still stand
+    /// over it" — a sweep must NOT stop on it, because EF_META is one blob shared
+    /// by every applet, so one faulted read of it would end the wipe after a
+    /// single file and end it at the same fid on every retry.
+    pub record: Result<()>,
+}
+
 /// The file system: the set of live dynamic FIDs and a present-cache over a
 /// [`Storage`] backend.
 pub struct Fs<S: Storage> {
@@ -70,24 +118,46 @@ pub struct Fs<S: Storage> {
     /// cache stale. In-RAM only (resets to 0 each boot); `u32` never realistically
     /// wraps between two reads of a mutation-free session.
     write_gen: u32,
-    /// Set by [`scan`](Self::scan) when the backend held more dynamic-eligible keys
-    /// than [`MAX_DYNAMIC_FILES`], so at least one live key lost its registration and
-    /// every later `put` to it will answer [`Error::NoMemory`]. Only reachable via a
-    /// key written outside `Fs` (`put` refuses a new file past the cap), which is why
-    /// it was a `debug_assert!` — compiled out of the release image, where the drop
-    /// then went entirely unrecorded (audit run-36).
-    over_cap: bool,
+    /// Set by [`scan`](Self::scan) when the boot enumeration was cut short, so the
+    /// FIDs it never reached are unknown rather than absent. Only
+    /// [`present_slots`](Self::present_slots) reads it: the per-key probes fall
+    /// through to the backend on an undecided FID and are sound already, but the
+    /// slot bitmap answers from RAM alone and has no such fallback. Distinct from
+    /// "nothing decided yet" — a fresh `Fs` that has not scanned has an empty
+    /// `present` map and reports free, which is what it is.
+    ///
+    /// It is a claim about ONE walk, so anything that replaces the store it walked
+    /// clears it — [`factory_wipe`](Self::factory_wipe) does. Left latched, one
+    /// transient boot fault made every slot read occupied for the rest of the power
+    /// cycle, a factory reset included.
+    scan_truncated: bool,
+    /// Set when a [`crate::request_rescrub`] this power cycle could not be shown to
+    /// have landed. It says the MEDIUM refused a re-arm — NOT that the marker lies:
+    /// at the gated call sites the refusal stops the write it guards, so nothing is
+    /// superseded and the marker stays true, whether the site then errors to the
+    /// host or skips a lazy migration. The wipe paths are why it exists: there the
+    /// refusal is best-effort, because "leave the record in force" would mean leave
+    /// the secrets live, so a wipe over a persistently stuck medium answers the host
+    /// success with the lap latched off, and nothing else in the tree says so.
+    ///
+    /// In RAM, per power cycle, and never persisted: a flash breadcrumb would be a
+    /// write to the medium that is refusing, and its own failure would be
+    /// unreportable by the same argument. Reading the marker on demand is no
+    /// substitute — latched is the steady state of every provisioned device past its
+    /// first lap, so a bare marker read reports trouble on a healthy key.
+    rescrub_refused: bool,
 }
 
 impl<S: Storage> Fs<S> {
     pub fn new(storage: S) -> Self {
         Fs {
             storage,
-            over_cap: false,
             dynamic: Vec::new(),
             present: [0u8; FID_PRESENT_BYTES],
             decided: [0u8; FID_PRESENT_BYTES],
             write_gen: 0,
+            scan_truncated: false,
+            rescrub_refused: false,
         }
     }
 
@@ -96,6 +166,20 @@ impl<S: Storage> Fs<S> {
     /// changes (see [`write_gen`](Self#structfield.write_gen)).
     pub fn write_gen(&self) -> u32 {
         self.write_gen
+    }
+
+    /// Did the medium refuse an at-rest-lap re-arm this power cycle? Medium health,
+    /// reported out of band because the wipe paths discard the refusal by design
+    /// (see [`rescrub_refused`](Self#structfield.rescrub_refused)).
+    pub fn rescrub_refused(&self) -> bool {
+        self.rescrub_refused
+    }
+
+    /// Latch the answer [`rescrub_refused`](Self::rescrub_refused) carries.
+    /// `pub(crate)` because [`crate::request_rescrub`] is what decides that a re-arm
+    /// was refused, and it is the only re-arm in the tree.
+    pub(crate) fn note_rescrub_refused(&mut self) {
+        self.rescrub_refused = true;
     }
 
     /// Recover the backend (e.g. to rebuild the `Fs` — used in tests to model a
@@ -109,13 +193,15 @@ impl<S: Storage> Fs<S> {
     /// [`known_absent`](Self::known_absent).
     #[inline]
     fn present_bit(&self, fid: u16) -> bool {
-        self.present[(fid >> 3) as usize] & (1u8 << (fid & 7)) != 0
+        let (i, m) = slot(fid);
+        self.present[i] & m != 0
     }
 
     /// Is `fid`'s present/absent state confirmed (vs. unknown-until-probed)?
     #[inline]
     fn decided_bit(&self, fid: u16) -> bool {
-        self.decided[(fid >> 3) as usize] & (1u8 << (fid & 7)) != 0
+        let (i, m) = slot(fid);
+        self.decided[i] & m != 0
     }
 
     /// Trustworthy fast-negative test: true only when `fid` is *confirmed*
@@ -142,28 +228,34 @@ impl<S: Storage> Fs<S> {
     /// Mark `fid` known present (sets the authority bit too).
     #[inline]
     fn mark_present(&mut self, fid: u16) {
-        let (i, m) = ((fid >> 3) as usize, 1u8 << (fid & 7));
+        let (i, m) = slot(fid);
         self.present[i] |= m;
         self.decided[i] |= m;
     }
 
-    /// [`record`](Self::record), but only when the backend actually answered.
+    /// Judge one backend probe: `Err` iff the backend FAILED, `Ok(None)` only for
+    /// an absence it actually reported, and the answer cached only when there was
+    /// one.
     ///
-    /// `Storage::read`/`size` return `None` both for "absent" and for "the read
-    /// failed", and `record` sets the DECIDED bit — so caching a fault turns one
-    /// transient error into a permanent "file absent" for the rest of the boot,
-    /// opening every gate that reads `has_data` (audit run-36). An undecided FID is
-    /// simply re-probed next time, which is the pre-cache behaviour.
-    fn record_unless_faulted(&mut self, fid: u16, present: bool) {
-        if !self.storage.last_error() {
-            self.record(fid, present);
+    /// `Storage::read`/`size` return `None` for both outcomes. Caching a fault would
+    /// set the DECIDED bit and turn one transient error into a permanent "file
+    /// absent" for the rest of the boot (audit run-36); leaving the FID undecided
+    /// re-probes it next time, which is the pre-cache behaviour. Separating the two
+    /// at the RETURN is the other half, and the one the `try_*` probes publish —
+    /// see [`try_has_data`](Self::try_has_data).
+    #[inline]
+    fn settle<T>(&mut self, fid: u16, r: Option<T>) -> Result<Option<T>> {
+        if r.is_none() && self.storage.last_error() {
+            return Err(Error::MemoryFatal);
         }
+        self.record(fid, r.is_some());
+        Ok(r)
     }
 
     /// Mark `fid` known absent (sets the authority bit, clears present).
     #[inline]
     fn mark_absent(&mut self, fid: u16) {
-        let (i, m) = ((fid >> 3) as usize, 1u8 << (fid & 7));
+        let (i, m) = slot(fid);
         self.present[i] &= !m;
         self.decided[i] |= m;
     }
@@ -182,10 +274,9 @@ impl<S: Storage> Fs<S> {
         dynamic.clear();
         present.fill(0);
         decided.fill(0);
-        let mut over_cap = false;
         let complete = self.storage.for_each_key(&mut |fid| {
             // Every enumerated key — dynamic or EF_META — is confirmed present.
-            let (i, m) = ((fid >> 3) as usize, 1u8 << (fid & 7));
+            let (i, m) = slot(fid);
             present[i] |= m;
             decided[i] |= m;
             // Neither is a file: EF_META is the shared metadata record, and the
@@ -195,16 +286,13 @@ impl<S: Storage> Fs<S> {
             if fid == EF_META || fid == EF_SCRUB_FILLER {
                 return;
             }
-            if !dynamic.contains(&fid) && dynamic.push(fid).is_err() {
-                // `put` refuses a NEW dynamic file past the cap, so the only way to
-                // get here is a key the backend holds that never went through `put`.
-                // Record it rather than discarding it silently — the drop costs the
-                // key every future write, and a `debug_assert!` is compiled out of
-                // the release image where that matters.
-                over_cap = true;
+            if !dynamic.contains(&fid) {
+                // Only a key written outside `Fs` can be here past the cap — `put`
+                // refuses a new file at it. Its value stays readable; what the
+                // dropped registration costs it is every future `put` (`NoMemory`).
+                let _ = dynamic.push(fid);
             }
         });
-        self.over_cap = over_cap;
         // A COMPLETE enumeration yielded every live key: the backend's forward ring
         // walk is a page-superset of `fetch_item`'s, and page reclaim erases a source
         // only after forwarding its items, so no torn power cut can hide a committed
@@ -216,38 +304,77 @@ impl<S: Storage> Fs<S> {
         if complete {
             decided.fill(0xFF);
         }
+        self.scan_truncated = !complete;
     }
 
     /// Copy file contents into `buf`; returns the value's full length, or `None`.
+    ///
+    /// A probe the backend could not complete reads as an absence here — see
+    /// [`try_read`](Self::try_read) for when that collapse is not allowed.
     pub fn read(&mut self, fid: u16, buf: &mut [u8]) -> Option<usize> {
+        self.try_read(fid, buf).ok().flatten()
+    }
+
+    /// [`read`](Self::read) with the failed probe kept apart from the absence:
+    /// `Ok(None)` is a confirmed absence, `Err` is "the backend could not answer".
+    ///
+    /// An absent record is how this firmware spells *no gate configured* and *not
+    /// provisioned yet*, so a caller that takes `None` for a decision acts on a
+    /// flash fault — one faulted `EF_PIN` probe re-seeded PIV's factory PIN, PUK
+    /// and management key over the owner's. Use these `try_*` probes wherever the
+    /// absent arm overwrites configured material or opens a gate; the collapsing
+    /// ones stay right where an absence costs a status field or a repeated repair.
+    ///
+    /// **Do not derive the sites by asking "does the absent arm write?"** That
+    /// question found 37 guards and missed six live regressions, because in each of
+    /// the six the collapsed answer is not acted on where it is read. It becomes an
+    /// **unwritten branch** — `if probe { return Err(..) }`, where the harm is a
+    /// `return` that does not happen (`vendor::pin_gate`, `backup_export`); a
+    /// **consumed value** — `None` resolving to a default a later statement persists
+    /// or signs (`journal::load_meta`'s genesis, PIV `MOVE KEY`'s "no certificate");
+    /// or a **latched flag** — stored and read by a later command, so the fault and
+    /// the harm sit in different call frames (`oath::select`'s `validated`,
+    /// [`scan_truncated`](Self#structfield.scan_truncated), PIV `scan_files`'
+    /// `have_meta`).
+    ///
+    /// The question that finds all of them: **if this probe answered `false`/`None`
+    /// where the truth is `true`/`Some`, what becomes reachable?** — then follow that
+    /// answer to whoever consumes it, the empty `else` included.
+    pub fn try_read(&mut self, fid: u16, buf: &mut [u8]) -> Result<Option<usize>> {
         if self.known_absent(fid) {
-            return None; // confirmed absent — skip the backend's full scan
+            return Ok(None); // confirmed absent — skip the backend's full scan
         }
         // Present or unknown: the backend (reliable per-key `fetch_item`) is the
         // source of truth; cache what it says so the next probe is O(1).
         let r = self.storage.read(fid, buf);
-        self.record_unless_faulted(fid, r.is_some());
-        r
+        self.settle(fid, r)
     }
 
-    /// Length of the file's contents, or `None` if absent.
+    /// Length of the file's contents, or `None` if absent (or unreadable — see
+    /// [`try_read`](Self::try_read)).
     pub fn size(&mut self, fid: u16) -> Option<usize> {
-        if self.known_absent(fid) {
-            return None;
-        }
-        let r = self.storage.size(fid);
-        self.record_unless_faulted(fid, r.is_some());
-        r
+        self.try_size(fid).ok().flatten()
     }
 
-    /// Whether the file exists with non-empty contents.
-    pub fn has_data(&mut self, fid: u16) -> bool {
+    /// [`size`](Self::size), fallible — see [`try_read`](Self::try_read).
+    fn try_size(&mut self, fid: u16) -> Result<Option<usize>> {
         if self.known_absent(fid) {
-            return false; // confirmed absent — skip the backend's full scan
+            return Ok(None);
         }
         let r = self.storage.size(fid);
-        self.record_unless_faulted(fid, r.is_some());
-        r.is_some_and(|n| n > 0)
+        self.settle(fid, r)
+    }
+
+    /// Whether the file exists with non-empty contents — `false` for an
+    /// unreadable one too, which is the collapse [`try_has_data`](Self::try_has_data)
+    /// exists to keep out.
+    pub fn has_data(&mut self, fid: u16) -> bool {
+        self.try_has_data(fid).unwrap_or(false)
+    }
+
+    /// [`has_data`](Self::has_data), fallible — see [`try_read`](Self::try_read).
+    pub fn try_has_data(&mut self, fid: u16) -> Result<bool> {
+        Ok(self.try_size(fid)?.is_some_and(|n| n > 0))
     }
 
     /// Invoke `f` once per live key in the backend, in a single storage pass.
@@ -267,7 +394,7 @@ impl<S: Storage> Fs<S> {
         self.storage.for_each_key(f)
     }
 
-    /// Fill `out[i]` with whether `base + i` is known present, read straight from
+    /// Fill `out[i]` with whether `base + i` may hold a record, read straight from
     /// the in-RAM present index — no backend scan. Occupancy-equivalent to a
     /// [`for_each_key`](Self::for_each_key) pass over the range (both derive from
     /// the boot [`scan`](Self::scan) seed, kept live by every `put`/`delete`), but
@@ -275,13 +402,22 @@ impl<S: Storage> Fs<S> {
     /// only the occupied-slot bitmap over a FID range (credMgmt enumerate,
     /// makeCredential dedup / free-slot); occupied slots must still be `read` for
     /// their data. A `present` bit is only ever set by a confirmed put/read, so a
-    /// stale-positive at worst costs one skipped `read`; the absent direction keeps
-    /// the same torn-migration semantics as the bulk pass (no new false-absent).
+    /// stale-positive at worst costs one skipped `read`.
+    ///
+    /// A clear `present` bit means two different things after a boot
+    /// [`scan`](Self::scan): a slot the walk proved empty, and — if a read fault cut
+    /// the walk short — one it never reached. `makeCredential` writes the first free
+    /// slot it is handed WITHOUT re-reading it, so answering the second "free"
+    /// overwrites a live credential. A truncated scan therefore reports the whole
+    /// range occupied, which costs capacity instead. Every other caller re-`read`s a
+    /// slot it was told is occupied and skips the empty ones, so the cost stops at
+    /// one wasted probe. A scan that COMPLETED is bit-for-bit the raw index, and a
+    /// fresh `Fs` that has not scanned still reports free — its store is empty.
     pub fn present_slots(&self, base: u16, out: &mut [bool]) {
         for (i, b) in out.iter_mut().enumerate() {
             *b = base
                 .checked_add(i as u16)
-                .is_some_and(|fid| self.present_bit(fid));
+                .is_some_and(|fid| self.scan_truncated || self.present_bit(fid));
         }
     }
 
@@ -344,6 +480,10 @@ impl<S: Storage> Fs<S> {
         first: impl Fn(u16) -> bool,
         last: impl Fn(u16) -> bool,
     ) -> Result<()> {
+        // Every tombstone below appends like a re-seal, so the at-rest lap owes a
+        // re-arm ahead of the first — best-effort, because on a wipe a stopped
+        // re-arm means live secrets. Phase 1 removes EF_HARDENED itself, retrying it.
+        let _ = crate::request_rescrub(self);
         // `first` wins over `last` if a caller ever hands in overlapping predicates:
         // deleting a record early can only ever be safe, deleting it late cannot.
         let phase_of = |fid: u16| {
@@ -357,7 +497,7 @@ impl<S: Storage> Fs<S> {
         };
         for phase in 0..3 {
             loop {
-                let mut batch = [0u16; 64];
+                let mut batch = [0u16; WIPE_BATCH];
                 let mut n = 0usize;
                 let complete = self.storage.for_each_key(&mut |fid| {
                     if !preserve(fid) && phase_of(fid) == phase && n < batch.len() {
@@ -381,8 +521,13 @@ impl<S: Storage> Fs<S> {
         }
         // The caches described the now-erased store; reset them so any reuse before
         // the reboot re-probes the backend (the dynamic set is gone too), then scrub.
+        // `scan_truncated` goes with them: it is a claim about the boot walk over a
+        // store that no longer exists, and this wipe would not have returned without
+        // a COMPLETE walk of every phase — so the empty index is authoritative and
+        // `present_slots` may report free again.
         self.present.fill(0);
         self.decided.fill(0);
+        self.scan_truncated = false;
         self.dynamic.clear();
         self.storage.compact()
     }
@@ -464,13 +609,58 @@ impl<S: Storage> Fs<S> {
     /// absent). A torn-migration false-absent key — live in the backend, present bit
     /// clear — is still removed; otherwise `authenticatorReset`'s re-enumerating wipe
     /// (it reads the backend directly) keeps re-finding it and loops forever.
+    ///
+    /// **The metadata half is [`delete`](Self::delete)'s, not a variant of it, and it
+    /// is what separates the three outcomes a caller can get.** `Ok(())` is "value
+    /// gone and record gone"; `Err` from the drop is "value gone, a record may still
+    /// stand over it" — the removal is unconditional, so no secret outlives its erase
+    /// either way; `Err` from the backend `remove` is "the medium refused" and the
+    /// value may be live. This folds the two into one answer, which is what a caller
+    /// deleting one named record wants. **A sweep must not use it**: the two failures
+    /// pull it in opposite directions, so it takes
+    /// [`force_delete_halves`](Self::force_delete_halves) instead.
+    ///
+    /// Refines `RSKeyStore!NoOrphanedMetadata` — SEC-STORE-001, where the drop
+    /// landed, and Refines `RSKeyStore!NoSilentOrphan` — SEC-STORE-006, where not.
     pub fn force_delete(&mut self, fid: u16) -> Result<()> {
-        let _ = self.meta_delete(fid);
-        self.storage.remove(fid)?;
+        let gone = self.force_delete_halves(fid);
+        gone.value?;
+        gone.record
+    }
+
+    /// [`force_delete`](Self::force_delete) with its two answers handed back apart,
+    /// for the four applet reset sweeps — the callers that cannot fold them.
+    ///
+    /// A sweep must **stop** on a refused backend removal, or `for_each_key` re-yields
+    /// the fid it could not remove until the delete budget runs out; and it must
+    /// **not** stop on a faulted metadata drop, because EF_META is one blob shared by
+    /// every applet, so one unreadable head would abort `authenticatorReset` after a
+    /// single file — at the same fid on every retry, so no retry makes progress, and
+    /// the wrapped device seed would outlive the credentials derived from it. Folding
+    /// them left that distinction unrepresentable, which is how it was measured at
+    /// 0x0987. What the sweep owes instead is both halves: erase the whole range, and
+    /// still answer for the record it could not PROVE dropped.
+    ///
+    /// Refines `RSKeyStore!NoOrphanedMetadata` — SEC-STORE-001, where the drop
+    /// landed, and Refines `RSKeyStore!NoSilentOrphan` — SEC-STORE-006, where not.
+    pub fn force_delete_halves(&mut self, fid: u16) -> Removal {
+        let record = self.meta_delete(fid);
+        if let Err(refused) = self.storage.remove(fid) {
+            // Not marked absent: a refused removal may have left the value live, and
+            // caching that as absence is the false-absent the present cache exists to
+            // keep out.
+            return Removal {
+                value: Err(refused),
+                record,
+            };
+        }
         self.mark_absent(fid);
         self.dynamic.retain(|&f| f != fid);
         self.write_gen = self.write_gen.wrapping_add(1);
-        Ok(())
+        Removal {
+            value: Ok(()),
+            record,
+        }
     }
 
     // ---- typed key-slot API ----
@@ -486,14 +676,24 @@ impl<S: Storage> Fs<S> {
     }
 
     /// Copy a sealed key blob into `buf`; returns its full length, or `None` if
-    /// the slot is absent.
+    /// the slot is absent (or unreadable — see [`try_read`](Self::try_read)).
     pub fn read_key(&mut self, fid: KeyFid, buf: &mut [u8]) -> Option<usize> {
         self.read(fid.get(), buf)
+    }
+
+    /// [`read_key`](Self::read_key), fallible — see [`try_read`](Self::try_read).
+    pub fn try_read_key(&mut self, fid: KeyFid, buf: &mut [u8]) -> Result<Option<usize>> {
+        self.try_read(fid.get(), buf)
     }
 
     /// Whether the key slot holds non-empty data.
     pub fn has_key(&mut self, fid: KeyFid) -> bool {
         self.has_data(fid.get())
+    }
+
+    /// [`has_key`](Self::has_key), fallible — see [`try_read`](Self::try_read).
+    pub fn try_has_key(&mut self, fid: KeyFid) -> Result<bool> {
+        self.try_has_data(fid.get())
     }
 
     /// Delete a key slot.
@@ -506,15 +706,27 @@ impl<S: Storage> Fs<S> {
     // `read` reports the value's full length, which can exceed our scratch buffer
     // (corrupt/oversized EF_META), so clamp before slicing.
 
-    /// Copy the metadata for `fid` into `out`; returns its full length.
+    /// Copy the metadata for `fid` into `out`; returns its full length. An EF_META
+    /// read that FAILED reads as "no record" here — see
+    /// [`try_meta_find`](Self::try_meta_find).
     pub fn meta_find(&mut self, fid: u16, out: &mut [u8]) -> Option<usize> {
+        self.try_meta_find(fid, out).ok().flatten()
+    }
+
+    /// [`meta_find`](Self::meta_find), fallible — see [`try_read`](Self::try_read).
+    /// EF_META carries the PIV slots' algorithm and touch policy, and a missing
+    /// record there resolves to the published default, so the collapse costs a
+    /// touch gate.
+    pub fn try_meta_find(&mut self, fid: u16, out: &mut [u8]) -> Result<Option<usize>> {
         if self.known_absent(EF_META) {
-            return None;
+            return Ok(None);
         }
         let mut scratch = [0u8; META_MAX];
         let read = self.storage.read(EF_META, &mut scratch);
-        self.record_unless_faulted(EF_META, read.is_some());
-        let n = read?.min(scratch.len());
+        let Some(n) = self.settle(EF_META, read)? else {
+            return Ok(None);
+        };
+        let n = n.min(scratch.len());
         let blob = &scratch[..n];
         let mut i = 0;
         while i + META_REC_HDR <= blob.len() {
@@ -528,11 +740,11 @@ impl<S: Storage> Fs<S> {
             if rec_fid == fid {
                 let m = len.min(out.len());
                 out[..m].copy_from_slice(&blob[start..start + m]);
-                return Some(len);
+                return Ok(Some(len));
             }
             i = end;
         }
-        None
+        Ok(None)
     }
 
     /// Insert or replace the metadata for `fid`.
@@ -665,6 +877,10 @@ mod proofs;
 #[path = "store_refinement_kani.rs"]
 mod store_refinement_proofs;
 
+#[cfg(kani)]
+#[path = "store_meta_kani.rs"]
+mod store_meta_proofs;
+
 #[cfg(test)]
 #[path = "fs_tests.rs"]
 mod tests;
@@ -672,3 +888,7 @@ mod tests;
 #[cfg(test)]
 #[path = "store_steps_tests.rs"]
 mod store_steps;
+
+#[cfg(test)]
+#[path = "store_domain_tests.rs"]
+mod store_domain;

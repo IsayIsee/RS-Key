@@ -4,7 +4,7 @@
   "aaguid": "2479c7bf-6b30-5683-9ec8-0e8171a918b7",
   "protocolFamily": "fido2",
   "schema": 3,
-  "authenticatorVersion": 329476,
+  "authenticatorVersion": 329728,
   "upv": [
     { "major": 1, "minor": 0 },
     { "major": 1, "minor": 1 },
@@ -88,21 +88,19 @@
     "maxSerializedLargeBlobArray": 4078,
     "forcePINChange": false,
     "minPINLength": 4,
-    "firmwareVersion": 329476,
+    "firmwareVersion": 329728,
     "maxCredBlobLength": 128,
-    "transports": ["usb"],
+    "transports": ["usb", "smart-card"],
     "maxRPIDsForSetMinPINLength": 8,
     "remainingDiscoverableCredentials": 256,
-    "vendorPrototypeConfigCommands": [
-      280418718411032034, 1743354915178307289, 8055560605607898362,
-      8550182048006734589, 8879174565946325320, 2783008008553857119,
-      1038151815040965607
-    ],
+    "vendorPrototypeConfigCommands": [],
     "attestationFormats": ["packed"],
     "longTouchForReset": false,
-    "transportsForReset": ["usb"],
+    "encIdentifier": "",
+    "transportsForReset": ["usb", "smart-card"],
     "pinComplexityPolicy": false,
     "maxPINLength": 63,
+    "encCredStoreState": "",
     "authenticatorConfigCommands": [1, 2, 3, 255]
   }
 }

@@ -55,8 +55,17 @@ Three details make that work:
   on the vendor applet reads the engine's counters and flags; a shipped image
   answers `6D00` — they time the prime search).
 
-Outside keygen, core1 parks in WFE, and embassy-rp pauses it around every flash
-erase/program, so its XIP fetches never collide with flash writes.
+Outside keygen, core1 parks in WFE, and embassy-rp brackets every flash
+erase/program with `pause_core1()`. That buys less than it looks. The flash
+routine is RAM-resident — `write_flash_inner` carries a `.data` link section
+and lands in SRAM on a built image — but the pause is not: `pause_core1` and
+the `SIO_IRQ_FIFO` handler core1 answers it in are both ordinary `.text`, so a
+paused core1 spins in a loop that lives in the flash it is being held off.
+Whether the XIP cache covers that loop for the whole of an erase is a question
+about this silicon rather than about the driver, and it is registered as
+`PLAT-XIP-001 [pending]`, with the board measurement owned by the maintainer.
+Until it is taken, "core1's fetches never collide with flash writes" is what
+the design intends and not something this repository has shown.
 
 ## Boot sequence
 

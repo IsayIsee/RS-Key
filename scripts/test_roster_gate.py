@@ -20,6 +20,7 @@ import subprocess
 
 import pytest
 
+import kani_gate
 import roster_gate
 
 CHECK = """#!/usr/bin/env bash
@@ -339,6 +340,59 @@ def test_the_package_name_is_read_from_the_manifest(tree, tmp_path):
     tree = Tree(tmp_path / "b", ("fw", "rsk-wipe", "crates/rsk-a", "crates/rsk-b"))
     tree.write("fw/Cargo.toml", '[package]\nname = "firmware"\n')
     assert tree.problems() == []
+
+
+# --- the verb this guard hands over -------------------------------------------
+
+
+def test_a_kani_row_is_not_judged_by_the_whole_tree_rule(tree):
+    """The direction that says why the verb is skipped, not which clause skips it.
+
+    A Kani row selects the crates carrying a `#[kani::proof]`, on purpose. Asking
+    it for `--workspace` with the excludes would demand the tree be proven whole,
+    which is the wrong oracle and the false alarm that gets a rule switched off.
+
+    Two clauses keep it out and either alone is enough, which is measured and not
+    assumed: with `OTHER_GUARDS` emptied this case is still green, because `kani`
+    is in no file's [`PROMISED`] verbs; with the `PROMISED` test replaced by the
+    `OTHER_GUARDS` one it is green again. It goes red when BOTH go, so what it
+    pins is the behaviour — silence here — and not either spelling of it.
+    """
+    tree.edit(
+        roster_gate.CHECK,
+        'run "crate roster"        python scripts/roster_gate.py',
+        'run "kani (fast)"         cargo kani -p rsk-a -p rsk-b\n'
+        'run "crate roster"        python scripts/roster_gate.py',
+    )
+    assert tree.problems() == []
+
+
+def test_the_kani_hand_over_has_a_catcher():
+    """The other half, and the one that was missing: a hand-over needs a catcher.
+
+    Skipping the verb here is only safe while the guard that OWNS it reads this
+    file. For the whole life of `OTHER_GUARDS` it did not — `kani_gate.sources`
+    read the workflows and docs/testing.md — so the row above was skipped here,
+    unseen there, and both guards printed `ok` over a second roster in the gate.
+    Asserted against the real checkout, because that is where the hole was.
+
+    Over EVERY file this guard reads, not `check.sh` alone. Naming one file was
+    the first repair and it left the identical hand-off open on the next: a live
+    `cargo kani -p rsk-sha512 -p rsk-ec` in `nix/checks.nix` — read here since
+    the day this guard was written, handed over by the line above — measured
+    GREEN under both guards afterwards. Derived from `READ` so the next file
+    added here cannot be the third instance.
+    """
+    assert roster_gate.OTHER_GUARDS == ("kani",), (
+        "a verb handed over needs a guard that catches it, and this case knows only"
+        " `kani` -> kani_gate.py; name the catcher for the new one here"
+    )
+    read = {source.path for source in kani_gate.sources(roster_gate.ROOT)}
+    missed = sorted(str(rel) for rel in set(roster_gate.READ) - read)
+    assert not missed, (
+        f"kani_gate.sources does not read {missed}, which this guard reads and"
+        " hands the `kani` verb away from — a roster there is caught by nobody"
+    )
 
 
 # --- the guard's own two self-checks ------------------------------------------

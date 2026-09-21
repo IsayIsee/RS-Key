@@ -52,6 +52,10 @@ pub struct HmacSecretReq<'a> {
     pub salt_auth: Option<&'a [u8]>,
     pub proto: u64,
     pub present: bool,
+    /// Whether key `0x01` was sent at all. The coordinates default to zero, which
+    /// is not a point, so absence would otherwise surface as INVALID_PARAMETER out
+    /// of the ECDH — the oracle calls it MISSING_PARAMETER.
+    pub peer_present: bool,
 }
 
 impl Default for HmacSecretReq<'_> {
@@ -63,6 +67,7 @@ impl Default for HmacSecretReq<'_> {
             salt_auth: None,
             proto: 1,
             present: false,
+            peer_present: false,
         }
     }
 }
@@ -82,10 +87,30 @@ pub fn parse<'a>(d: &mut Decoder<'a>) -> Result<HmacSecretReq<'a>, CtapError> {
         present: true,
         ..Default::default()
     };
+    // A value with no sub-fields in it asks for no evaluation, and the oracle treats
+    // it as if the extension had not been sent: no missing-parameter, no up-refusal,
+    // the ceremony completes. That was measured on a BOOLEAN and written here as
+    // "a non-map", which is wider than the reference: a YubiKey 5.8.0 accepts only a
+    // map or a boolean and answers CBOR_UNEXPECTED_TYPE to an int, a negative int, a
+    // text string, a byte string or an array — identically for `hmac-secret` and
+    // `hmac-secret-mc`. An INDEFINITE-length map is a third case and stays
+    // `def_map`'s INVALID_CBOR.
+    match cbor(d.datatype())? {
+        minicbor::data::Type::Bool => {
+            skip_value(d)?;
+            return Ok(HmacSecretReq::default());
+        }
+        minicbor::data::Type::Map | minicbor::data::Type::MapIndef => {}
+        _ => return Err(CtapError::CborUnexpectedType),
+    }
     let m = def_map(d)?;
+    if m == 0 {
+        return Ok(HmacSecretReq::default());
+    }
     for _ in 0..m {
         match cbor(d.u32())? {
             0x01 => {
+                req.peer_present = true;
                 let km = def_map(d)?;
                 for _ in 0..km {
                     match cbor(d.i32())? {
@@ -125,6 +150,9 @@ pub fn eval<R: Rng>(
     let proto = PinProto::from_u64(req.proto).ok_or(CtapError::InvalidParameter)?;
     // The callers judge absence first so it lands ahead of their own extension
     // rules (§12.5's up-refusal, hmac-secret-mc's flag); this keeps `eval` total.
+    if !req.peer_present {
+        return Err(CtapError::MissingParameter);
+    }
     let salt_enc = req.salt_enc.ok_or(CtapError::MissingParameter)?;
     let salt_auth = req.salt_auth.ok_or(CtapError::MissingParameter)?;
     // Both lengths before the MAC: cheap refusal on unauthenticated input, leaking

@@ -118,7 +118,18 @@ let
         # Follow the `fwVersion` knob rather than restating the default: a build
         # with `fwVersion = "2.0.0"` used to still call itself 5.7.4, which reads
         # as a pinned version and sent someone looking for it in the flake (#66).
-        version = if fwVersion == null then "5.7.4" else fwVersion;
+        # The fallback is READ from the crate that owns the default, not typed
+        # here — typed, it is a second copy of it, and it stayed at 5.7.4 through
+        # the whole 5.8.0 bump while every image built from it reported 5.8.0.
+        version =
+          if fwVersion == null then
+            builtins.head (
+              builtins.match ''.*unwrap_or_else\(\|_\| "([0-9.]+)"\.into\(\)\).*'' (
+                builtins.readFile ../crates/rsk-sdk/build.rs
+              )
+            )
+          else
+            fwVersion;
         src = firmwareSrc;
         inherit cargoDeps;
         nativeBuildInputs = [

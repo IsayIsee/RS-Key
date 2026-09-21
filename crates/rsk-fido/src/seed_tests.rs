@@ -2,6 +2,8 @@
 // Copyright (C) 2026 RS-Key contributors
 
 use super::*;
+use crate::consts::EF_COUNTER;
+use rsk_fs::storage::faults::{Cut, RemoveStuck};
 use rsk_fs::storage::ram::RamStorage;
 
 /// Test-only: `seed` AES-CBC-encrypted under `dev`'s arm (fixed serial-hash IV)
@@ -202,7 +204,7 @@ fn ensure_seed_is_idempotent() {
     ensure_seed(&d, &mut fs, &mut rng).unwrap();
     let seed1 = load_keydev(&d, &mut fs).unwrap();
     assert!(fs.has_data(EF_COUNTER));
-    assert_eq!(get_sign_counter(&mut fs), 0);
+    assert_eq!(global_sign_counter(&mut fs).unwrap(), 0);
     // A second scan must not regenerate the seed.
     ensure_seed(&d, &mut fs, &mut rng).unwrap();
     assert_eq!(load_keydev(&d, &mut fs).unwrap(), seed1);
@@ -215,7 +217,7 @@ fn counter_bumps_and_persists() {
     fs.put(EF_COUNTER, &[0u8; 4]).unwrap();
     assert_eq!(bump_sign_counter(&mut fs).unwrap(), 0);
     assert_eq!(bump_sign_counter(&mut fs).unwrap(), 1);
-    assert_eq!(get_sign_counter(&mut fs), 2);
+    assert_eq!(global_sign_counter(&mut fs).unwrap(), 2);
 }
 
 #[test]
@@ -263,6 +265,131 @@ fn boot_migration_reseals_plain_seed_to_otp_kbase() {
     // Idempotent: a second pass is a no-op (tag already 0x12).
     migrate_keydev_boot(&otp_dev(), &mut fs).unwrap();
     assert_eq!(load_keydev(&otp_dev(), &mut fs), Some(seed));
+}
+
+/// The grant rides the same pass, and it has to: provisioning mints it and the burn
+/// comes after the first boot, so a record left at 0x02 is one a flash dump plus the
+/// public serial opens — the `pcmr` reads and getInfo's encIdentifier with it.
+#[test]
+fn boot_migration_reseals_the_grant_record_to_otp_kbase() {
+    let mut fs = fs();
+    let token = ensure_ppuat(&dev(), &mut fs, &mut SeqRng(3)).unwrap();
+    let mut raw = [0u8; KEYDEV_G1_LEN];
+    fs.read(EF_PAUTHTOKEN.get(), &mut raw).unwrap();
+    assert_eq!(raw[0], FORMAT_G1, "fixture: minted before the burn");
+
+    migrate_keydev_boot(&otp_dev(), &mut fs).unwrap();
+    fs.read(EF_PAUTHTOKEN.get(), &mut raw).unwrap();
+    assert_eq!(raw[0], FORMAT_G1_OTP, "the burn must move the grant too");
+    assert_eq!(
+        load_ppuat(&otp_dev(), &mut fs),
+        Some(token),
+        "and the platform holding it keeps the token it was handed"
+    );
+    assert_eq!(
+        load_ppuat(&dev(), &mut fs),
+        None,
+        "the chip-serial arm no longer opens the record"
+    );
+
+    // Idempotent: a second pass is a no-op (tag already 0x12).
+    migrate_keydev_boot(&otp_dev(), &mut fs).unwrap();
+    assert_eq!(load_ppuat(&otp_dev(), &mut fs), Some(token));
+}
+
+#[test]
+fn the_boot_pass_re_arms_the_lap_before_it_supersedes_a_pre_otp_seed() {
+    // Standing before `run_at_rest_lap` in `firmware/src/main.rs` is not the same as
+    // standing before every lap. A boot whose `read_key` here faulted skipped the
+    // slot and latched the marker all the same, so the boot that finally re-seals it
+    // supersedes a chip-serial-rooted copy under a marker the lap gates on.
+    let seed = [0x5A; 32];
+    let mut raw = [0u8; KEYDEV_G1_LEN];
+
+    // The ORDER, on the one medium that can tell the two orderings apart.
+    let (cut, medium) = Cut::new();
+    let mut fs = Fs::new(cut);
+    fs.scan();
+    encrypt_keydev_f1(&dev(), &mut fs, &seed).unwrap(); // 0x02 pre-OTP arm
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    assert!(
+        fs.has_data(rsk_fs::EF_HARDENED),
+        "fixture: an earlier boot latched the marker"
+    );
+    medium.clear_ops();
+    migrate_keydev_boot(&otp_dev(), &mut fs).unwrap();
+    medium.assert_re_armed_before(EF_KEY_DEV.get(), |_| false, "migrate_keydev_boot");
+    assert!(
+        !fs.has_data(rsk_fs::EF_HARDENED),
+        "the re-seal superseded a chip-serial-sealed copy, so the lap must run again"
+    );
+    fs.read(EF_KEY_DEV.get(), &mut raw).unwrap();
+    assert_eq!(raw[0], FORMAT_G1_OTP);
+
+    // The GATE. A medium refusing only `remove(EF_HARDENED)` reaches that same end
+    // state with no reset in it, so the re-seal must not go ahead at all.
+    let (stuck, medium) = RemoveStuck::new();
+    let mut fs = Fs::new(stuck);
+    fs.scan();
+    encrypt_keydev_f1(&dev(), &mut fs, &seed).unwrap();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    medium.refuse(Some(rsk_fs::EF_HARDENED));
+    assert!(
+        migrate_keydev_boot(&otp_dev(), &mut fs).is_err(),
+        "a re-arm the medium refused is not a migration that may proceed"
+    );
+    fs.read(EF_KEY_DEV.get(), &mut raw).unwrap();
+    assert_eq!(
+        raw[0], FORMAT_G1,
+        "the re-arm never landed, so the pre-OTP record must stay in force instead \
+         of being superseded under a marker nothing will clear"
+    );
+    assert!(
+        medium.live(rsk_fs::EF_HARDENED),
+        "fixture: the refusal really left the marker on the medium"
+    );
+
+    // The control, same medium, fault cleared: the migration DOES happen, so the
+    // assertion above is about the gate and not about a pass that never fires.
+    medium.refuse(None);
+    migrate_keydev_boot(&otp_dev(), &mut fs).unwrap();
+    fs.read(EF_KEY_DEV.get(), &mut raw).unwrap();
+    assert_eq!(raw[0], FORMAT_G1_OTP);
+    assert_eq!(load_keydev(&otp_dev(), &mut fs), Some(seed));
+    assert!(!medium.live(rsk_fs::EF_HARDENED));
+
+    // The other pre-OTP tag the same arm accepts: a legacy fixed-IV CBC record
+    // (0x01) is chip-serial-rooted too, so it owes the same re-arm — and the
+    // attestation slot rides the same helper as the seed.
+    let (cut, medium) = Cut::new();
+    let mut fs = Fs::new(cut);
+    fs.scan();
+    write_legacy_cbc(&dev(), &mut fs, EF_ATT_KEY, &seed);
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    medium.clear_ops();
+    migrate_keydev_boot(&otp_dev(), &mut fs).unwrap();
+    medium.assert_re_armed_before(
+        EF_ATT_KEY.get(),
+        |_| false,
+        "migrate_keydev_boot's 0x01 arm",
+    );
+    assert_eq!(load_att_key(&otp_dev(), &mut fs), Some(seed));
+
+    // And the grant slot, which the same helper carries: its pre-OTP copy is
+    // chip-serial-rooted like the seed's, so it owes the re-arm on the same terms.
+    let (cut, medium) = Cut::new();
+    let mut fs = Fs::new(cut);
+    fs.scan();
+    let token = ensure_ppuat(&dev(), &mut fs, &mut SeqRng(5)).unwrap();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    medium.clear_ops();
+    migrate_keydev_boot(&otp_dev(), &mut fs).unwrap();
+    medium.assert_re_armed_before(
+        EF_PAUTHTOKEN.get(),
+        |_| false,
+        "migrate_keydev_boot's grant arm",
+    );
+    assert_eq!(load_ppuat(&otp_dev(), &mut fs), Some(token));
 }
 
 #[test]
@@ -364,8 +491,16 @@ fn enc_identifier_needs_both_a_token_and_a_readable_seed() {
     let (d, mut f, mut rng) = (dev(), fs(), SeqRng(7));
     ensure_seed(&d, &mut f, &mut rng).unwrap();
     assert!(
+        enc_identifier(&d, &mut f, &mut rng).is_some(),
+        "provisioning mints the grant, so the member is published from the start"
+    );
+
+    // The no-token state is still reachable — a PIN change revokes the grant — and
+    // it is still an absence rather than an error.
+    clear_ppuat(&mut f).unwrap();
+    assert!(
         enc_identifier(&d, &mut f, &mut rng).is_none(),
-        "no persistent token yet — nothing to key it with"
+        "no persistent token — nothing to key it with"
     );
 
     ensure_ppuat(&d, &mut f, &mut rng).unwrap();
@@ -426,8 +561,14 @@ fn enc_cred_store_state_needs_a_token_but_not_the_seed() {
     let (d, mut f, mut rng) = (dev(), fs(), SeqRng(17));
     ensure_seed(&d, &mut f, &mut rng).unwrap();
     assert!(
+        enc_cred_store_state(&d, &mut f, &mut rng).is_some(),
+        "provisioning mints the grant, so the member is published from the start"
+    );
+
+    clear_ppuat(&mut f).unwrap();
+    assert!(
         enc_cred_store_state(&d, &mut f, &mut rng).is_none(),
-        "no persistent token yet — nothing to key it with"
+        "no persistent token — nothing to key it with"
     );
 
     ensure_ppuat(&d, &mut f, &mut rng).unwrap();
@@ -473,7 +614,7 @@ fn enc_cred_store_state_is_fresh_per_call_and_carries_the_stored_tag() {
     );
     assert_eq!(
         open_enc_cred_store_state(&token, &after),
-        crate::credential::cred_store_state(&mut f),
+        crate::credential::cred_store_state(&mut f).unwrap(),
         "and it must be the tag the record holds, not some other value"
     );
 }
@@ -539,4 +680,390 @@ fn enc_identifier_is_not_the_seed_nor_the_at_rest_key() {
     let mut sibling = [0u8; 16];
     hkdf_sha256(d.serial_hash, &seed, INFO_SEED_ENC, &mut sibling).unwrap();
     assert_ne!(id, sibling, "labels must separate the domains");
+}
+
+/// A faulted `EF_KEY_DEV` probe must not mint a new device seed over the one on
+/// flash — every credential the key holds is derived from it, so that write is
+/// the most destructive one this firmware makes.
+///
+/// `Fs::has_key` answers the same `false` for "never provisioned" and for a probe
+/// the medium could not serve, and `ensure_seed`'s first-boot guard is exactly
+/// that test — `lock_engaged` included, which is why both halves are fallible now.
+#[test]
+fn a_faulted_probe_does_not_mint_a_second_device_seed() {
+    let d = dev();
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    ensure_seed(&d, &mut fs, &mut SeqRng(1)).unwrap();
+    let seed = load_keydev(&d, &mut fs).expect("the device seed is provisioned");
+    let stored = medium
+        .value(EF_KEY_DEV.get())
+        .expect("and is on the medium");
+    let counter = medium
+        .value(EF_COUNTER)
+        .expect("so is the signature counter");
+
+    // The next boot re-runs `ensure_seed`, with EF_KEY_DEV's reads faulting.
+    let mut fs = Fs::new(fs.into_storage());
+    fs.scan();
+    medium.stick(Some(EF_KEY_DEV.get()));
+    assert!(
+        ensure_seed(&d, &mut fs, &mut SeqRng(2)).is_err(),
+        "a boot that could not read the seed record must fail, not re-provision"
+    );
+    assert_eq!(
+        medium.value(EF_KEY_DEV.get()).as_deref(),
+        Some(&stored[..]),
+        "a faulted probe minted a new device seed over the live one"
+    );
+    assert_eq!(
+        medium.value(EF_COUNTER).as_deref(),
+        Some(&counter[..]),
+        "and rolled the signature counter back to zero"
+    );
+    medium.stick(None);
+    assert_eq!(
+        load_keydev(&d, &mut fs),
+        Some(seed),
+        "the credentials derived from this seed must still resolve"
+    );
+}
+
+/// `ensure_seed`'s other two guards, each aimed at its own record. A persistent
+/// fault on `EF_KEY_DEV` is caught by the seed guard three lines above and these
+/// never run — which is how both came to be held by nothing while the suite stayed
+/// green. Their absent arm rolls the signature counter back to zero and overwrites
+/// the large-blob array, at boot, with no host command involved.
+#[test]
+fn a_faulted_probe_does_not_reinitialise_the_counter_or_the_large_blob() {
+    let d = dev();
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    ensure_seed(&d, &mut fs, &mut SeqRng(1)).unwrap();
+    // Move both off the values a first boot writes, so a re-initialisation shows.
+    fs.put(EF_COUNTER, &[9, 8, 7, 6]).unwrap();
+    fs.put(EF_LARGEBLOB, &[0xAB; 8]).unwrap();
+
+    for (fid, what) in [
+        (EF_COUNTER, "the signature counter"),
+        (EF_LARGEBLOB, "the large-blob array"),
+    ] {
+        let before = medium.value(fid).expect("on the medium");
+        medium.stick(Some(fid));
+        let r = ensure_seed(&d, &mut fs, &mut SeqRng(2));
+        medium.stick(None);
+        assert_eq!(
+            medium.value(fid).as_deref(),
+            Some(&before[..]),
+            "a faulted probe re-initialised {what}"
+        );
+        assert!(
+            r.is_err(),
+            "a boot that could not read {what} must fail, not re-initialise it"
+        );
+    }
+}
+
+/// Every boot ends `ensure_seed` in `ensure_ppuat`, whose read took "could not read"
+/// for "never minted": one faulted read minted a token over the live one, revoking
+/// every platform's `pcmr` grant and changing getInfo's encIdentifier under them.
+#[test]
+fn a_faulted_grant_read_does_not_rotate_the_persistent_token() {
+    let d = dev();
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    ensure_seed(&d, &mut fs, &mut SeqRng(1)).unwrap();
+    let token = load_ppuat(&d, &mut fs).expect("provisioning mints the grant");
+    let stored = medium
+        .value(EF_PAUTHTOKEN.get())
+        .expect("and it is on the medium");
+
+    // The next boot, with ONE read of the grant record failing and then recovering.
+    let mut fs = Fs::new(fs.into_storage());
+    fs.scan();
+    medium.stick_once(EF_PAUTHTOKEN.get());
+    let r = ensure_seed(&d, &mut fs, &mut SeqRng(2));
+    assert_eq!(
+        medium.value(EF_PAUTHTOKEN.get()).as_deref(),
+        Some(&stored[..]),
+        "a faulted read minted a new persistent token over the live one"
+    );
+    assert!(
+        r.is_err(),
+        "a boot that could not read the grant must say so, not re-mint it"
+    );
+    assert_eq!(
+        load_ppuat(&d, &mut fs),
+        Some(token),
+        "every platform holding the grant must still hold it"
+    );
+}
+
+/// The OTP root is read per operation and a failed read looks unprovisioned, so an
+/// OTP-arm record can refuse to open for one operation. Minting there rotated a live
+/// grant and sealed the replacement under the serial-only arm the fuses retire.
+#[test]
+fn a_grant_that_will_not_open_is_not_reminted() {
+    let mut fs = Fs::new(RamStorage::new());
+    fs.scan();
+    let token = ensure_ppuat(&otp_dev(), &mut fs, &mut SeqRng(1)).unwrap();
+    let mut before = [0u8; 64];
+    let n = fs.read_key(EF_PAUTHTOKEN, &mut before).unwrap();
+
+    assert!(
+        ensure_ppuat(&dev(), &mut fs, &mut SeqRng(2)).is_err(),
+        "a grant this operation's key cannot open must not be replaced"
+    );
+    let mut after = [0u8; 64];
+    assert_eq!(fs.read_key(EF_PAUTHTOKEN, &mut after), Some(n));
+    assert_eq!(after[..n], before[..n], "the sealed record was rewritten");
+    assert_eq!(
+        ensure_ppuat(&otp_dev(), &mut fs, &mut SeqRng(3)).unwrap(),
+        token,
+        "the next operation that can open it hands out the same grant"
+    );
+}
+
+/// The global signature counter is FIDO's clone-detection signal, and a collapsing
+/// `Fs::read` of it answers the same 0 for "never written" and "I could not look".
+/// `bump_sign_counter` then persists 1 over whatever was there, and U2F
+/// AUTHENTICATE signs that fabricated 0 — one faulted probe erases the monotonic
+/// evidence an RP uses to notice a cloned key.
+#[test]
+fn a_faulted_counter_probe_does_not_roll_the_global_counter_back() {
+    let d = dev();
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    ensure_seed(&d, &mut fs, &mut SeqRng(1)).unwrap();
+    // Off the value a first boot writes, so a roll-back shows.
+    fs.put(EF_COUNTER, &77u32.to_le_bytes()).unwrap();
+    let before = medium.value(EF_COUNTER).expect("on the medium");
+
+    medium.stick(Some(EF_COUNTER));
+    let bumped = bump_sign_counter(&mut fs);
+    medium.stick(None);
+    assert_eq!(
+        medium.value(EF_COUNTER).as_deref(),
+        Some(&before[..]),
+        "a faulted probe rolled the global signature counter back"
+    );
+    assert!(
+        bumped.is_err(),
+        "and reported a counter it never read as the one to sign"
+    );
+}
+
+/// `set_cred_sign_counter` reads the packed file to preserve the other slots, so
+/// that read IS the merge. Defaulting it to 0 makes a fault look like an absent
+/// file, and the write that follows is a ZERO-filled buffer truncated to the target
+/// slot: every other credential's counter zeroed or dropped by one flash fault.
+#[test]
+fn a_faulted_cred_counter_probe_does_not_zero_the_other_slots() {
+    let d = dev();
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    ensure_seed(&d, &mut fs, &mut SeqRng(1)).unwrap();
+    for (slot, v) in [(0u16, 11u32), (1, 22), (2, 33)] {
+        set_cred_sign_counter(&mut fs, slot, v).unwrap();
+    }
+    let before = medium.value(EF_CRED_CTR).expect("on the medium");
+    assert_eq!(before.len(), 12, "three packed slots");
+
+    medium.stick(Some(EF_CRED_CTR));
+    let wrote = set_cred_sign_counter(&mut fs, 1, 23);
+    medium.stick(None);
+    let after = medium.value(EF_CRED_CTR).expect("still on the medium");
+    assert_eq!(
+        after.len(),
+        before.len(),
+        "a faulted probe truncated the packed counter file"
+    );
+    assert_eq!(
+        cred_sign_counter(&mut fs, 0),
+        Ok(Some(11)),
+        "and zeroed a lower slot's counter"
+    );
+    assert_eq!(
+        cred_sign_counter(&mut fs, 2),
+        Ok(Some(33)),
+        "and dropped a higher slot's counter"
+    );
+    assert!(
+        wrote.is_err(),
+        "a write that could not read the file it merges into must fail"
+    );
+}
+
+/// The slot has FOUR states and only three answers may share one. A faulted read
+/// must not read as *unmaterialized*: the caller seeds that from the global
+/// counter, so the collapse hands a live credential a signCount off a different
+/// sequence. Absent, short and a zero-filled gap stay together — they are the
+/// legacy slot the seeding rule was written for.
+#[test]
+fn a_faulted_cred_counter_probe_is_not_an_unmaterialized_slot() {
+    let d = dev();
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    ensure_seed(&d, &mut fs, &mut SeqRng(1)).unwrap();
+    fs.put(EF_COUNTER, &60u32.to_le_bytes()).unwrap();
+
+    // Absent: no packed file at all.
+    assert_eq!(cred_sign_counter(&mut fs, 0), Ok(None));
+    assert_eq!(report_sign_counter(&mut fs, 0).unwrap(), 60);
+
+    // Short: writing slot 0 leaves the file 4 bytes, so slot 1 is past its end.
+    set_cred_sign_counter(&mut fs, 0, 44).unwrap();
+    assert_eq!(cred_sign_counter(&mut fs, 1), Ok(None));
+    assert_eq!(report_sign_counter(&mut fs, 1).unwrap(), 60);
+
+    // Live-zero gap: writing slot 2 zero-extends the file across slot 1, which is
+    // a real 0 on the medium and still unmaterialized.
+    set_cred_sign_counter(&mut fs, 2, 55).unwrap();
+    assert_eq!(medium.value(EF_CRED_CTR).map(|v| v.len()), Some(12));
+    assert_eq!(cred_sign_counter(&mut fs, 1), Ok(None));
+    assert_eq!(report_sign_counter(&mut fs, 1).unwrap(), 60);
+    // Live: its own value, never the global.
+    assert_eq!(cred_sign_counter(&mut fs, 0), Ok(Some(44)));
+    assert_eq!(report_sign_counter(&mut fs, 0).unwrap(), 44);
+
+    // Faulted: the fourth state, and the only one that is not an answer.
+    medium.stick(Some(EF_CRED_CTR));
+    let read = cred_sign_counter(&mut fs, 0);
+    let reported = report_sign_counter(&mut fs, 0);
+    medium.stick(None);
+    assert!(
+        read.is_err(),
+        "a counter the medium could not serve read as an unmaterialized slot"
+    );
+    assert!(
+        reported.is_err(),
+        "and was reported as the global counter, off another sequence"
+    );
+}
+
+/// The platform-facing half of the same probe. `encCredStoreState` is the only place
+/// the tag is published, and the collapsed answer is the ZERO tag — which is not a
+/// neutral value here but the one a fresh (or just-reset) device serves, so a
+/// platform that cached it is told its cache is still good while the store has
+/// gained credentials since.
+///
+/// Omitted instead: the member is optional, and an ABSENT one equals no tag the
+/// platform holds, so it re-enumerates. That is the direction this record can afford
+/// — over-reporting a change costs one walk, under-reporting costs correctness.
+#[test]
+fn a_faulted_cred_state_probe_does_not_publish_the_zero_tag() {
+    let d = dev();
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    ensure_seed(&d, &mut fs, &mut SeqRng(29)).unwrap();
+    let token = ensure_ppuat(&d, &mut fs, &mut SeqRng(31)).unwrap();
+    let fresh = enc_cred_store_state(&d, &mut fs, &mut SeqRng(33)).unwrap();
+    assert_eq!(
+        open_enc_cred_store_state(&token, &fresh),
+        [0u8; 16],
+        "control: a store nothing has written to publishes the zero tag"
+    );
+
+    crate::credential::bump_cred_store_state(&mut fs).unwrap();
+    medium.stick_once(crate::consts::EF_CRED_STATE);
+    let faulted = enc_cred_store_state(&d, &mut fs, &mut SeqRng(35));
+    medium.stick(None);
+    assert!(
+        faulted.is_none_or(|b| open_enc_cred_store_state(&token, &b) != [0u8; 16]),
+        "a faulted probe published the zero tag — the platform that cached it \
+         is told the credential set is unchanged"
+    );
+    assert!(
+        faulted.is_none(),
+        "an unreadable tag has no honest value; the optional member is omitted"
+    );
+}
+
+/// The collapse `rebuild_att_cert` keeps, and the arm that refutes fixing it.
+///
+/// A faulted freshness probe rewrites `EF_EE_DEV` with a fresh serial. That is the
+/// whole cost: everything but the serial and the signature is a fixed template, so
+/// the attesting key, the AAGUID and the subject come out byte-identical and the
+/// device's attestation identity is unchanged — a repeated repair, which is where
+/// `Fs::try_read`'s own policy leaves a collapsing probe.
+#[test]
+fn a_faulted_cert_probe_reissues_the_leaf_and_keeps_the_identity() {
+    let d = dev();
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    ensure_seed(&d, &mut fs, &mut SeqRng(1)).unwrap();
+    let before = medium
+        .value(EF_EE_DEV)
+        .expect("the attestation cert is on the medium");
+
+    let mut fs = Fs::new(fs.into_storage());
+    fs.scan();
+    medium.stick(Some(EF_EE_DEV));
+    let r = ensure_seed(&d, &mut fs, &mut SeqRng(2));
+    medium.stick(None);
+    let after = medium.value(EF_EE_DEV).expect("still on the medium");
+    use crate::cert::{SERIAL_OFF, TBS_LEN};
+    assert!(
+        r.is_ok(),
+        "a freshness probe that failed must not fail the boot"
+    );
+    assert_ne!(
+        &after[SERIAL_OFF..SERIAL_OFF + 16],
+        &before[SERIAL_OFF..SERIAL_OFF + 16],
+        "control: the collapse is what reissues the leaf — without it this test \
+         proves nothing about the identity below"
+    );
+    let seed = load_keydev(&d, &mut fs).expect("the seed it certifies");
+    let key = P256Key::from_scalar(&seed).unwrap();
+    assert!(
+        cert_matches_template(&after, &key),
+        "the reissued leaf must still certify this device's own attestation key"
+    );
+    // The TBS is fixed-length and the serial is the only field in it that moves,
+    // so this is the identity claim in bytes. NOT the first four: the outer
+    // SEQUENCE length follows the ECDSA signature, which is 70 or 71 bytes.
+    assert_eq!(after[4..SERIAL_OFF], before[4..SERIAL_OFF]);
+    assert_eq!(
+        after[SERIAL_OFF + 16..4 + TBS_LEN],
+        before[SERIAL_OFF + 16..4 + TBS_LEN],
+        "the reissue moved a field of the TBS other than the serial"
+    );
+}
+
+/// Why skipping the rewrite on a failed probe is NOT the fail-closed direction.
+///
+/// The premise it would rest on — "a genuinely absent record is answered from the
+/// scan cache, so the fault never reaches the medium" — is false under a TRUNCATED
+/// walk: `Fs::scan` fills `decided` only when the walk completed, so an un-yielded
+/// FID stays undecided and the probe goes to the medium. On a first boot that is a
+/// device left with no attestation certificate at all.
+#[test]
+fn a_truncated_scan_still_issues_the_attestation_certificate() {
+    let d = dev();
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    medium.truncate_walk(true);
+    fs.scan(); // the walk that never decides EF_EE_DEV absent
+    medium.truncate_walk(false);
+    medium.stick(Some(EF_EE_DEV));
+    let r = ensure_seed(&d, &mut fs, &mut SeqRng(3));
+    medium.stick(None);
+    assert!(r.is_ok(), "a first boot must provision");
+    let cert = medium.value(EF_EE_DEV).expect(
+        "a first boot issues the attestation certificate even when the \
+                 freshness probe could not be answered",
+    );
+    let seed = load_keydev(&d, &mut fs).expect("and the seed it certifies");
+    assert!(
+        cert_matches_template(&cert, &P256Key::from_scalar(&seed).unwrap()),
+        "and it certifies that seed's public key"
+    );
 }

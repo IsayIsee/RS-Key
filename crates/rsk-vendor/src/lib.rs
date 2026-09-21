@@ -245,3 +245,37 @@ fn read_counter<S: Storage>(fs: &mut Fs<S>) -> u32 {
         _ => 0,
     }
 }
+
+/// The boot-time `EF_LED_CONF` load, as a decision the host can run: `live` is the
+/// block the LED driver is showing right now (build defaults plus whatever the phy
+/// record already applied), and the returned length is how much of `buf` to apply.
+/// The firmware side is glue over its atomics; this is the part with an arm to get
+/// wrong, which is why it is here and not in `firmware/src/vendor.rs`.
+///
+/// A device that never customised its LEDs has no record, and the live block is
+/// persisted once so a host `CONFIG_READ` always has a full block to
+/// read-modify-write — it cannot know the build defaults. That seeding write is the
+/// reason this must NOT collapse a failed probe into the absence: doing so
+/// overwrote the owner's configuration with the build defaults, at boot and
+/// unauthenticated. `Err` applies nothing and stores nothing, which leaves both the
+/// record and the live block exactly as they were.
+///
+/// The two arms are reachable in different states, not different devices: a
+/// complete boot scan decides the whole FID space, so a legitimately absent record
+/// is answered without touching the backend and no fault can reach it — only a walk
+/// a read fault cut short leaves this probe live at all.
+pub fn load_or_seed_led_config<S: Storage>(
+    fs: &mut Fs<S>,
+    live: &[u8; CONF_LEN],
+    buf: &mut [u8; CONF_LEN],
+) -> rsk_sdk::error::Result<usize> {
+    match fs.try_read(EF_LED_CONF, buf)? {
+        // An over-length record from a later format: clamp before the caller slices.
+        Some(n) => Ok(n.min(CONF_LEN)),
+        None => {
+            buf.copy_from_slice(live);
+            fs.put(EF_LED_CONF, live)?;
+            Ok(CONF_LEN)
+        }
+    }
+}

@@ -302,9 +302,7 @@ fn set_phy<S: Storage, R: Rng>(
     ctx: &mut Ctx<S, R>,
     f: impl FnOnce(&mut rsk_phy::PhyData),
 ) -> CtapResult {
-    let mut p = rsk_phy::load(ctx.fs).unwrap_or_default();
-    f(&mut p);
-    rsk_phy::save(ctx.fs, &p).map_err(|_| CtapError::Other)?;
+    rsk_phy::update(ctx.fs, f).map_err(|_| CtapError::Other)?;
     journal::append_config_write(ctx, CONFIG_TARGET_PHY as u8);
     Ok(0)
 }
@@ -321,12 +319,24 @@ const DEFAULT_ALWAYS_UV: bool = cfg!(feature = "always-uv");
 /// applies. authenticatorReset deletes the record, so a reset returns to that
 /// default. Used by getInfo (`options.alwaysUv`) and the makeCredential /
 /// getAssertion UV gate.
+/// A record the medium could not read resolves to ON, not to the compile default:
+/// this is the UV requirement for every makeCredential and getAssertion, and
+/// `Fs::read` answers the same `None` for "never configured" and "that read
+/// failed" — so a faulted probe dropped the gate to user presence. See
+/// [`always_uv_state`].
 pub(crate) fn always_uv_enabled<S: Storage>(fs: &mut Fs<S>) -> bool {
+    always_uv_state(fs).unwrap_or(true)
+}
+
+/// [`always_uv_enabled`] with the failed read kept apart from the absence, for
+/// `toggleAlwaysUv` — which flips the value it reads, so answering it the strict
+/// way would turn one faulted probe into an explicit stored OFF.
+fn always_uv_state<S: Storage>(fs: &mut Fs<S>) -> rsk_sdk::error::Result<bool> {
     let mut v = [0u8; 1];
-    match fs.read(EF_ALWAYS_UV, &mut v) {
+    Ok(match fs.try_read(EF_ALWAYS_UV, &mut v)? {
         Some(n) if n >= 1 => v[0] != 0,
         _ => DEFAULT_ALWAYS_UV,
-    }
+    })
 }
 
 /// `toggleAlwaysUv` (CTAP 2.1 §6.11): flip the alwaysUv state. While enabled,
@@ -339,7 +349,7 @@ pub(crate) fn always_uv_enabled<S: Storage>(fs: &mut Fs<S>) -> bool {
 /// before and only an `always-uv` build ever writes the `[0]` explicit-off. State
 /// persists until authenticatorReset (flash, CTAP 2.1).
 fn toggle_always_uv<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>) -> CtapResult {
-    let next = !always_uv_enabled(ctx.fs);
+    let next = !always_uv_state(ctx.fs).map_err(|_| CtapError::Other)?;
     if next == DEFAULT_ALWAYS_UV {
         ctx.fs.delete(EF_ALWAYS_UV).map_err(|_| CtapError::Other)?;
     } else {
@@ -447,7 +457,7 @@ fn set_min_pin_length<S: Storage, R: Rng>(
     force_change: bool,
     rp_ids: &[&str],
 ) -> CtapResult {
-    let current = current_min_pin(ctx) as u64;
+    let current = current_min_pin(ctx).map_err(|_| CtapError::Other)? as u64;
     let new_min = if new_min_pin == 0 {
         current
     } else {
@@ -463,7 +473,13 @@ fn set_min_pin_length<S: Storage, R: Rng>(
     if new_min > crate::clientpin::MAX_PIN_LENGTH as u64 {
         return Err(CtapError::PinPolicyViolation);
     }
-    let pin_set = ctx.fs.has_data(EF_PIN);
+    // Both probes fallible, for the reason `current_min_pin` above is: a collapsed
+    // answer at either leaves `force` FALSE, and `force` is PERSISTED two statements
+    // down. A PIN below the floor this command just raised then keeps working with
+    // no change demanded, `force_change_pending` reads the cleared flag for good,
+    // and the live token is not invalidated. Nothing is written yet here, so
+    // refusing costs a retry.
+    let pin_set = ctx.fs.try_has_data(EF_PIN).map_err(|_| CtapError::Other)?;
     if force_change && !pin_set {
         return Err(CtapError::PinNotSet);
     }
@@ -471,7 +487,10 @@ fn set_min_pin_length<S: Storage, R: Rng>(
     let mut force = force_change;
     if pin_set {
         let mut pf = [0u8; crate::clientpin::PIN_FILE_LEN];
-        if let Some(n) = ctx.fs.read(EF_PIN, &mut pf)
+        if let Some(n) = ctx
+            .fs
+            .try_read(EF_PIN, &mut pf)
+            .map_err(|_| CtapError::Other)?
             && n >= 2
             && (pf[1] as u64) < new_min
         {
@@ -505,12 +524,16 @@ fn set_min_pin_length<S: Storage, R: Rng>(
     Ok(0)
 }
 
-fn current_min_pin<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>) -> u8 {
+/// The standing floor the monotonic guard compares against. Fallible on purpose: the
+/// collapsed answer is the build's [`MIN_PIN_LENGTH`], which sits below any floor an
+/// owner configured, so a faulted probe let the guard pass and stored the LOWER value
+/// — and nothing short of a reset raises minPINLength back.
+fn current_min_pin<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>) -> rsk_sdk::error::Result<u8> {
     let mut buf = [0u8; 2];
-    match ctx.fs.read(EF_MINPINLEN, &mut buf) {
+    Ok(match ctx.fs.try_read(EF_MINPINLEN, &mut buf)? {
         Some(n) if n >= 1 => buf[0],
         _ => MIN_PIN_LENGTH,
-    }
+    })
 }
 
 #[cfg(test)]

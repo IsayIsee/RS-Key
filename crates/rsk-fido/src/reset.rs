@@ -23,6 +23,11 @@ use crate::{Ctx, Rng};
 /// 256-slot ranges and 15 fixed records, so a converging sweep cannot exceed this.
 const RESET_MAX_DELETES: u32 = 4 * MAX_RESIDENT_CREDENTIALS as u32 + 15;
 
+/// Fids one [`sweep`] pass collects before deleting them. Named because the wrap
+/// to a second pass is a code path, and the test that crosses it has to size its
+/// fixture off this rather than off a copy of the number.
+const SWEEP_BATCH: usize = 64;
+
 /// `authenticatorReset`: factory-reset the FIDO applet. Replies with only the
 /// status byte. Also the documented recovery from a soft lock with a lost lock
 /// key: `EF_KEY_DEV_ENC` leads the wipe with the seed it wraps and a fresh seed is
@@ -44,6 +49,44 @@ pub fn reset<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>) -> CtapResult {
         crate::Presence::Timeout => return Err(CtapError::UserActionTimeout),
         crate::Presence::Cancelled => return Err(CtapError::KeepAliveCancel),
     }
+    // A tombstone appends like a re-seal, and `EF_PIN` migrates only on a successful
+    // verify — so this can supersede a chip-serial-rooted verifier and owes the
+    // at-rest lap (rsk-fs `EF_HARDENED`) a re-arm, ahead of the sweeps.
+    //
+    // The failure does NOT stop the write, unlike the gated sites: "leave the
+    // record in force" means, on a wipe, leave the secrets live.
+    let _ = rsk_fs::request_rescrub(ctx.fs);
+    let wiped = wipe(ctx);
+    // Retry, BETWEEN the wipe and its `?` rather than after its last one: a refused
+    // head leaves the marker latched over every tombstone [`wipe`] appended, and a
+    // wipe that faults on the way is exactly when that is true and unrecoverable.
+    //
+    // A single-shot refusal is the only kind either call recovers from (`rsk_otp`'s
+    // BUMP_TRIES states the same), and where the head landed this costs no append at
+    // all — `Fs::delete` skips a backend it already marked absent.
+    let _ = rsk_fs::request_rescrub(ctx.fs);
+    // Ahead of `ensure_seed` because `ensure_seed`'s OWN `?` would skip it — not
+    // because the sweeps' does, which skips either position identically, and not
+    // because it supersedes nothing: its cert rewrite does, and `seed.rs` says why.
+    let unproven = wiped?;
+    ensure_seed(&ctx.dev, ctx.fs, ctx.rng).map_err(|_| CtapError::Other)?;
+    // Privacy: fold the journal window into the epoch (per-event details are
+    // scrubbed, aggregate history stays attested), then record the reset.
+    journal::fold_and_scrub(ctx);
+    journal::append(ctx, journal::EV_RESET, 0, &[]);
+    // The erase ran to the end of every range and a removal still could not be
+    // proven: the wipe is done, and the answer must not say it is clean.
+    if unproven {
+        return Err(CtapError::Other);
+    }
+    Ok(0)
+}
+
+/// The flash half of [`reset`], `Ok(true)` being "the range is clear and a removal
+/// could not be PROVEN". Its own function so the at-rest re-arm can stand between
+/// it and the `?` that propagates it: every early return in here is one a re-arm
+/// written BELOW them would be skipped by, which is the case the re-arm exists for.
+fn wipe<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>) -> Result<bool, CtapError> {
     // Drop every FIDO file, then regenerate the seed. The flash `Fs` is shared
     // with the OpenPGP applet, so delete only live, FIDO-owned keys
     // ([`is_fido_fid`]) — a blind 0..256 EF_CRED/EF_RP sweep would write a
@@ -62,28 +105,40 @@ pub fn reset<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>) -> CtapResult {
     // And the seed leads the flash, in its own write ahead of the batch: ring order
     // otherwise reaches `EF_RP` before `EF_CRED`, and what a cut leaves behind must
     // at least be undecryptable. `EF_KEY_DEV_ENC` is the soft lock's copy of it.
+    let mut orphaned = false;
+    // A FIXED two-fid list: nothing re-yields what it could not remove, so the
+    // reason the sweeps below stop does not reach it, and stopping only forfeits
+    // the erase of all the seed derives — identically on every retry (0x0989).
+    let mut refused = false;
     for fid in FIDO_SEED_FIDS {
-        ctx.fs.force_delete(fid).map_err(|_| CtapError::Other)?;
+        let gone = ctx.fs.force_delete_halves(fid);
+        refused |= gone.value.is_err();
+        orphaned |= gone.record.is_err();
     }
-    sweep(ctx, |fid| is_fido_fid(fid) && !is_fido_gate_fid(fid))?;
-    sweep(ctx, is_fido_gate_fid)?;
-    ensure_seed(&ctx.dev, ctx.fs, ctx.rng).map_err(|_| CtapError::Other)?;
-    // Privacy: fold the journal window into the epoch (per-event details are
-    // scrubbed, aggregate history stays attested), then record the reset.
-    journal::fold_and_scrub(ctx);
-    journal::append(ctx, journal::EV_RESET, 0, &[]);
-    Ok(0)
+    // Covers the seed fids too, so a refused seed removal stops the wipe HERE,
+    // before the gate phase could drop `EF_BACKUP_SEALED` over a seed still live.
+    orphaned |= sweep(ctx, |fid| is_fido_fid(fid) && !is_fido_gate_fid(fid))?;
+    orphaned |= sweep(ctx, is_fido_gate_fid)?;
+    Ok(orphaned || refused)
 }
 
 /// One phase of the reset sweep: delete every live FIDO-owned fid matching `pred`,
 /// reporting success only when the enumeration provably completed over an empty
 /// range. Batched because `for_each_key` cannot delete mid-iteration, and de-duped
 /// because the flash walk can yield multiple stored versions of one fid.
+///
+/// `Ok(true)` is "the range is clear, and a metadata record over it could not be
+/// PROVEN dropped" — the caller carries that to the end of the reset rather than stopping,
+/// for the reason `Fs::force_delete_halves` states.
 /// Refines `RSKeySecurityState!ResetNeverWeakensSurvivingState` — SEC-FIDO-006.
-fn sweep<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>, pred: fn(u16) -> bool) -> Result<(), CtapError> {
+fn sweep<S: Storage, R: Rng>(
+    ctx: &mut Ctx<S, R>,
+    pred: fn(u16) -> bool,
+) -> Result<bool, CtapError> {
     let mut deleted = 0u32;
+    let mut orphaned = false;
     loop {
-        let mut keys = [0u16; 64];
+        let mut keys = [0u16; SWEEP_BATCH];
         let mut n = 0usize;
         let complete = ctx.fs.for_each_key(&mut |fid| {
             if pred(fid) && n < keys.len() && !keys[..n].contains(&fid) {
@@ -95,7 +150,7 @@ fn sweep<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>, pred: fn(u16) -> bool) -> Resu
             // An un-yielded FID is only evidence of absence when the walk finished;
             // a truncated one must fail rather than report the range clear.
             return if complete {
-                Ok(())
+                Ok(orphaned)
             } else {
                 Err(CtapError::Other)
             };
@@ -108,7 +163,9 @@ fn sweep<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>, pred: fn(u16) -> bool) -> Resu
             // force_delete (unconditional), not delete: a false-absent key would be
             // skipped yet re-yielded by for_each_key every pass — an infinite loop.
             // Propagate a backend error rather than retry it, so the wipe progresses.
-            ctx.fs.force_delete(fid).map_err(|_| CtapError::Other)?;
+            let gone = ctx.fs.force_delete_halves(fid);
+            gone.value.map_err(|_| CtapError::Other)?;
+            orphaned |= gone.record.is_err();
         }
     }
 }
@@ -172,6 +229,22 @@ pub fn is_fido_gate_fid(fid: u16) -> bool {
     is_fido_gate_record(fid)
 }
 
+/// The gate records: what the SECOND sweep phase covers, so a record in this list
+/// survives every power-cut prefix that leaves a credential behind. The three
+/// clause tags sit here because three members are exactly what the three clauses
+/// are about — `EF_PIN`, `EF_ALWAYS_UV`, `EF_BACKUP_SEALED`.
+///
+/// **The list is FIVE and the clauses are three.** `EF_DEVICE_PIN` and
+/// `EF_MINPINLEN` are in the phase and in no clause, and that is a model gap
+/// rather than a property of this function: the reset argument covers them —
+/// phase 2 cannot begin until phase 1 has provably emptied the store, and the
+/// seed leads phase 1 — but no invariant names them, so nothing here is refined
+/// by a tag. Read the three tags as "these three of the five", never as a list
+/// of what this predicate is for.
+///
+/// Refines `RSKeySecurityState!ResetKeepsThePinGate` — SEC-FIDO-006A.
+/// Refines `RSKeySecurityState!ResetKeepsTheAlwaysUvGate` — SEC-FIDO-006B.
+/// Refines `RSKeySecurityState!ResetKeepsTheBackupSeal` — SEC-FIDO-006C.
 fn is_fido_gate_record(fid: u16) -> bool {
     matches!(
         fid,

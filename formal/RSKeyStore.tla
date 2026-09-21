@@ -34,11 +34,11 @@
 (* THE THREE ORACLE PROPERTIES, mapped. powercut.rs names Atomicity,          *)
 (* Durability and Enumeration. Atomicity -- a torn write lands the old value  *)
 (* or the new one, never a third -- is a property of the log-structured       *)
-(* append, so it is a MODELLING ASSUMPTION here (Put/MetaAdd land atomically) *)
-(* rather than a falsifiable invariant; the Rust oracle's `Tear::Garbage`     *)
-(* control is what checks it at the code level. Durability is                 *)
-(* NoFalseAbsent (a spurious absent read IS the "committed key lost"          *)
-(* disaster) together with NoRecordLostToMetaWrite. Enumeration is            *)
+(* append, so it is a MODELLING ASSUMPTION here (Put and both EF_META         *)
+(* rewrites land atomically) rather than a falsifiable invariant; the Rust    *)
+(* oracle's `Tear::Garbage` control is what checks it at the code level.      *)
+(* Durability is NoFalseAbsent (a spurious absent read IS the "committed key  *)
+(* lost" disaster) together with NoRecordLostToMetaWrite. Enumeration is      *)
 (* NoOrphanedMetadata (a deleted file's record must not linger in the walk).  *)
 (*****************************************************************************)
 EXTENDS Naturals
@@ -53,42 +53,59 @@ CONSTANTS
     \* `BugMetaAddDropsOnFault` is GREEN over one FID and RED from two, and
     \* no mutant in this roster needs a third (formal/scopes.txt).
     Fids,
-    \* crates/rsk-fs/src/fs.rs:425-445 -- `Fs::delete` drops the metadata FIRST,
+    \* crates/rsk-fs/src/fs.rs:570-590 -- `Fs::delete` drops the metadata FIRST,
     \* then the value, so no cut inside it can leave value-gone-meta-alive
     \* (powercut.rs:43-51 `delete_landed`). The switch reverses the two writes.
     BugDeleteValueBeforeMeta,
     \* The 0x077C databug: `delete` dropped EF_META only under `if present_bit`,
     \* so a file given metadata but never `put` (present_bit = FALSE) kept its
     \* record after deletion and read back alive -- the metadata cleanup is
-    \* unconditional now (fs.rs:452). The switch gates it on the value again.
+    \* unconditional now (fs.rs:597). The switch gates it on the value again.
     BugDeleteMetaOnlyUnderPresent,
-    \* fs.rs:452-459 -- a FAILED EF_META read cannot drop the record, and the
+    \* fs.rs:597-604 -- a FAILED EF_META read cannot drop the record, and the
     \* value goes regardless: EF_META is one blob shared by every applet, so
     \* refusing here would stop every delete on the device, wipes included. What
     \* keeps that honest is that `delete` RETURNS the error. The switch swallows
     \* it, which is the shipped tree before that fix, and the difference is not
     \* the orphan -- both arms leave one -- but whether the caller was told.
     BugDeleteHidesFaultedDrop,
-    \* audit run-36: `record_unless_faulted` (fs.rs:157-161) refuses to cache a
+    \* audit run-36: `settle` (fs.rs:247-253) refuses to cache a
     \* read that FAILED, because `Storage::read` returns None for both "absent"
     \* and "the read faulted" and caching the second as a decided absence turns
     \* one transient fault into a permanent false-absent. The switch caches it.
     BugCacheFaultAsAbsent,
-    \* fs.rs:216-218 -- `scan` fills the decided bitmap for the WHOLE FID space
+    \* fs.rs:304-306 -- `scan` fills the decided bitmap for the WHOLE FID space
     \* only when `for_each_key` ran to completion; a walk a flash read fault
     \* truncated leaves the un-yielded FIDs UNDECIDED, to be re-probed. The
     \* switch decides the whole space regardless, so a missed live key reads
     \* absent.
     BugTruncatedScanDecidesAll,
-    \* The 0x077C databug's meta half: `meta_add_reserve` (fs.rs:564-566) treats
+    \* The 0x077C databug's meta half: `meta_add_reserve` (fs.rs:776-778) treats
     \* a FAILED EF_META read as fatal, because rebuilding the blob from an empty
     \* scratch would drop every other applet's record. The switch treats the
     \* faulted read as an empty blob, wiping them.
     BugMetaAddDropsOnFault,
-    \* fs.rs:596 -- `meta_delete` refuses a FAILED EF_META read (MemoryFatal)
+    \* fs.rs:808 -- `meta_delete` refuses a FAILED EF_META read (MemoryFatal)
     \* rather than caching it as absence. The switch caches it, and the damage is
     \* the write AFTER: `meta_add` trusts `known_absent` and rebuilds from empty.
-    BugMetaDeleteDropsOnFault
+    BugMetaDeleteDropsOnFault,
+    \* fs.rs:786 -- `self.storage.write(EF_META, &out[..w])?`. The model faulted the
+    \* metadata READ in two places and never the WRITE, so the one step that can
+    \* lose every record at once was the only one with no failing arm (stage 2 п.1).
+    \* A failed write leaves `meta` untouched, which is a CLAIM about the backend
+    \* and not a fact: it holds only because an append is old-or-new per item. This
+    \* switch denies that -- the blob afterwards is an ARBITRARY subset -- so
+    \* `PLAT-FLASH-001` gains a row that goes red when it is false, instead of being
+    \* prose no configuration can contradict.
+    BugMetaWriteTearsBlob,
+    \* fs.rs:827 -- `meta_delete`'s own rewrite, EF_META's SECOND write site and the
+    \* one the switch above does not reach: `meta_add` was given a failing arm and
+    \* `meta_delete` was left with a faulted READ only. Same denial of
+    \* `PLAT-FLASH-001`, a different moment -- `mark_present(EF_META)` runs at
+    \* fs.rs:814, BEFORE this write, where its sibling's sits AFTER (fs.rs:787).
+    \* Dropping `f`'s record is what the call is FOR, so only a bystander's loss
+    \* is the violation.
+    BugMetaDeleteTearsBlob
 
 \* Two VALUES so an overwrite is observable. `NoVal` is the absent sentinel --
 \* distinct from both stored values, so "reads back absent" and "reads back v1"
@@ -102,10 +119,10 @@ InvNames == { "NoOrphanedMetadata", "NoSilentOrphan",
 VARIABLES
     val,      \* [Fids -> Vals \cup {NoVal}]: the value committed to flash
     meta,     \* [Fids -> BOOLEAN]: whether a metadata record is committed
-    present,  \* [Fids -> BOOLEAN]: the in-RAM present-cache bit (fs.rs:57)
-    \* [Fids -> BOOLEAN]: the authority bit paired with `present` (fs.rs:66). A
+    present,  \* [Fids -> BOOLEAN]: the in-RAM present-cache bit (fs.rs:105)
+    \* [Fids -> BOOLEAN]: the authority bit paired with `present` (fs.rs:114). A
     \* clear `present` is trusted as absent ONLY once `decided` confirms it
-    \* (`known_absent`, fs.rs:128-130); an undecided FID falls through to the
+    \* (`known_absent`, fs.rs:214-216); an undecided FID falls through to the
     \* reliable backend, which is the whole tri-state defence.
     decided,
     \* Whether the power is gone: a torn multi-write leaves the device dead until
@@ -152,15 +169,15 @@ Init ==
 (* Delete does.                                                             *)
 (***************************************************************************)
 
-\* `Fs::put` (fs.rs:391-411): write the value, then `mark_present` -- which
-\* sets BOTH the present and the decided bit (fs.rs:144-148).
+\* `Fs::put` (fs.rs:536-556): write the value, then `mark_present` -- which
+\* sets BOTH the present and the decided bit (fs.rs:230-234).
 Put(f, v) ==
     /\ val'     = [val     EXCEPT ![f] = v]
     /\ present' = [present EXCEPT ![f] = TRUE]
     /\ decided' = [decided EXCEPT ![f] = TRUE]
     /\ UNCHANGED << meta, dead, metaAbsent, viol >>
 
-\* `Fs::meta_add_reserve` (fs.rs:551-577): rewrite EF_META with `fid`'s record
+\* `Fs::meta_add_reserve` (fs.rs:763-789): rewrite EF_META with `fid`'s record
 \* added, EVERY OTHER record preserved. The one shape that must not happen is a
 \* rewrite that drops another FID's record -- which is exactly what treating a
 \* faulted EF_META read as an empty blob does. Modelled as the success write,
@@ -169,7 +186,7 @@ Put(f, v) ==
 \* changes nothing, so it is not a transition).
 MetaAdd(f) ==
     \* The SHIPPED read: a cache that says EF_META is absent is trusted, and the
-    \* blob is rebuilt from empty (fs.rs:557-559). Correct while the cache is
+    \* blob is rebuilt from empty (fs.rs:769-771). Correct while the cache is
     \* honest -- which is what NoFalseMetaAbsent is for.
     \/ /\ meta' = IF metaAbsent THEN [g \in Fids |-> g = f]
                                  ELSE [meta EXCEPT ![f] = TRUE]
@@ -185,9 +202,31 @@ MetaAdd(f) ==
             (IF \E g \in Fids : (g # f) /\ meta[g]
                THEN {"NoRecordLostToMetaWrite"} ELSE {})
        /\ UNCHANGED << val, present, decided, dead >>
+    \* THE WRITE ITSELF TEARS (fs.rs:786). The shipped arm of a failed write is a
+    \* STUTTER -- nothing on flash moved, `mark_present` is not reached, the caller
+    \* has the error -- and a stutter is what `[][Next]_vars` already admits, so it
+    \* is not written as a disjunct. What is written is the denial: the backend is
+    \* not old-or-new per item, so the readable blob afterwards is an arbitrary
+    \* subset of what was there plus what was being added.
+    \*
+    \* Two things separate this from `BugMetaAddDropsOnFault`, and the first draft
+    \* had NEITHER -- its arm was that switch's arm character for character, so the
+    \* two induced the same relation and the "new" mutant was a second name for one
+    \* behaviour. (1) `metaAbsent` is UNCHANGED, because a write that failed never
+    \* reaches `mark_present`; the sibling sets it FALSE because its write
+    \* SUCCEEDED over a blob it had rebuilt from empty. (2) the survivors are an
+    \* arbitrary subset rather than exactly `{f}`: a torn append has no reason to
+    \* land the record it was adding.
+    \/ /\ BugMetaWriteTearsBlob
+       /\ \E torn \in SUBSET Fids :
+            /\ meta' = [g \in Fids |-> g \in torn]
+            /\ viol' = viol \cup
+                 (IF \E g \in Fids : meta[g] /\ ~(g \in torn)
+                    THEN {"NoRecordLostToMetaWrite"} ELSE {})
+       /\ UNCHANGED << val, present, decided, dead, metaAbsent >>
 
-\* `Fs::meta_delete` (fs.rs:587-617): drop `fid`'s record, and clear EF_META
-\* once the last one goes. A FAILED read of EF_META must refuse (fs.rs:596) --
+\* `Fs::meta_delete` (fs.rs:799-829): drop `fid`'s record, and clear EF_META
+\* once the last one goes. A FAILED read of EF_META must refuse (fs.rs:808) --
 \* the switch caches it as absence instead, which is the door `meta_add`'s twin
 \* mutant does not reach: the loss happens on the NEXT write, not this one.
 MetaDelete(f) ==
@@ -199,10 +238,31 @@ MetaDelete(f) ==
        /\ viol' = viol \cup
             (IF \E g \in Fids : meta[g] THEN {"NoFalseMetaAbsent"} ELSE {})
        /\ UNCHANGED << val, meta, present, decided, dead >>
+    \* THE REWRITE ITSELF TEARS (fs.rs:827). Written the way `MetaAdd`'s tear is:
+    \* the shipped arm of a failed rewrite is a STUTTER, which `[][Next]_vars`
+    \* already admits, so only the denial of the backend assumption is a disjunct.
+    \* Two things keep it from being that arm under a second name, and both are
+    \* read off the code rather than chosen. (1) `metaAbsent' = FALSE`, because
+    \* fs.rs:814 marks EF_META present BEFORE this write; the sibling leaves it
+    \* UNCHANGED because a `meta_add` that failed never reaches its fs.rs:787.
+    \* (2) the survivors are a subset of the records that STOOD -- a rewrite that
+    \* drops records cannot mint one -- where the sibling's `torn` ranges over the
+    \* whole domain, the record it was adding included.
+    \/ /\ BugMetaDeleteTearsBlob
+       /\ \E torn \in SUBSET { g \in Fids : meta[g] } :
+            /\ meta' = [g \in Fids |-> g \in torn]
+            \* `f`'s record going is what the caller asked for. Losing a BYSTANDER's
+            \* is the defect, and the `g # f` is what separates this from its
+            \* inverse: without it the arm would redden on the operation working.
+            /\ viol' = viol \cup
+                 (IF \E g \in Fids : (g # f) /\ meta[g] /\ ~(g \in torn)
+                    THEN {"NoRecordLostToMetaWrite"} ELSE {})
+       /\ metaAbsent' = FALSE
+       /\ UNCHANGED << val, present, decided, dead >>
 
 (***************************************************************************)
 (* Delete -- the only op with a cut point, because it is two backend        *)
-(* writes: metadata FIRST, then the value (fs.rs:452-459). `k` is how many   *)
+(* writes: metadata FIRST, then the value (fs.rs:597-604). `k` is how many   *)
 (* of the two landed before the power went: k=2 is the clean delete, k=1 is  *)
 (* the torn one that leaves the device dead. The switch decides the ORDER    *)
 (* of the two writes, and the second switch whether the metadata write runs  *)
@@ -263,7 +323,7 @@ Delete(f) ==
 (***************************************************************************)
 
 \* A confirm-on-miss: `read`/`size`/`has_data` consult the backend and cache the
-\* answer through `record_unless_faulted` (fs.rs:222-251). `fault` is whether
+\* answer through `record_unless_faulted` (fs.rs:314-359). `fault` is whether
 \* that backend read FAILED rather than found the key absent. The shipped code
 \* refuses to cache a fault; the bug caches it as a decided absence.
 Confirm(f) ==
@@ -281,7 +341,7 @@ Confirm(f) ==
                   /\ decided' = [decided EXCEPT ![f] = TRUE]
         /\ UNCHANGED << val, meta, dead, metaAbsent, viol >>
 
-\* `Fs::scan` (fs.rs:176-219): clear the caches, then walk the backend. `seen`
+\* `Fs::scan` (fs.rs:268-307): clear the caches, then walk the backend. `seen`
 \* is the set the walk yielded; `complete` is `for_each_key`'s completeness flag
 \* (FALSE means a flash read fault truncated it). A complete walk yields every
 \* live key and lets `scan` decide the WHOLE space (un-yielded => truly absent);
@@ -339,7 +399,7 @@ NoOrphanedMetadata == "NoOrphanedMetadata" \notin viol
 
 \* ENUMERATION, the half a faulted medium reaches. `Fs::delete` removes the value
 \* even when the record cannot be dropped, so an orphan is a state the shipped
-\* tree can be in -- what it may not do is REPORT SUCCESS from it (fs.rs:459).
+\* tree can be in -- what it may not do is REPORT SUCCESS from it (fs.rs:604).
 \* Ghost, one writer: Delete's faulted arm. This is the invariant that separates
 \* the reported orphan from the silent one; `NoOrphanedMetadata` above still owns
 \* every arm where the drop itself landed.
@@ -354,21 +414,22 @@ NoSilentOrphan == "NoSilentOrphan" \notin viol
 NoFalseAbsent ==
     \A f \in Fids : (decided[f] /\ ~present[f]) => ~Live(f)
 
-\* DURABILITY, the writer half. A `meta_add` of one FID never drops another's
-\* committed record -- the "torn meta_add wiped every existing record" crash,
-\* where a faulted EF_META read was rebuilt from empty. Ghost, one writer:
-\* MetaAdd. (MetaDelete of `f` legitimately touches only `f`, so it is not a
-\* writer here.)
+\* DURABILITY, the writer half. A metadata rewrite for one FID never drops
+\* another's committed record -- the "torn meta_add wiped every existing record"
+\* crash, where a faulted EF_META read was rebuilt from empty. Ghost, TWO writers:
+\* MetaAdd, and MetaDelete's torn-rewrite arm. A CLEAN MetaDelete of `f` touches
+\* only `f` and writes nothing here; what makes the torn arm a writer is that one
+\* rewrite carries the whole blob, so a drop of one record can take the rest.
 NoRecordLostToMetaWrite == "NoRecordLostToMetaWrite" \notin viol
 
 \* SEC-STORE-004. EF_META's presence cache may say "absent" only when it really
-\* is: `meta_add` TRUSTS this bit and rebuilds the blob from empty (fs.rs:557),
+\* is: `meta_add` TRUSTS this bit and rebuilds the blob from empty (fs.rs:769),
 \* so a false absent here loses every record on the next write rather than this
 \* one. A step recorder, because the losing write is legitimate once the cache
 \* has lied -- no state predicate over `meta` can tell the two apart.
 \*
 \* One over `metaAbsent` AND `meta` can, and `CacheHonest` below is it: measured,
-\* it reddens BugMetaDeleteDropsOnFault in the same 42 distinct states this ghost
+\* it reddens BugMetaDeleteDropsOnFault in the same 58 distinct states this ghost
 \* does. So the two are the same defect at different moments -- this names the
 \* losing WRITE, that names the state the cache is left in -- and the sentence
 \* above is true only of a predicate over `meta` alone.

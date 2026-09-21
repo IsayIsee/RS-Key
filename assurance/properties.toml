@@ -8,14 +8,29 @@
 # and device tests carry its name — is DERIVED by scripts/assurance_gate.py and
 # printed, never stored. A hand-written copy of derivable evidence rotted in
 # three of six fields before a line of code existed; that experiment is not
-# repeated here.
+# repeated here. That sentence was prose until `scripts/evidence_gate.py`:
+# an eighth key on a row, or a table beside [[property]], is refused there now.
+#
+# There is deliberately no `subject` column splitting correctness from
+# side-channel resistance either. That separation is which REGISTRY a claim lives
+# in — a side-channel claim is a row of assurance/ct_sites.toml, derived from the
+# shipped ELF — and neither allowlist carries a key for the other's claim, which
+# is stricter than the column this would have added: nothing checks that a
+# [[property]] statement is a correctness claim, so the column would separate by
+# convention while the registries separate by what each gate can derive. Driven:
+# `subject` on a row here is exit 1, and widening evidence_gate.WRITTEN_FIELDS to
+# admit it leaves `subject = "banana"` at exit 0, read by nothing and printed
+# nowhere — a column that separates nothing is a weakening wearing the
+# separation's name.
 #
 # One derived column is worth naming because it changes how a status reads.
 # `Co-refuted` counts this property's model mutants whose CODE twin was patched
 # into the real tree and caught by the real suite (`formal/comutants.toml`). That
 # is evidence about the code, and the status ladder cannot see it — BOUNDED keys
-# on a Kani harness name. 27 of the 42 MODELLED-ONLY rows carry one, so
-# MODELLED-ONLY means "no Kani harness", never "untested".
+# on a Kani harness name. MODELLED-ONLY means "no Kani harness", never
+# "untested"; how many of those rows carry a twin is generated into
+# docs/assurance-vector.md, because this sentence carried "28 of the 44" while
+# the tree had 46 of them.
 #
 # The gate holds this file against the tree in both directions: every invariant
 # any formal/*.cfg checks must have exactly one entry, and every entry must name
@@ -24,6 +39,18 @@
 # harness on the property forces BOUNDED, none allows only MODELLED-ONLY.
 # PROVEN and OBSERVED are rejected until the tree grows evidence of those
 # classes — a status rule nothing can trip is a check that cannot fail.
+#
+# `status` is therefore not information: it is `docs/assurance-vector.md`'s
+# model and kani axes projected onto one word, and `scripts/evidence_gate.py`
+# rebuilds it here on every run rather than reading it. Six axes move under it
+# independently, and the word moves with two of them.
+#
+# `source` is the root of the evidence chain, so a threat-model source names the
+# CLAUSE — `docs/threat-model.md#TM-…`, an id of `assurance/threat_clauses.toml`
+# and not a rendered anchor. The bare file name is refused on a P0-family row:
+# it is what 33 rows said, and "against the threat model" names no threat.
+# A P0-family row with no clause is a finding recorded in that file's
+# `[[untraced]]`, not a silence here (`scripts/threat_gate.py`).
 
 # ---- RSKeySecurityState — the FIDO security state ---------------------------
 
@@ -56,46 +83,63 @@ statement = "At an unambiguous recorded boundary, all independently inferred B a
 source = ["docs/token-refinement.md"]
 
 [[property]]
+id = "SEC-REF-005"
+name = "NoAuthorizationBypassA"
+status = "MODELLED-ONLY"
+statement = "Every event the token abstraction admits as Authorized had the gate its operation's requirement names."
+source = ["CTAP 2.3 §6.5", "CTAP 2.3 §6.8", "docs/authorization-slice.md"]
+
+# Registered because it must be REFUTED. A predicate nothing can make false is the
+# oracle §4.3 condition 11 refuses, so the disagreement is a row of this registry
+# rather than a paragraph: `TokenGateDisagreement.cfg` is RED and floors.txt says so.
+[[property]]
+id = "SEC-REF-006"
+name = "RequiredGateAgreesWithRelation"
+status = "MODELLED-ONLY"
+statement = "The requirement-derived gate and the relation read as a gate are one predicate — the degeneracy this slice must refuse, not establish."
+source = ["docs/authorization-slice.md"]
+
+[[property]]
 id = "SEC-FIDO-001"
 name = "NoAuthorizationBypass"
 status = "BOUNDED"
 statement = "No protected operation completes without the live authorization its own gate requires."
-source = ["CTAP 2.3 §6.5", "docs/threat-model.md"]
+source = ["CTAP 2.3 §6.5", "docs/threat-model.md#TM-HOST-GATES"]
 
 [[property]]
 id = "SEC-FIDO-002"
 name = "NoCrossTransportTouchConsumption"
 status = "BOUNDED"
 statement = "A presence decision produced for one transport is never applied to another — neither a confirm nor a cancel."
-source = ["docs/threat-model.md"]
+source = ["docs/threat-model.md#TM-HOST-TWO-TRANSPORTS"]
 
 [[property]]
 id = "SEC-FIDO-003"
 name = "NoTokenAfterInvalidation"
 status = "BOUNDED"
 statement = "A grant invalidated by a PIN change, PIN set, reset, stopUsingPinUvAuthToken or power cycle never authorizes again."
-source = ["CTAP 2.3 §6.5.5.7", "docs/threat-model.md"]
+source = ["CTAP 2.3 §6.5.5.7", "docs/threat-model.md#TM-HOST-GATES"]
 
 [[property]]
 id = "SEC-FIDO-004"
 name = "NoAccessibleSecretWithoutGate"
 status = "MODELLED-ONLY"
 statement = "No live secret is reachable while the gate record that protects it is gone."
-source = ["docs/threat-model.md"]
+source = ["docs/threat-model.md#TM-HOST-GATES"]
 
 [[property]]
 id = "SEC-FIDO-005"
 name = "NoUnmanageableCredential"
 status = "MODELLED-ONLY"
 statement = "Every live credential is reachable by the management surface: its EF_RP entry exists."
-source = ["CTAP 2.3 §6.8", "docs/threat-model.md"]
+source = ["CTAP 2.3 §6.8", "docs/threat-model.md#TM-HOST-CRED-REVOCABLE"]
 
 [[property]]
 id = "SEC-FIDO-006"
 name = "ResetNeverWeakensSurvivingState"
 status = "BOUNDED"
 statement = "No prefix of an authenticatorReset — torn or complete — leaves a surviving usable secret whose gate has already gone; the RAM copy of the seed counts as surviving."
-source = ["CTAP 2.3 §6.6", "docs/threat-model.md"]
+source = ["CTAP 2.3 §6.6", "docs/threat-model.md#TM-HOST-GATES"]
 
 [[property]]
 id = "SEC-FIDO-006A"
@@ -103,7 +147,7 @@ name = "ResetKeepsThePinGate"
 status = "BOUNDED"
 clause_of = "SEC-FIDO-006"
 statement = "A torn reset never leaves secrets standing with the PIN record already destroyed."
-source = ["CTAP 2.3 §6.6"]
+source = ["CTAP 2.3 §6.6", "docs/threat-model.md#TM-HOST-GATES"]
 
 [[property]]
 id = "SEC-FIDO-006B"
@@ -111,7 +155,7 @@ name = "ResetKeepsTheAlwaysUvGate"
 status = "BOUNDED"
 clause_of = "SEC-FIDO-006"
 statement = "A torn reset never leaves secrets standing with the alwaysUv gate already destroyed."
-source = ["CTAP 2.3 §6.6"]
+source = ["CTAP 2.3 §6.6", "docs/threat-model.md#TM-HOST-GATES"]
 
 [[property]]
 id = "SEC-FIDO-006C"
@@ -119,21 +163,21 @@ name = "ResetKeepsTheBackupSeal"
 status = "BOUNDED"
 clause_of = "SEC-FIDO-006"
 statement = "A torn reset never re-opens the one-time seed-export window over a seed it did not destroy: EF_BACKUP_SEALED is the gate that reads backwards."
-source = ["docs/threat-model.md"]
+source = ["docs/threat-model.md#TM-SEED-BACKUP"]
 
 [[property]]
 id = "SEC-FIDO-007"
 name = "RamNeverOutlivesFlashSeed"
 status = "MODELLED-ONLY"
 statement = "The RAM copy of the device seed never survives the flash record: ram implies store.seed. Structural fact the model asserts rather than argues from."
-source = ["docs/threat-model.md"]
+source = ["formal/README.md — the SeedReachable restatement"]
 
 [[property]]
 id = "SEC-FIDO-008"
 name = "NoLiveTokenWithoutPinRecord"
 status = "MODELLED-ONLY"
 statement = "A live pinUvAuthToken implies EF_PIN exists. Structural fact; refuted once when only half of state reset was modelled, asserted ever since."
-source = ["CTAP 2.3 §6.5"]
+source = ["CTAP 2.3 §6.5", "docs/threat-model.md#TM-HOST-GATES"]
 
 [[property]]
 id = "SEC-FIDO-009"
@@ -193,21 +237,21 @@ id = "SEC-SEAM-001"
 name = "NoStatusOutsideItsSelection"
 status = "MODELLED-ONLY"
 statement = "No applet security status survives outside that applet's selection."
-source = ["ISO 7816-4", "docs/threat-model.md"]
+source = ["ISO 7816-4", "docs/threat-model.md#TM-HOST-GATES"]
 
 [[property]]
 id = "SEC-SEAM-002"
 name = "NoStatusAfterARefusedAuth"
 status = "MODELLED-ONLY"
 statement = "A refused authentication revokes the status it failed to earn — the wire-path rule E15/E38 shipped, as a model invariant."
-source = ["PIV SP 800-73-4", "OpenPGP card 3.4"]
+source = ["PIV SP 800-73-4", "OpenPGP card 3.4", "docs/threat-model.md#TM-HOST-GATES"]
 
 [[property]]
 id = "SEC-SEAM-003"
 name = "NoKeyOpOnTheAdminStatus"
 status = "MODELLED-ONLY"
 statement = "An admin authentication never opens user key operations: PW3 is not PW1, the PIV mgm key is not the PIN."
-source = ["PIV SP 800-73-4", "OpenPGP card 3.4"]
+source = ["PIV SP 800-73-4", "OpenPGP card 3.4", "docs/threat-model.md#TM-HOST-GATES"]
 
 [[property]]
 id = "SEC-SEAM-004"
@@ -228,7 +272,7 @@ id = "SEC-SEAM-006"
 name = "AccessCodeRemovalNeedsTheCode"
 status = "MODELLED-ONLY"
 statement = "Removing the OATH access code (SET CODE `73 00`) requires the validated status the code bought. A violation is definitionally invisible to any state predicate — the removal itself produces the exempt code-less state — so the rule is recorded at the step."
-source = ["YKOATH protocol", "docs/threat-model.md"]
+source = ["YKOATH protocol", "docs/threat-model.md#TM-HOST-GATES"]
 
 # ---- RSKeyStore — the flash layer (rsk-fs's Fs over Storage) ----------------
 
@@ -237,21 +281,21 @@ id = "SEC-STORE-001"
 name = "NoOrphanedMetadata"
 status = "MODELLED-ONLY"
 statement = "No delete — torn or complete — leaves a metadata record for the file it removed; value-gone-while-metadata-survives is the state the write order (metadata first) forbids."
-source = ["docs/threat-model.md"]
+source = ["docs/store-refinement.md", "docs/threat-model.md#TM-HOST-POWER-CUT"]
 
 [[property]]
 id = "SEC-STORE-002"
 name = "NoFalseAbsent"
 status = "BOUNDED"
 statement = "The present-cache never reads a committed key as absent: a confirmed-absent bit is set only over a genuinely absent FID. A false-absent is the 'seed lost, regenerate' disaster and opens every gate that reads has_data."
-source = ["docs/threat-model.md"]
+source = ["docs/threat-model.md#TM-HOST-GATES"]
 
 [[property]]
 id = "SEC-STORE-003"
 name = "NoRecordLostToMetaWrite"
 status = "MODELLED-ONLY"
 statement = "A meta_add of one FID never drops another FID's committed metadata record — the 'torn meta_add wiped every existing record' crash, where a faulted EF_META read was rebuilt from empty."
-source = ["docs/threat-model.md"]
+source = ["docs/store-refinement.md", "docs/threat-model.md#TM-HOST-READ-FAULT"]
 
 # ---- RSKeyRetryLattice — the PIV/OpenPGP retry & recovery budget lattice -----
 
@@ -260,42 +304,42 @@ id = "SEC-STORE-004"
 name = "NoFalseMetaAbsent"
 status = "MODELLED-ONLY"
 statement = "EF_META's own presence cache reports absence only when no metadata record exists."
-source = ["docs/architecture.md"]
+source = ["docs/architecture.md", "docs/store-refinement.md", "docs/threat-model.md#TM-HOST-READ-FAULT"]
 
 [[property]]
 id = "SEC-STORE-005"
 name = "CacheHonest"
 status = "MODELLED-ONLY"
 statement = "EF_META's presence cache says absent only when no metadata record stands, which is what makes a rebuild-from-empty safe."
-source = ["audit run-36", "formal/README.md — the induction probes"]
+source = ["audit run-36", "formal/README.md — the induction probes", "docs/threat-model.md#TM-HOST-READ-FAULT"]
 
 [[property]]
 id = "SEC-STORE-006"
 name = "NoSilentOrphan"
 status = "MODELLED-ONLY"
 statement = "A delete whose metadata drop the medium refused removes the value anyway and reports the failure: the record may stand, but never behind an Ok."
-source = ["docs/store-refinement.md", "formal/README.md — the third module"]
+source = ["docs/store-refinement.md", "formal/README.md — the third module", "docs/threat-model.md#TM-THIEF-REMNANTS"]
 
 [[property]]
 id = "SEC-LAT-001"
 name = "NoAuthWhenBlocked"
 status = "MODELLED-ONLY"
 statement = "No reference authenticates on an exhausted budget: neither a direct VERIFY at zero retries, nor a RESET RETRY leaning on a recovery reference already at zero. The blocked floor holds before the comparison."
-source = ["PIV SP 800-73-4", "OpenPGP card 3.4", "docs/threat-model.md"]
+source = ["PIV SP 800-73-4", "OpenPGP card 3.4", "docs/threat-model.md#TM-HOST-GATES"]
 
 [[property]]
 id = "SEC-LAT-002"
 name = "WrongAttemptIsCharged"
 status = "MODELLED-ONLY"
 statement = "Every wrong attempt against an unblocked reference spends exactly one from its retry counter — the anti-bruteforce gate. A wrong VERIFY charges the target; a wrong RESET RETRY charges the recovery reference."
-source = ["PIV SP 800-73-4", "OpenPGP card 3.4", "docs/threat-model.md"]
+source = ["PIV SP 800-73-4", "OpenPGP card 3.4", "docs/threat-model.md#TM-HOST-GATES"]
 
 [[property]]
 id = "SEC-LAT-003"
 name = "BudgetRisesOnlyWithItsSecret"
 status = "MODELLED-ONLY"
 statement = "A reference's retry counter rises only on a correct presentation of a secret — its own (a correct VERIFY) or its designated recovery reference's (a correct RESET RETRY) — never out of nothing."
-source = ["PIV SP 800-73-4", "OpenPGP card 3.4", "docs/threat-model.md"]
+source = ["PIV SP 800-73-4", "OpenPGP card 3.4", "docs/threat-model.md#TM-HOST-GATES"]
 
 # ---- RSKeyAppletPolicies — four applets' stateful operation doors -----------
 
@@ -304,42 +348,42 @@ id = "SEC-POL-001"
 name = "PivOperationNeedsSlotPolicy"
 status = "MODELLED-ONLY"
 statement = "A PIV private-key operation satisfies the slot's resolved NEVER, ONCE or ALWAYS PIN policy."
-source = ["NIST SP 800-73-4 pt1 §3.2.1 Table 5"]
+source = ["NIST SP 800-73-4 pt1 §3.2.1 Table 5", "docs/threat-model.md#TM-HOST-GATES"]
 
 [[property]]
 id = "SEC-POL-002"
 name = "PivAlwaysSpendsFreshness"
 status = "MODELLED-ONLY"
 statement = "A successful PIV operation at an ALWAYS slot spends the freshness established by VERIFY, so one VERIFY buys one operation."
-source = ["NIST SP 800-73-4 pt1 §3.2.1 Table 5"]
+source = ["NIST SP 800-73-4 pt1 §3.2.1 Table 5", "docs/threat-model.md#TM-HOST-GATES"]
 
 [[property]]
 id = "SEC-POL-003"
 name = "AttributeChangeInvalidatesTheKey"
 status = "MODELLED-ONLY"
 statement = "Changing an OpenPGP slot's algorithm attribute invalidates the old private/public key pair before the new attribute becomes visible."
-source = ["OpenPGP Card 3.4 §4.4.3.12"]
+source = ["OpenPGP Card 3.4 §4.4.3.12", "docs/threat-model.md#TM-HOST-ALGO-CHANGE"]
 
 [[property]]
 id = "SEC-POL-004"
 name = "OathCredentialNeedsItsGates"
 status = "MODELLED-ONLY"
 statement = "OATH credential calculation requires the provisioned access-code session and, for a touch credential, a confirmed physical press."
-source = ["Yubico YKOATH protocol", "docs/threat-model.md"]
+source = ["Yubico YKOATH protocol", "docs/threat-model.md#TM-HOST-GATES"]
 
 [[property]]
 id = "SEC-POL-005"
 name = "OtpSlotMutationNeedsItsCode"
 status = "MODELLED-ONLY"
 statement = "Configure, update, delete or swap never mutates an existing protected Yubico OTP slot without its stored access code."
-source = ["Yubico OTP USB protocol", "docs/threat-model.md"]
+source = ["Yubico OTP USB protocol", "docs/threat-model.md#TM-HOST-GATES"]
 
 [[property]]
 id = "SEC-POL-006"
 name = "OtpCounterNeverRepeats"
 status = "MODELLED-ONLY"
-statement = "Every emitted counter-based Yubico OTP advances the combined persisted-use and RAM-session replay position before the next output can reuse it."
-source = ["Yubico OTP USB protocol", "docs/threat-model.md"]
+statement = "Below the use-counter ceiling, every emitted counter-based Yubico OTP advances the combined persisted-use and RAM-session replay position before the next output can reuse it — across a press, a cold boot and a slot swap alike. The qualifier is not hedging: at the ceiling neither the press nor the boot bump advances anything and the key goes on typing, so the pair repeats once the session rolls, and a host-requested warm reset restarts the session over an unchanged use counter. Both are residuals the source page states, and the model bounds itself to the same side of the ceiling rather than proving a claim the device does not make."
+source = ["Yubico OTP USB protocol", "docs/threat-model.md#TM-HOST-OTP-REPLAY"]
 
 # ---- RSKeyAdminSurface — the mask, its carve-out, the rescue gate -----------
 
@@ -348,28 +392,28 @@ id = "SEC-ADM-001"
 name = "AdminSurfaceAlwaysReachable"
 status = "MODELLED-ONLY"
 statement = "The administrative channel (management/vendor/rescue) is reachable in every state: no sequence of config writes can strand the device unable to re-enable a disabled applet. The APPLET_CAPS cap-0 carve-out as an invariant."
-source = ["docs/threat-model.md"]
+source = ["docs/threat-model.md#TM-HOST-CONFIG-UNGATED"]
 
 [[property]]
 id = "SEC-ADM-002"
 name = "PrivilegedOpNeedsPresence"
 status = "MODELLED-ONLY"
 statement = "No privileged rescue command — device-key signing, cert/config writes, reboot-to-BOOTSEL, fuse burns — completes without a Confirmed operator presence; a USB host alone cannot drive them."
-source = ["docs/threat-model.md"]
+source = ["docs/threat-model.md#TM-HOST-CONFIG-UNGATED"]
 
 [[property]]
 id = "SEC-ADM-003"
 name = "DisableSetSurvivesLockWrite"
 status = "MODELLED-ONLY"
 statement = "A config write that changes only the lock code leaves the enabled-applications set exactly as it was — the audit run-35 empty-record path (read back as SUPPORTED_CAPS) never recurs."
-source = ["docs/threat-model.md"]
+source = ["docs/threat-model.md#TM-HOST-CONFIG-UNGATED"]
 
 [[property]]
 id = "SEC-ADM-004"
 name = "DisabledAppletNeverDispatches"
 status = "MODELLED-ONLY"
 statement = "An application disabled in the persisted USB_ENABLED mask never serves a command: the mask is enforcement, not a DeviceInfo report (the pre-0x084A tree shipped it cosmetic)."
-source = ["docs/threat-model.md"]
+source = ["docs/threat-model.md#TM-HOST-CONFIG-UNGATED"]
 
 # ---- RSKeyTrustedDisplay — the confirm ceremony ------------------------------
 # WhatIsConfirmedIsWhatIsShown, the display build's anti-phishing promise,
@@ -383,21 +427,21 @@ id = "SEC-DISP-001"
 name = "ConfirmNamesTheOperation"
 status = "MODELLED-ONLY"
 statement = "An operation that names a relying party completes only through the card that names it — the PIN pad (whose title is 'static, never RP data) cannot substitute, whatever presence it collected. Audit run-28 F1 shipped the violation."
-source = ["docs/threat-model.md"]
+source = ["docs/threat-model.md#TM-HOST-INTENT"]
 
 [[property]]
 id = "SEC-DISP-002"
 name = "StaleTouchApprovesNothing"
 status = "MODELLED-ONLY"
 statement = "A press that began before the card was painted approves nothing; the touch controller reports level, not edges, so the release edge is the whole defence. Audit run-33 shipped the violation on the ambient-screen class."
-source = ["docs/threat-model.md"]
+source = ["docs/threat-model.md#TM-HOST-INTENT"]
 
 [[property]]
 id = "SEC-DISP-003"
 name = "OnlyAllowConfirms"
 status = "MODELLED-ONLY"
 statement = "No ceremony exit but a deliberate Allow reads as Confirmed: Deny, the power button, timeout and CTAPHID cancel all end as Cancelled — no signature is ever produced without the on-screen approval."
-source = ["docs/threat-model.md"]
+source = ["docs/threat-model.md#TM-HOST-INTENT"]
 
 # ---- RSKeyBootHardening — the cross-boot at-rest lap and the lock carry -----
 
@@ -405,15 +449,15 @@ source = ["docs/threat-model.md"]
 id = "SEC-BOOT-001"
 name = "MarkerNeverLies"
 status = "MODELLED-ONLY"
-statement = "EF_HARDENED present means no superseded weak-sealed copy awaits the scrub: the lap sets the marker only after a completed compaction, and every lazy re-key re-arms it — audit run-35 found four of five sites skipping the re-arm."
-source = ["docs/threat-model.md"]
+statement = "EF_HARDENED present means no superseded weak-sealed copy awaits the scrub, outside the window of a lazy re-key whose second half is still owed: the lap sets the marker only after a completed compaction, and every lazy re-key or delete of a pre-OTP record re-arms it — a delete only appends a tombstone, so it supersedes without erasing. The window is tolerated only while the worker that owes the re-arm is still there to close it; a reset that ends it with the marker standing is a violation, and `Historical_BootWriteThenRearm.cfg` is RED on exactly that. Audit run-35 found four of five re-key sites skipping the re-arm."
+source = ["docs/threat-model.md#TM-THIEF-REMNANT-SCRUB"]
 
 [[property]]
 id = "SEC-BOOT-002"
 name = "TheWholeLockRides"
 status = "MODELLED-ONLY"
 statement = "A warm reset carries the clientPIN soft lock atomically — the engaged flag AND the mismatch batch. Carrying half lets a host stop one short of the limit and reboot, laundering the budget two attempts at a time."
-source = ["CTAP 2.3 §6.5.5.6", "docs/threat-model.md"]
+source = ["CTAP 2.3 §6.5.5.6", "docs/threat-model.md#TM-HOST-TWO-TRANSPORTS"]
 
 # ---- RSKeyTransport — the CTAPHID frame reassembler --------------------------
 
@@ -422,21 +466,21 @@ id = "SEC-TRANS-001"
 name = "NoCrossChannelSplice"
 status = "BOUNDED"
 statement = "No host application's continuation frame is assembled into another channel's message: a continuation on a channel other than the in-progress transaction's is CHANNEL_BUSY, the owner's transaction left intact."
-source = ["FIDO CTAP §11.2", "docs/threat-model.md"]
+source = ["FIDO CTAP §11.2", "docs/threat-model.md#TM-HOST"]
 
 [[property]]
 id = "SEC-TRANS-002"
 name = "NoSequenceGap"
 status = "BOUNDED"
 statement = "No message completes out of the order the host sent it: an out-of-sequence continuation aborts the transaction (INVALID_SEQ) rather than filling the gap with a frame that arrived early or late."
-source = ["FIDO CTAP §11.2", "docs/threat-model.md"]
+source = ["FIDO CTAP §11.2", "docs/threat-model.md#TM-HOST"]
 
 [[property]]
 id = "SEC-TRANS-003"
 name = "NoBufferOverrun"
 status = "BOUNDED"
 statement = "The assembled length never exceeds the buffer: an INIT declaring more than CTAP_MAX_MESSAGE is refused, and the chunk count never passes the ceiling — an out-of-bounds write in a no_std image."
-source = ["FIDO CTAP §11.2", "docs/threat-model.md"]
+source = ["FIDO CTAP §11.2", "docs/threat-model.md#TM-HOST-MEMSAFE"]
 
 # ---- Accepted risks — ruled by the maintainer, visible here so their absence
 # ---- from the evidence table reads as a decision, not a hole ----------------
@@ -454,5 +498,5 @@ id = "SEC-RISK-002"
 name = "FlashSnapshotRollsBackPinRetries"
 status = "ACCEPTED-RISK"
 statement = "picotool save/load restores PIN-retry counters: a physical attacker with flash access replays the budget."
-source = ["issue #37", "docs/threat-model.md"]
+source = ["issue #37", "docs/threat-model.md#TM-ROLLBACK"]
 ruling = "Mitigated by the strong-pin feature and a threat-model block; full defence needs anti-rollback state outside the image, which is a release-time OTP decision."

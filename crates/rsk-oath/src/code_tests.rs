@@ -135,3 +135,38 @@ fn a_width_from_before_put_bounded_it_still_answers() {
     assert_eq!(digits, 12);
     assert_eq!(code, raw);
 }
+
+/// `select` derives the session's access-code state from ONE probe:
+/// `validated = !fs.has_key(EF_OATH_CODE)`. `validated` is the gate on PUT, DELETE,
+/// SET CODE, RESET, RENAME, LIST, CALCULATE and CALCULATE ALL, and SELECT is
+/// unauthenticated and host-driven — so a probe read as "no code set" unlocked the
+/// whole credential store for the session, with no access code presented.
+#[test]
+fn a_faulted_code_probe_does_not_unlock_the_session() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    let rng = RefCell::new(CountRng(7));
+    let touch = RefCell::new(AlwaysConfirm);
+    let mut app = OathApplet::new(SERIAL, [0x22; 32], None, &rng, &touch);
+    select(&mut app, &mut fs);
+    lock_with_code(&mut app, &mut fs);
+    assert_eq!(
+        run(&mut app, &mut fs, &apdu(INS_LIST, 0, 0, &[])).0,
+        Sw::SECURITY_STATUS_NOT_SATISFIED,
+        "control: a fresh SELECT on a code-locked applet is unvalidated"
+    );
+
+    // A fresh connection whose EF_OATH_CODE probe faults.
+    let mut fs = Fs::new(fs.into_storage());
+    fs.scan();
+    let mut app = OathApplet::new(SERIAL, [0x22; 32], None, &rng, &touch);
+    medium.stick(Some(EF_OATH_CODE.get()));
+    select(&mut app, &mut fs);
+    medium.stick(None);
+    assert_eq!(
+        run(&mut app, &mut fs, &apdu(INS_LIST, 0, 0, &[])).0,
+        Sw::SECURITY_STATUS_NOT_SATISFIED,
+        "a faulted EF_OATH_CODE probe unlocked the whole store for the session"
+    );
+}

@@ -114,7 +114,7 @@ fn apdu(cla: u8, ins: u8, p1: u8, p2: u8, data: &[u8]) -> Vec<u8> {
     a
 }
 
-fn run(app: &mut RescueApplet, fs: &mut Fs<RamStorage>, raw: &[u8]) -> (Sw, Vec<u8>) {
+fn run<S: Storage>(app: &mut RescueApplet, fs: &mut Fs<S>, raw: &[u8]) -> (Sw, Vec<u8>) {
     let mut buf = [0u8; 512];
     let parsed = Apdu::parse(raw).unwrap();
     let mut res = ResBuf::new(&mut buf);
@@ -936,4 +936,134 @@ fn days_from_civil_matches_the_calendar_across_era_and_leap_boundaries() {
     ] {
         assert_eq!(days_from_civil(y, m, d), want, "{y:04}-{m:02}-{d:02}");
     }
+}
+
+/// READ phy (P1 = 0x01) is the baseline `rsk hw` read-modify-writes on the HOST:
+/// it reads the record, applies the flags the user asked for and sends the result
+/// back. Answering a probe the flash could not complete with a synthesised default
+/// therefore does not merely misreport the device — it hands the host a phantom
+/// baseline to edit and write back, and `--get` shows the owner a config that is
+/// not theirs. An absence still serializes the zeroed OPTS TLV, as a first use of
+/// the tool needs — `phy_write_read_roundtrip` covers the healthy arms.
+#[test]
+fn a_faulted_phy_probe_is_refused_rather_than_reported_as_a_default_record() {
+    let rng = RefCell::new(LcgRng(7));
+    let platform = RefCell::new(FakePlatform::default());
+    let presence = RefCell::new(AlwaysConfirm);
+    let mut app = RescueApplet::new(
+        SERIAL_ID,
+        SERIAL_HASH,
+        None,
+        None,
+        &rng,
+        &platform,
+        &presence,
+        KV_TOTAL,
+        FLASH_SIZE,
+    );
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    let owner = rsk_phy::PhyData {
+        vid_pid: Some((0x1234, 0x5678)),
+        led_gpio: Some(21),
+        ..Default::default()
+    };
+    rsk_phy::save(&mut fs, &owner).unwrap();
+
+    // The healthy read, so the faulted one below is compared against a baseline
+    // this command is known to report.
+    let (sw, body) = run(&mut app, &mut fs, &apdu(0x80, INS_READ, 0x01, 0, &[]));
+    assert_eq!(
+        (sw, rsk_phy::PhyData::parse(&body).vid_pid),
+        (Sw::OK, owner.vid_pid)
+    );
+
+    medium.stick_once(rsk_phy::EF_PHY);
+    let (sw, body) = run(&mut app, &mut fs, &apdu(0x80, INS_READ, 0x01, 0, &[]));
+    assert_eq!(
+        rsk_phy::PhyData::parse(&body).vid_pid,
+        None,
+        "fixture check: a faulted probe cannot be reporting the owner's record"
+    );
+    assert_eq!(
+        (sw, body.len()),
+        (Sw::MEMORY_FAILURE, 0),
+        "a READ that could not reach the record reported a default one instead"
+    );
+}
+
+/// `load_or_generate` mints and PERSISTS a fresh device-certificate key when
+/// `EF_DEVCERT_KEY` reads absent — the documented first-use path. It probed with
+/// `fs.read_key`, which answers the same `None` for a record that is not there and
+/// for one the flash could not serve, so a faulted probe re-minted OVER the live key
+/// and every certificate the old one issued stopped verifying. `KEYDEV_SIGN P1=0x02`
+/// takes no presence at all, so a USB host on its own reaches this.
+#[test]
+fn a_faulted_devcert_key_probe_does_not_remint_the_device_key() {
+    use k256::ecdsa::signature::hazmat::PrehashVerifier;
+    let rng = RefCell::new(LcgRng(7));
+    let platform = RefCell::new(FakePlatform::default());
+    let presence = RefCell::new(AlwaysConfirm);
+    let mut app = RescueApplet::new(
+        SERIAL_ID,
+        SERIAL_HASH,
+        None,
+        None,
+        &rng,
+        &platform,
+        &presence,
+        KV_TOTAL,
+        FLASH_SIZE,
+    );
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+
+    // The device's standing identity, and one signature made under it — what an
+    // uploaded attestation certificate attests to.
+    let pub_apdu = apdu(0x80, INS_KEYDEV_SIGN, 0x02, 0, &[]);
+    let (sw, pubkey) = run(&mut app, &mut fs, &pub_apdu);
+    assert_eq!(sw, Sw::OK);
+    let digest = [0x42u8; 32];
+    let (sw, sig) = run(
+        &mut app,
+        &mut fs,
+        &apdu(0x80, INS_KEYDEV_SIGN, 0x01, 0, &digest),
+    );
+    assert_eq!(sw, Sw::OK);
+    let sig = k256::ecdsa::Signature::from_slice(&sig).unwrap();
+    k256::ecdsa::VerifyingKey::from_sec1_bytes(&pubkey)
+        .unwrap()
+        .verify_prehash(&digest, &sig)
+        .expect("control: the signature verifies under the device's own key");
+    let before = medium
+        .value(keydev::EF_DEVCERT_KEY.get())
+        .expect("the device key is sealed in flash");
+
+    medium.stick_once(keydev::EF_DEVCERT_KEY.get());
+    let (sw, after_pub) = run(&mut app, &mut fs, &pub_apdu);
+    medium.stick(None);
+    assert_eq!(
+        medium.value(keydev::EF_DEVCERT_KEY.get()),
+        Some(before),
+        "a faulted probe minted a new device key and persisted it over the live one"
+    );
+    assert!(
+        k256::ecdsa::VerifyingKey::from_sec1_bytes(&after_pub)
+            .is_ok_and(|vk| vk.verify_prehash(&digest, &sig).is_ok())
+            || after_pub.is_empty(),
+        "a certificate the old device key issued no longer verifies against the key \
+         the device now advertises"
+    );
+    assert_eq!(
+        sw,
+        Sw::EXEC_ERROR,
+        "a read the flash could not answer must not be taken for a device with no key"
+    );
+
+    // …and the standing key is still the one the device answers with once the
+    // medium recovers.
+    let (sw, again) = run(&mut app, &mut fs, &pub_apdu);
+    assert_eq!((sw, again), (Sw::OK, pubkey));
 }

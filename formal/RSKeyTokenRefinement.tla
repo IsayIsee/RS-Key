@@ -30,7 +30,8 @@ ObservableTokenActions == TokenOutcomeActions
 OutcomeClauseOwners ==
     {"GetPinToken", "WrongPin", "MintPpuat", "LocalPinWrong", "LocalPinOk",
      "SetPinWrite", "ChangePinWrite", "RegisterTouched", "RegisterRefused",
-     "RegisterWriteB", "AssertFinish", "ConfigOp", "BackupFinalize",
+     "RegisterWriteB", "RegisterNdTouched", "RegisterNdRefused",
+     "AssertFinish", "ConfigOp", "BackupFinalize",
      "DeviceUnlock", "CmBeginViaToken", "CmBeginViaPpuat", "CmNext",
      "DeleteCredStart", "ResetRefused", "ResetFinish", "ResetAborts"}
 
@@ -48,6 +49,15 @@ R1oStep ==
     /\ (RegisterTouched => GammaNext("UseMc", "Silent"))
     /\ (RegisterRefused => GammaNext("Noop", "Rejected"))
     /\ (RegisterWriteB => GammaNext("Noop", "Authorized"))
+    \* The token-less non-discoverable registration is a `Noop` and not a
+    \* `UseMc`, and the difference is the whole of what tier A can say here: its
+    \* `UseMc` admits an Authorized event only under `~pinSet \/ (live /\
+    \* permissionMc)`, which is the very rule 6.1.2 step 10 carves out of. B's
+    \* own guard admits this action only where `~tok.live`, so alpha does not
+    \* move and `post = pre` -- and the refinement is an equality rather than a
+    \* widening of A. Widening A is stage 4's, and it is named as such.
+    /\ (RegisterNdTouched => GammaNext("Noop", "Authorized"))
+    /\ (RegisterNdRefused => GammaNext("Noop", "Rejected"))
     /\ (AssertFinish =>
           GammaNext("UseGa",
             IF BugNoTouchRequired \/ pres.granted = "confirm"
@@ -62,7 +72,7 @@ R1oStep ==
     /\ (\A ch \in Channels : CmNext(ch) => GammaNext("UseCm", "Authorized"))
     /\ (\A r \in RPs : DeleteCredStart(r) => GammaNext("UseCm", "Authorized"))
     /\ (ResetRefused => GammaNext("Noop", "Rejected"))
-    /\ (ResetFinish => GammaNext("Noop", "Authorized"))
+    /\ (ResetFinish => GammaNext("ProvisionGrant", "Authorized"))
     /\ (ResetAborts => GammaNext("Noop", "Rejected"))
     /\ (PressDown => GammaNext("UseAcfg",
           IF BugDeadTokenAuthorized /\ ~tok.live THEN "Authorized" ELSE "Rejected"))

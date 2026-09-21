@@ -617,7 +617,7 @@ fn silent_assertions_cannot_flush_the_audit_journal() {
         get_assertion(&mut ctx, &gestured, &mut out).unwrap();
     }
 
-    let (_, m) = crate::journal::chain_head(&dev(), &mut fs);
+    let (_, m) = crate::journal::chain_head(&dev(), &mut fs).unwrap();
     assert_eq!(m.start, 0, "nothing evicted from the window");
     // BOOT, BACKUP_EXPORT, the coalesced silent run, the gestured assertion.
     assert_eq!(m.seq_next, 4);
@@ -804,6 +804,86 @@ fn uv_option_without_builtin_uv_is_invalid_option() {
     assert_eq!(
         get_assertion(&mut ctx, &ga_request_uv(&cred_id, None), &mut out),
         Err(CtapError::InvalidOption)
+    );
+}
+
+/// A presence backend whose PIN pad must never be reached: built-in UV exists,
+/// and opening it is the defect under test.
+struct UvPadNeverOpened;
+impl crate::UserPresence for UvPadNeverOpened {
+    fn request(&mut self, _c: crate::Confirm<'_>) -> crate::Presence {
+        crate::Presence::Confirmed
+    }
+    fn uv_available(&self) -> bool {
+        true
+    }
+    fn collect_pin(&mut self, _min: usize, _out: &mut [u8]) -> crate::PinEntry {
+        panic!("a silent up:false pre-flight opened the on-screen PIN pad");
+    }
+}
+
+/// `options: {up: false, uv: true}` with no token — a silent pre-flight. With no
+/// `allowList`, this is byte-for-byte what OpenSSH's `key_lookup` sends.
+fn ga_request_up_false_uv(allow: Option<&[u8]>) -> std::vec::Vec<u8> {
+    let mut buf = [0u8; 512];
+    let n = {
+        let mut e = Encoder::new(Cursor::new(&mut buf[..]));
+        e.map(if allow.is_some() { 4 } else { 3 }).unwrap();
+        e.u8(1).unwrap().str("example.com").unwrap();
+        e.u8(2).unwrap().bytes(&CDH).unwrap();
+        if let Some(id) = allow {
+            e.u8(3).unwrap().array(1).unwrap().map(2).unwrap();
+            e.str("type").unwrap().str("public-key").unwrap();
+            e.str("id").unwrap().bytes(id).unwrap();
+        }
+        // Canonical order: both keys are two bytes, and "up" sorts before "uv".
+        e.u8(5).unwrap().map(2).unwrap();
+        e.str("up").unwrap().bool(false).unwrap();
+        e.str("uv").unwrap().bool(true).unwrap();
+        e.writer().position()
+    };
+    buf[..n].to_vec()
+}
+
+/// Issue #107. `up:false` is how a client asks whether a credential exists without
+/// involving the user; built-in UV here is a modal PIN entry on the panel. Running
+/// one for the other turned a silent probe into a ceremony nobody asked for:
+/// OpenSSH's `key_lookup` sends exactly this pair before enrolling a resident key,
+/// so `ssh-keygen -t ed25519-sk -O resident` opened the pad, libfido2 gave up with
+/// FIDO_ERR_RX, and a display board sat on its screen until it was reset.
+///
+/// The answer it must get is NO_CREDENTIALS: `sk_enroll` continues only for that
+/// one value (`sk-usbhid.c`), so refusing the pair instead would have swapped a
+/// wedge for a fast failure and left `-O resident` broken.
+#[test]
+fn a_silent_preflight_never_opens_the_builtin_uv_pad() {
+    let (mut fs, mut rng) = setup();
+    let cred_id = register_non_resident(&mut fs, &mut rng);
+    let mut state = crate::FidoState::new();
+    arm_pin(&mut fs, &mut state);
+    let mut out = [0u8; 1024];
+    let mut presence = UvPadNeverOpened;
+    let mut ctx = Ctx {
+        presence: &mut presence,
+        dev: dev(),
+        fs: &mut fs,
+        rng: &mut rng,
+        state: &mut state,
+        now_ms: 0,
+    };
+    // OpenSSH's shape: no allowList, and this rp holds no discoverable credential.
+    assert_eq!(
+        get_assertion(&mut ctx, &ga_request_up_false_uv(None), &mut out).unwrap_err(),
+        CtapError::NoCredentials,
+    );
+    // And where the probe DOES find one, it is served without user verification —
+    // the flag says so, which is the part that must not lie.
+    let n = get_assertion(&mut ctx, &ga_request_up_false_uv(Some(&cred_id)), &mut out).unwrap();
+    let ad = assertion_auth_data(&out[..n]);
+    assert_eq!(
+        ad[32] & FLAG_UV,
+        0,
+        "no UV was performed, so the flag must be 0"
     );
 }
 
@@ -1222,7 +1302,7 @@ fn mc_request_rk_uid(uid: &[u8]) -> std::vec::Vec<u8> {
 }
 
 /// Drive one makeCredential over `fs`, returning the response bytes.
-fn run_make(fs: &mut Fs<RamStorage>, rng: &mut SeqRng, req: &[u8]) -> std::vec::Vec<u8> {
+fn run_make<S: Storage>(fs: &mut Fs<S>, rng: &mut SeqRng, req: &[u8]) -> std::vec::Vec<u8> {
     let mut out = [0u8; 1024];
     let mut state = crate::FidoState::new();
     let mut presence = crate::AlwaysConfirm;
@@ -1239,7 +1319,7 @@ fn run_make(fs: &mut Fs<RamStorage>, rng: &mut SeqRng, req: &[u8]) -> std::vec::
 }
 
 /// Drive one getAssertion over `fs`, returning the response bytes.
-fn run_assert(fs: &mut Fs<RamStorage>, rng: &mut SeqRng, req: &[u8]) -> std::vec::Vec<u8> {
+fn run_assert<S: Storage>(fs: &mut Fs<S>, rng: &mut SeqRng, req: &[u8]) -> std::vec::Vec<u8> {
     let mut out = [0u8; 1024];
     let mut state = crate::FidoState::new();
     let mut presence = crate::AlwaysConfirm;
@@ -1253,6 +1333,201 @@ fn run_assert(fs: &mut Fs<RamStorage>, rng: &mut SeqRng, req: &[u8]) -> std::vec
     };
     let n = get_assertion(&mut ctx, req, &mut out).unwrap();
     out[..n].to_vec()
+}
+
+/// [`run_assert`] without the unwrap, for the paths that must REFUSE.
+fn try_assert<S: Storage>(
+    fs: &mut Fs<S>,
+    rng: &mut SeqRng,
+    req: &[u8],
+) -> Result<std::vec::Vec<u8>, CtapError> {
+    let mut out = [0u8; 1024];
+    let mut state = crate::FidoState::new();
+    let mut presence = crate::AlwaysConfirm;
+    let mut ctx = Ctx {
+        presence: &mut presence,
+        dev: dev(),
+        fs,
+        rng,
+        state: &mut state,
+        now_ms: 30,
+    };
+    let n = get_assertion(&mut ctx, req, &mut out)?;
+    Ok(out[..n].to_vec())
+}
+
+/// [`setup`] on a medium whose reads of one chosen record can be made to fail.
+fn probe_setup() -> (
+    Fs<rsk_fs::storage::faults::ProbeStuck>,
+    rsk_fs::storage::faults::ProbeMedium,
+    SeqRng,
+) {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    let mut rng = SeqRng(1);
+    ensure_seed(&dev(), &mut fs, &mut rng).unwrap();
+    (fs, medium, rng)
+}
+
+/// The chain the per-credential counter hangs on, driven end to end: a faulted
+/// `EF_CRED_CTR` read answers *unmaterialized*, the caller seeds from the global
+/// counter — itself 0 when its own record cannot be read — and the write-back
+/// merges into a zero-filled buffer. signCount is FIDO's clone-detection signal,
+/// so the host must never be handed one that did not come off the medium, and the
+/// credential the request never named must keep its own.
+#[test]
+fn a_faulted_cred_counter_probe_does_not_fabricate_a_sign_count() {
+    let (mut fs, medium, mut rng) = probe_setup();
+    let a = parse_mc(&run_make(
+        &mut fs,
+        &mut rng,
+        &mc_request_rk_uid(&[6, 6, 6, 6]),
+    ))
+    .0;
+    let b = parse_mc(&run_make(
+        &mut fs,
+        &mut rng,
+        &mc_request_rk_uid(&[7, 7, 7, 7]),
+    ))
+    .0;
+    for want in 1..=3 {
+        let r = run_assert(&mut fs, &mut rng, &ga_request(Some(&a)));
+        assert_eq!(assertion_sign_count(&r), want);
+    }
+    let r = run_assert(&mut fs, &mut rng, &ga_request(Some(&b)));
+    assert_eq!(assertion_sign_count(&r), 1);
+
+    medium.stick(Some(crate::consts::EF_CRED_CTR));
+    let faulted = try_assert(&mut fs, &mut rng, &ga_request(Some(&a)));
+    medium.stick(None);
+    // B was never named by that request; its counter is pure collateral.
+    assert_eq!(
+        assertion_sign_count(&run_assert(&mut fs, &mut rng, &ga_request(Some(&b)))),
+        2,
+        "an unrelated credential's signCount regressed"
+    );
+    assert_eq!(
+        assertion_sign_count(&run_assert(&mut fs, &mut rng, &ga_request(Some(&a)))),
+        4,
+        "and the named credential's own signCount regressed"
+    );
+    assert_eq!(
+        faulted.map(|r| assertion_sign_count(&r)),
+        Err(CtapError::Other),
+        "a signCount the medium never served was signed and returned"
+    );
+}
+
+/// The call sites' own guard, isolated. A PERSISTENT fault is caught by the
+/// write-back three statements later, so those tests hold the read guard up by a
+/// neighbour: drop the `?` here and they stay green. A fault on only the FIRST
+/// read leaves the write-back working, and then nothing downstream refuses on
+/// this guard's behalf — the host gets a fabricated signCount and the medium is
+/// rewritten from it.
+#[test]
+fn a_transient_cred_counter_fault_does_not_reach_the_signature() {
+    let (mut fs, medium, mut rng) = probe_setup();
+    let a = parse_mc(&run_make(
+        &mut fs,
+        &mut rng,
+        &mc_request_rk_uid(&[8, 8, 8, 8]),
+    ))
+    .0;
+    for want in 1..=3 {
+        let r = run_assert(&mut fs, &mut rng, &ga_request(Some(&a)));
+        assert_eq!(assertion_sign_count(&r), want);
+    }
+    let before = medium
+        .value(crate::consts::EF_CRED_CTR)
+        .expect("the packed file is on the medium");
+
+    medium.stick_once(crate::consts::EF_CRED_CTR);
+    let faulted = try_assert(&mut fs, &mut rng, &ga_request(Some(&a)));
+    assert_eq!(
+        medium.value(crate::consts::EF_CRED_CTR).as_deref(),
+        Some(&before[..]),
+        "the counter was rewritten from a value that was never read"
+    );
+    assert_eq!(
+        faulted.map(|r| assertion_sign_count(&r)),
+        Err(CtapError::Other),
+        "a signCount the medium never served was signed and returned"
+    );
+    // The medium recovered, so the credential resumes its own sequence.
+    assert_eq!(
+        assertion_sign_count(&run_assert(&mut fs, &mut rng, &ga_request(Some(&a)))),
+        4,
+        "the refusal cost the credential its place in its own sequence"
+    );
+}
+
+/// [`a_transient_cred_counter_fault_does_not_reach_the_signature`] for the walk:
+/// `getNextAssertion` reads the counter through its own call site, and its own
+/// write-back would otherwise stand in for the guard.
+#[test]
+fn a_transient_cred_counter_fault_does_not_reach_the_next_signature() {
+    let (mut fs, medium, mut rng) = probe_setup();
+    let mut state = crate::FidoState::new();
+    for (uid, t) in [(&[9u8, 8, 7, 6][..], 10u64), (&[1u8, 1, 1, 1][..], 20u64)] {
+        let mut out = [0u8; 1024];
+        let mut presence = crate::AlwaysConfirm;
+        let mut ctx = Ctx {
+            presence: &mut presence,
+            dev: dev(),
+            fs: &mut fs,
+            rng: &mut rng,
+            state: &mut state,
+            now_ms: t,
+        };
+        make_credential(&mut ctx, &mc_request_user(uid), &mut out).unwrap();
+    }
+    // Walk once un-faulted first: both slots leave `credential_store`'s seed of 1,
+    // and a mutant that writes 1 over a slot still holding 1 changes no byte.
+    let mut o1 = [0u8; 1024];
+    for t in [30u64, 32] {
+        let mut presence = crate::AlwaysConfirm;
+        let mut ctx = Ctx {
+            presence: &mut presence,
+            dev: dev(),
+            fs: &mut fs,
+            rng: &mut rng,
+            state: &mut state,
+            now_ms: t,
+        };
+        get_assertion(&mut ctx, &ga_request(None), &mut o1).unwrap();
+        if t == 30 {
+            get_next_assertion(&mut ctx, &mut o1).unwrap();
+        }
+    }
+    let before = medium
+        .value(crate::consts::EF_CRED_CTR)
+        .expect("the packed file is on the medium");
+
+    let mut o2 = [0u8; 1024];
+    medium.stick_once(crate::consts::EF_CRED_CTR);
+    let r = {
+        let mut presence = crate::AlwaysConfirm;
+        let mut ctx = Ctx {
+            presence: &mut presence,
+            dev: dev(),
+            fs: &mut fs,
+            rng: &mut rng,
+            state: &mut state,
+            now_ms: 31,
+        };
+        get_next_assertion(&mut ctx, &mut o2)
+    };
+    assert_eq!(
+        medium.value(crate::consts::EF_CRED_CTR).as_deref(),
+        Some(&before[..]),
+        "the counter was rewritten from a value that was never read"
+    );
+    assert_eq!(
+        r,
+        Err(CtapError::Other),
+        "a signCount the medium never served was signed and returned"
+    );
 }
 
 #[test]
@@ -1299,13 +1574,13 @@ fn non_resident_sign_count_is_zero() {
     // on every assertion (nothing to correlate) and never touches EF_COUNTER.
     let (mut fs, mut rng) = setup();
     let cred_id = parse_mc(&run_make(&mut fs, &mut rng, &mc_request(false))).0;
-    let g0 = crate::seed::get_sign_counter(&mut fs);
+    let g0 = crate::seed::global_sign_counter(&mut fs).unwrap();
     for _ in 0..3 {
         let resp = run_assert(&mut fs, &mut rng, &ga_request(Some(&cred_id)));
         assert_eq!(assertion_sign_count(&resp), 0);
     }
     assert_eq!(
-        crate::seed::get_sign_counter(&mut fs),
+        crate::seed::global_sign_counter(&mut fs).unwrap(),
         g0,
         "global counter untouched by CTAP2 assertions"
     );
@@ -3509,8 +3784,316 @@ fn maximal_box_creates_and_asserts() {
     verify_assertion(&ga, &x, &y);
 }
 
-// An rpId or user.id past its ceiling is rejected explicitly (InvalidLength),
-// not by a downstream box overflow that would surface as a vague Other.
+// The reference type-checks the value of every extension it ADVERTISES, on every
+// command, including the ones that do nothing there — and ignores an unknown name
+// whatever its value. Measured on a YubiKey 5.8.0 over getAssertion: `credProtect`
+// takes a uint, `minPinLength` a bool, `hmac-secret`/`hmac-secret-mc` a map or a
+// boolean, and each answers CBOR_UNEXPECTED_TYPE to anything else, while `zz-nope`
+// is ignored as an int, a string and an array. We checked four of the seven names
+// and skipped the other three, so a malformed request completed as if it had asked
+// for nothing. The unknown half is pinned too: tightening into it would refuse
+// requests every other authenticator accepts.
+/// One extension value, written straight into the request encoder. Named because
+/// the closure type is otherwise `clippy::type_complexity`'s business.
+type ExtValue<'a> = &'a dyn Fn(&mut Encoder<Cursor<&mut [u8]>>);
+
+#[test]
+fn an_advertised_extension_name_is_type_checked_wherever_it_appears() {
+    let (mut fs, mut rng) = setup();
+    // `req` writes the extensions map with one entry whose value `write` encodes.
+    let req = |name: &str, write: ExtValue| {
+        let mut buf = [0u8; 256];
+        let n = {
+            let mut e = Encoder::new(Cursor::new(&mut buf[..]));
+            e.map(4).unwrap();
+            e.u8(1).unwrap().str("ok.com").unwrap();
+            e.u8(2).unwrap().bytes(&CDH).unwrap();
+            e.u8(4).unwrap().map(1).unwrap();
+            e.str(name).unwrap();
+            write(&mut e);
+            e.u8(5).unwrap().map(1).unwrap();
+            e.str("up").unwrap().bool(false).unwrap();
+            e.writer().position()
+        };
+        buf[..n].to_vec()
+    };
+    let int = |e: &mut Encoder<Cursor<&mut [u8]>>| {
+        e.u8(1).unwrap();
+    };
+    let text = |e: &mut Encoder<Cursor<&mut [u8]>>| {
+        e.str("x").unwrap();
+    };
+    let boolean = |e: &mut Encoder<Cursor<&mut [u8]>>| {
+        e.bool(true).unwrap();
+    };
+    let list = |e: &mut Encoder<Cursor<&mut [u8]>>| {
+        e.array(1).unwrap().u8(1).unwrap();
+    };
+
+    let run = |fs: &mut _, rng: &mut _, body: &[u8]| {
+        let mut out = [0u8; 512];
+        let mut state = crate::FidoState::new();
+        let mut presence = crate::AlwaysConfirm;
+        let mut ctx = Ctx {
+            presence: &mut presence,
+            dev: dev(),
+            fs,
+            rng,
+            state: &mut state,
+            now_ms: 10,
+        };
+        get_assertion(&mut ctx, body, &mut out)
+    };
+
+    // Every advertised name, with a value of the wrong CBOR type for it.
+    let wrong: [(&str, ExtValue); 5] = [
+        ("credProtect", &text),
+        ("minPinLength", &int),
+        ("hmac-secret", &int),
+        ("hmac-secret-mc", &int),
+        ("credBlob", &int),
+    ];
+    for (name, write) in wrong {
+        assert_eq!(
+            run(&mut fs, &mut rng, &req(name, write)),
+            Err(CtapError::CborUnexpectedType),
+            "`{name}` carries a value of the wrong type and must be refused as one"
+        );
+    }
+    // The same names at the type the reference accepts: never that error.
+    let right: [(&str, ExtValue); 5] = [
+        ("credProtect", &int),
+        ("minPinLength", &boolean),
+        ("hmac-secret", &boolean),
+        ("hmac-secret-mc", &boolean),
+        ("credBlob", &boolean),
+    ];
+    for (name, write) in right {
+        assert_ne!(
+            run(&mut fs, &mut rng, &req(name, write)),
+            Err(CtapError::CborUnexpectedType),
+            "`{name}` at its own type must not be refused"
+        );
+    }
+    // And the other half of the rule: an unknown name is ignored at ANY type.
+    let unknown: [ExtValue; 3] = [&int, &text, &list];
+    for write in unknown {
+        assert_ne!(
+            run(&mut fs, &mut rng, &req("zz-not-a-thing", write)),
+            Err(CtapError::CborUnexpectedType),
+            "an unknown extension must be ignored whatever it carries"
+        );
+    }
+}
+
+// The whole malformed-mandatory-parameter matrix, both commands, pinned against a
+// real YubiKey 5.8.0. Nothing asserted the present-but-unusable shapes before this
+// — the split that closed them was invisible to 686 tests — and the ABSENT rows are
+// half the point: they must keep answering `MissingParameter`, which is what says
+// the split narrowed the guard rather than moved it.
+#[test]
+fn a_present_but_unusable_parameter_is_not_a_missing_one() {
+    let (mut fs, mut rng) = setup();
+    let ga = |rp: &str, cdh: &[u8], keys: u64| {
+        let mut buf = [0u8; 256];
+        let n = {
+            let mut e = Encoder::new(Cursor::new(&mut buf[..]));
+            e.map(keys).unwrap();
+            if keys >= 1 {
+                e.u8(1).unwrap().str(rp).unwrap();
+            }
+            if keys >= 2 {
+                e.u8(2).unwrap().bytes(cdh).unwrap();
+            }
+            e.writer().position()
+        };
+        buf[..n].to_vec()
+    };
+    let mc = |rp: &str, cdh: &[u8], uid: &[u8]| {
+        let mut buf = [0u8; 256];
+        let n = {
+            let mut e = Encoder::new(Cursor::new(&mut buf[..]));
+            e.map(4).unwrap();
+            e.u8(1).unwrap().bytes(cdh).unwrap();
+            e.u8(2).unwrap().map(1).unwrap();
+            e.str("id").unwrap().str(rp).unwrap();
+            e.u8(3).unwrap().map(1).unwrap();
+            e.str("id").unwrap().bytes(uid).unwrap();
+            e.u8(4).unwrap().array(1).unwrap().map(2).unwrap();
+            e.str("alg").unwrap().i64(ALG_ES256).unwrap();
+            e.str("type").unwrap().str("public-key").unwrap();
+            e.writer().position()
+        };
+        buf[..n].to_vec()
+    };
+
+    // The `id` sub-field ABSENT from the rp / user map, which is a third thing
+    // again: the key IS sent, its `id` is not. `which` picks the entity to gut.
+    let mc_no_id = |which: u8| {
+        let mut buf = [0u8; 256];
+        let n = {
+            let mut e = Encoder::new(Cursor::new(&mut buf[..]));
+            e.map(4).unwrap();
+            e.u8(1).unwrap().bytes(&CDH).unwrap();
+            e.u8(2).unwrap().map(1).unwrap();
+            if which == 2 {
+                e.str("name").unwrap().str("ex").unwrap();
+            } else {
+                e.str("id").unwrap().str("ok.com").unwrap();
+            }
+            e.u8(3).unwrap().map(1).unwrap();
+            if which == 3 {
+                e.str("name").unwrap().str("a").unwrap();
+            } else {
+                e.str("id").unwrap().bytes(&[1u8, 2, 3, 4]).unwrap();
+            }
+            e.u8(4).unwrap().array(1).unwrap().map(2).unwrap();
+            e.str("alg").unwrap().i64(ALG_ES256).unwrap();
+            e.str("type").unwrap().str("public-key").unwrap();
+            e.writer().position()
+        };
+        buf[..n].to_vec()
+    };
+
+    // The same request truncated after `keys` mandatory keys.
+    let mc_trunc = |keys: u64| {
+        let mut buf = [0u8; 256];
+        let n = {
+            let mut e = Encoder::new(Cursor::new(&mut buf[..]));
+            e.map(keys).unwrap();
+            if keys >= 1 {
+                e.u8(1).unwrap().bytes(&CDH).unwrap();
+            }
+            if keys >= 2 {
+                e.u8(2).unwrap().map(1).unwrap();
+                e.str("id").unwrap().str("ok.com").unwrap();
+            }
+            e.writer().position()
+        };
+        buf[..n].to_vec()
+    };
+
+    let short = [0x42u8; 31];
+    let ok_uid = [1u8, 2, 3, 4];
+    let cases: std::vec::Vec<(&str, std::vec::Vec<u8>, bool, CtapError)> = std::vec![
+        // getAssertion: present and unusable -> by length.
+        (
+            "GA rpId empty",
+            ga("", &CDH, 2),
+            false,
+            CtapError::InvalidLength
+        ),
+        (
+            "GA cdh short",
+            ga("ok.com", &short, 2),
+            false,
+            CtapError::InvalidLength
+        ),
+        (
+            "GA cdh empty",
+            ga("ok.com", &[], 2),
+            false,
+            CtapError::InvalidLength
+        ),
+        // getAssertion: genuinely absent -> unchanged.
+        (
+            "GA cdh absent",
+            ga("ok.com", &CDH, 1),
+            false,
+            CtapError::MissingParameter
+        ),
+        (
+            "GA all absent",
+            ga("ok.com", &CDH, 0),
+            false,
+            CtapError::MissingParameter
+        ),
+        // makeCredential: the fixed-size fields by length, the user entity by content.
+        (
+            "MC rpId empty",
+            mc("", &CDH, &ok_uid),
+            true,
+            CtapError::InvalidLength
+        ),
+        (
+            "MC cdh short",
+            mc("ok.com", &short, &ok_uid),
+            true,
+            CtapError::InvalidLength
+        ),
+        (
+            "MC userId empty",
+            mc("ok.com", &CDH, &[]),
+            true,
+            CtapError::InvalidParameter
+        ),
+        // And the truncations, which the ordered-key check could not see: each of
+        // these ends BEFORE a mandatory key, so nothing later arrives to compare
+        // against. Measured on a YubiKey 5.8.0: `0x14` for every one.
+        (
+            "MC empty map",
+            mc_trunc(0),
+            true,
+            CtapError::MissingParameter
+        ),
+        (
+            "MC {1} only",
+            mc_trunc(1),
+            true,
+            CtapError::MissingParameter
+        ),
+        (
+            "MC {1,2} only",
+            mc_trunc(2),
+            true,
+            CtapError::MissingParameter
+        ),
+        // An `id` missing from INSIDE the entity map. The value it leaves behind
+        // is the same empty one a present-but-empty `id` leaves, so the shape
+        // checks below cannot tell them apart — and the reference does: it calls
+        // this absence `MissingParameter` and the empty value a length error.
+        // Both of these regressed to the shape codes on the first split, and only
+        // the two-key hardware differential caught it.
+        (
+            "MC rp map has no id",
+            mc_no_id(2),
+            true,
+            CtapError::MissingParameter
+        ),
+        (
+            "MC user map has no id",
+            mc_no_id(3),
+            true,
+            CtapError::MissingParameter
+        ),
+    ];
+
+    for (label, req, is_mc, expected) in cases {
+        let mut out = [0u8; 512];
+        let mut state = crate::FidoState::new();
+        let mut presence = crate::AlwaysConfirm;
+        let mut ctx = Ctx {
+            presence: &mut presence,
+            dev: dev(),
+            fs: &mut fs,
+            rng: &mut rng,
+            state: &mut state,
+            now_ms: 10,
+        };
+        let got = if is_mc {
+            make_credential(&mut ctx, &req, &mut out)
+        } else {
+            get_assertion(&mut ctx, &req, &mut out)
+        };
+        assert_eq!(got, Err(expected), "{label}");
+    }
+}
+
+// An rpId or user.id past its ceiling is rejected explicitly, not by a downstream
+// box overflow that would surface as a vague Other — and each by the code the
+// reference uses for THAT field: an rpId answers by length, a user.id by content
+// (measured on a YubiKey 5.8.0, which answers `0x02` to a 65-byte user.id). The
+// pairing is the point: one shared code here hid that split for both fields.
 #[test]
 fn overlong_rpid_or_userid_rejected() {
     let (mut fs, mut rng) = setup();
@@ -3532,7 +4115,10 @@ fn overlong_rpid_or_userid_rejected() {
         };
         buf[..n].to_vec()
     };
-    for req in [mk(&over_rp, &[1, 2, 3, 4]), mk("ok.com", &[0u8; 65])] {
+    for (req, expected) in [
+        (mk(&over_rp, &[1, 2, 3, 4]), CtapError::InvalidLength),
+        (mk("ok.com", &[0u8; 65]), CtapError::InvalidParameter),
+    ] {
         let mut out = [0u8; 512];
         let mut state = crate::FidoState::new();
         let mut presence = crate::AlwaysConfirm;
@@ -3544,10 +4130,7 @@ fn overlong_rpid_or_userid_rejected() {
             state: &mut state,
             now_ms: 10,
         };
-        assert_eq!(
-            make_credential(&mut ctx, &req, &mut out),
-            Err(CtapError::InvalidLength)
-        );
+        assert_eq!(make_credential(&mut ctx, &req, &mut out), Err(expected));
     }
 }
 

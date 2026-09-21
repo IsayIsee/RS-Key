@@ -13,10 +13,6 @@
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use rsk_fs::{Fs, Storage};
-// The LED config-block FID (sticky, outside both reset scopes) is single-sourced
-// in `rsk_led` so the FIDO CONFIG_WRITE/READ LED target agrees on it. A legacy
-// 2/3-byte record is mapped onto the idle status by [`crate::led::load_block`].
-use rsk_led::EF_LED_CONF;
 // Only the measurement builds answer a bench APDU, so only they name a status
 // word here; the shipped image has no use for either import.
 #[cfg(any(feature = "keygen-bench", feature = "bench"))]
@@ -188,16 +184,12 @@ impl rsk_vendor::Platform for VendorPlatform {
 /// Apply the LED config persisted in `EF_LED_CONF` (called by `main` on boot).
 /// `load_block` tolerates a legacy 2/3-byte record from an older firmware.
 ///
-/// On a device that has never customised the LEDs the record is absent, so the
-/// live defaults are persisted once here. That way a host `CONFIG_READ` over FIDO
-/// always gets the full block to read-modify-write (it can't know the build
-/// defaults); the stored block equals the defaults, so the LED output is unchanged.
+/// The arms — apply, seed the live block on a first boot, refuse a probe the flash
+/// could not answer — are [`rsk_vendor::load_or_seed_led_config`], host-tested
+/// there; this is the marshalling the atomics need.
 pub fn load_led_config<S: Storage>(fs: &mut Fs<S>) {
     let mut buf = [0u8; crate::led::CONF_LEN];
-    match fs.read(EF_LED_CONF, &mut buf) {
-        Some(n) => crate::led::load_block(&buf[..n.min(buf.len())]),
-        None => {
-            let _ = fs.put(EF_LED_CONF, &crate::led::config_block());
-        }
+    if let Ok(n) = rsk_vendor::load_or_seed_led_config(fs, &crate::led::config_block(), &mut buf) {
+        crate::led::load_block(&buf[..n]);
     }
 }

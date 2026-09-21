@@ -74,8 +74,8 @@ const OP_POWER_CYCLE: u8 = 6;
 const OP_TIME_PASSES: u8 = 7;
 
 /// The token issuance `clientpin::issue_token` performs, in its own order
-/// (`clientpin.rs:417-423`): fresh token, begin using it, then the permission
-/// set. Its rpId binding (`:424-430`) is left out — `paut.has_rp_id` starts
+/// (`clientpin.rs:420-426`): fresh token, begin using it, then the permission
+/// set. Its rpId binding (`:427-433`) is left out — `paut.has_rp_id` starts
 /// false and no clause here reads the hash. Reproduced rather than called
 /// because the real function needs a whole `Ctx` — flash, a device identity and
 /// a presence source — none of which this sequence has. Not because *holding* a
@@ -96,7 +96,7 @@ fn issue_token(st: &mut FidoState, rng: &mut StepRng, permissions: u8, now_ms: u
 /// a symbolic five-operation sequence, against the two guard shapes the call
 /// sites actually use:
 ///
-/// - the **UV** shape — `getassertion.rs:384-387`, `makecredential.rs:513-516` —
+/// - the **UV** shape — `getassertion.rs:420-423`, `makecredential.rs:559-562` —
 ///   whose distinguishing conjunct is `user_verified()`;
 /// - the **bare** shape — `config.rs:243-245`, `credmgmt.rs:284` — which tests
 ///   the MAC and the permission bits and *nothing else*. For those two the only
@@ -201,8 +201,8 @@ fn no_token_after_invalidation() {
             _ => {}
         }
 
-        // A1 — the UV-shaped call sites (getassertion.rs:384-387,
-        // makecredential.rs:513-516): their `user_verified()` conjunct is false after
+        // A1 — the UV-shaped call sites (getassertion.rs:420-423,
+        // makecredential.rs:559-562): their `user_verified()` conjunct is false after
         // an invalidation and true after an issuance, and at no other time.
         kani::assert(
             verified == st.user_verified(),

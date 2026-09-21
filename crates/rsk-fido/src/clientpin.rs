@@ -182,7 +182,10 @@ fn set_pin<S: Storage, R: Rng>(
     require_pin_inputs(req, true, false)?;
     // §6.5.5.5: "If a PIN has already been set, authenticator returns
     // CTAP2_ERR_PIN_AUTH_INVALID error" — changePIN is the only way to replace one.
-    if ctx.fs.has_data(EF_PIN) {
+    // Not `has_data`: it answers the same `false` for "no PIN" and for a probe the
+    // flash could not serve, and this is the whole guard — so a faulted read let an
+    // unauthenticated host install its own PIN over the owner's.
+    if ctx.fs.try_has_data(EF_PIN).map_err(|_| CtapError::Other)? {
         return Err(CtapError::PinAuthInvalid);
     }
     let new_pin_enc = req.new_pin_enc.unwrap();
@@ -409,8 +412,8 @@ fn issue_token<S: Storage, R: Rng>(
 ) -> CtapResult {
     // §6.5.5.7.2 step 12 / .3 step 11: a `pcmr` request is answered with the
     // persistent token and stops there — it neither mints nor begins using a
-    // session token. Minting it here *is* the permission assignment: the record
-    // exists only while some platform holds the grant (`EF_PAUTHTOKEN`).
+    // session token. Handing it over *is* the permission assignment; the record is
+    // minted at provisioning, and `ensure_ppuat` re-mints one a PIN change dropped.
     let mut pdata = if permissions & PERM_PCMR != 0 {
         ensure_ppuat(&ctx.dev, ctx.fs, ctx.rng).map_err(|_| CtapError::Other)?
     } else {
@@ -795,6 +798,19 @@ fn spend_and_verify_pin_hash<S: Storage, R: Rng>(
         return Err(CtapError::PinInvalid);
     }
 
+    // The records below supersede copies keyed under the pre-OTP arm, i.e. under
+    // HKDF("NO-OTP", serial_hash) — derivable from the public chip serial. The
+    // one-shot at-rest lap has already run by now, so re-arm it or those copies
+    // stay in the flash ring as an offline dictionary target (rsk-fs
+    // `EF_HARDENED` invariant). BEFORE the writes, and not after: the two are
+    // separate appends, so a reset in between keeps whichever landed, and this
+    // order loses only the re-key — one idempotent lap over a record still in
+    // force — where the other loses the re-arm and no later boot ever laps again.
+    // Gated on it too: a medium that refuses the re-arm reaches the losing state
+    // with no reset at all, and the flash failures below already answer `Other`.
+    if migrated && rsk_fs::request_rescrub(ctx.fs).is_err() {
+        return Err(CtapError::Other);
+    }
     // Correct PIN: migrate a legacy PIN-wrapped seed to the plain format (the
     // only moment its outer layer is open), then reset the counter.
     migrate_keydev_pin(&ctx.dev, ctx.fs, pin_hash).map_err(|_| CtapError::Other)?;
@@ -803,14 +819,6 @@ fn spend_and_verify_pin_hash<S: Storage, R: Rng>(
     ctx.fs
         .put(EF_PIN, &pin_data)
         .map_err(|_| CtapError::Other)?;
-    // The record we just superseded was keyed under the pre-OTP arm, i.e. under
-    // HKDF("NO-OTP", serial_hash) — derivable from the public chip serial. The
-    // one-shot at-rest lap has already run by now, so re-arm it or that copy stays
-    // in the flash ring as an offline dictionary target (rsk-fs `EF_HARDENED`
-    // invariant; audit run-35 found four of five lazy re-keys skipping this).
-    if migrated {
-        rsk_fs::request_rescrub(ctx.fs);
-    }
     Ok(())
 }
 
@@ -955,7 +963,7 @@ fn store_new_pin<S: Storage, R: Rng>(
     // UTF-8 cannot be counted at all — refused under §6.5.5.5's "arbitrary, additional
     // constraints" allowance.
     let cps = pin_code_points(&padded[..pin_len]).ok_or(CtapError::PinPolicyViolation)?;
-    if cps < min_pin_length(ctx.fs) as usize {
+    if cps < try_min_pin_length(ctx.fs).map_err(|_| CtapError::Other)? as usize {
         return Err(CtapError::PinPolicyViolation);
     }
     #[cfg(any(feature = "strong-pin", feature = "fips-profile"))]
@@ -970,26 +978,54 @@ fn store_new_pin<S: Storage, R: Rng>(
 /// The configured minimum PIN length (`EF_MINPINLEN[0]`), or the CTAP default when no
 /// policy is set. Takes `Fs` directly (not a `Ctx`) so the trusted-display set-PIN flow
 /// can read the floor it must enforce without a `Ctx` it does not hold.
+///
+/// Collapsing, and only for the sites that *show* the floor or size a pad buffer from
+/// it. Every site that ENFORCES it takes the private `try_min_pin_length` below.
 pub fn min_pin_length<S: Storage>(fs: &mut Fs<S>) -> u8 {
+    try_min_pin_length(fs).unwrap_or(MIN_PIN_LENGTH)
+}
+
+/// [`min_pin_length`] with the failed read kept apart from the absence. The collapsed
+/// answer is the build's [`MIN_PIN_LENGTH`], which sits below any floor an owner
+/// configured, so a faulted probe stored a PIN the policy forbids — and the stored
+/// verifier is what every later authentication uses.
+fn try_min_pin_length<S: Storage>(fs: &mut Fs<S>) -> rsk_sdk::error::Result<u8> {
     let mut buf = [0u8; 2];
-    match fs.read(EF_MINPINLEN, &mut buf) {
+    Ok(match fs.try_read(EF_MINPINLEN, &mut buf)? {
         Some(n) if n >= 1 => buf[0],
         _ => MIN_PIN_LENGTH,
-    }
+    })
 }
 
 /// The pending forced-PIN-change flag (`EF_MINPINLEN[1]`).
+///
+/// A probe the medium could not answer reads as PENDING, for the same reason as
+/// [`pin_is_set`]: every caller spends `false` to let something through — a token
+/// issued, a changePIN allowed to reuse the old value — so the collapsed answer
+/// waived the gate rather than raising it.
 fn force_change_pending<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>) -> bool {
     let mut buf = [0u8; 2];
-    matches!(ctx.fs.read(EF_MINPINLEN, &mut buf), Some(n) if n >= 2 && buf[1] != 0)
+    match ctx.fs.try_read(EF_MINPINLEN, &mut buf) {
+        Ok(v) => matches!(v, Some(n) if n >= 2 && buf[1] != 0),
+        Err(_) => true,
+    }
 }
 
 /// A successful changePIN satisfies the policy: drop the flag, keep the
 /// minimum and the RP-id hash list (EF_MINPINLEN = [min, force, hashes…]).
 fn clear_force_change<S: Storage>(fs: &mut Fs<S>) -> Result<(), CtapError> {
     let mut buf = [0u8; 2 + 32 * MAX_MIN_PIN_RPIDS];
+    // The collapsing probe stands: a faulted read leaves the flag SET — the
+    // restrictive answer — for one repeat changePIN, onto a third value (§6.5.5.6
+    // refuses the current one). Measured: propagating instead reports a FAILED
+    // change over the new PIN `store_new_pin` has already committed.
+    // `n <= buf.len()` because `Fs::read` answers the record's FULL length and a
+    // record written under a wider `MAX_MIN_PIN_RPIDS` outlives the narrowing.
+    // Skipped rather than clamped: `&buf[..buf.len()]` would write the record back
+    // shortened, dropping RP ids the owner set. Leaving the flag costs one more
+    // PIN change, which is the restrictive side this site already chose.
     if let Some(n) = fs.read(EF_MINPINLEN, &mut buf)
-        && n >= 2
+        && (2..=buf.len()).contains(&n)
         && buf[1] != 0
     {
         buf[1] = 0;
@@ -1022,15 +1058,20 @@ pub enum SetPinError {
     /// The new PIN is longer than [`MAX_PIN_LENGTH`] — the host clientPIN path could not
     /// represent it, so it is refused here too; `max` is that ceiling.
     TooLong { max: u8 },
-    /// The `EF_PIN` write failed (flash error) — no PIN was stored.
+    /// A flash error — the `EF_PIN` write, or the `minPINLength` read the floor check
+    /// needs. No PIN was stored either way.
     Storage,
 }
 
 /// Whether a clientPIN is set. The trusted display gates a destructive local
 /// action behind the PIN only when one exists (otherwise the hold gesture alone
 /// stands in for user verification).
+///
+/// A probe the medium could not answer reads as SET, for the same reason as
+/// [`device_pin_is_set`]: `local_pin_gate` returns `true` outright when no PIN of the
+/// scope exists, so the collapsed `false` waived the gate rather than raising it.
 pub fn pin_is_set<S: Storage>(fs: &mut Fs<S>) -> bool {
-    fs.has_data(EF_PIN)
+    fs.try_has_data(EF_PIN).unwrap_or(true)
 }
 
 /// The PIN's remaining retry budget (the `EF_PIN` counter), or `None` when no PIN is
@@ -1043,8 +1084,19 @@ pub fn pin_retries_left<S: Storage>(fs: &mut Fs<S>) -> Option<u8> {
 
 /// Whether the trusted-display **device PIN** ([`EF_DEVICE_PIN`]) is set. The display
 /// boot-locks and gates its destructive on-device actions on this, not the FIDO clientPIN.
+///
+/// A probe the medium could not answer reads as SET — the display's own gates all
+/// treat `true` as "ask for the PIN first", so the failed probe must not unlock them.
 pub fn device_pin_is_set<S: Storage>(fs: &mut Fs<S>) -> bool {
-    fs.has_data(EF_DEVICE_PIN)
+    try_device_pin_is_set(fs).unwrap_or(true)
+}
+
+/// [`device_pin_is_set`] with a failed probe kept apart from an absence. The vendor
+/// `pin_gate` decides on this whether the seed export needs a second factor at all,
+/// and `Fs::has_data` answers the same `false` for "no device PIN" and "I could not
+/// look".
+pub fn try_device_pin_is_set<S: Storage>(fs: &mut Fs<S>) -> Result<bool, rsk_sdk::error::Error> {
+    fs.try_has_data(EF_DEVICE_PIN)
 }
 
 /// The device PIN's remaining retry budget (read-only, like [`pin_retries_left`]).
@@ -1150,6 +1202,15 @@ fn spend_and_verify_pin_at<S: Storage>(
         };
     }
 
+    // See `spend_and_verify_pin_hash`: the pre-OTP verifier the writes below
+    // supersede is derivable from the public chip serial, the one-shot at-rest lap
+    // has already run, and the re-arm goes BEFORE them and gates them — a reset in
+    // the window then costs an idempotent lap, and a medium that refuses the re-arm
+    // is turned away instead of superseding under a marker nothing will clear.
+    if migrated && rsk_fs::request_rescrub(fs).is_err() {
+        pin_hash.zeroize();
+        return LocalPin::Blocked;
+    }
     // Correct PIN: for the FIDO clientPIN, migrate a legacy PIN-wrapped seed (only
     // openable now) before resetting the counter; the device PIN has no seed to migrate.
     // Fail closed if a required flash write fails.
@@ -1165,11 +1226,6 @@ fn spend_and_verify_pin_at<S: Storage>(
     pin_data[0] = MAX_PIN_RETRIES;
     if fs.put(fid, &pin_data).is_err() {
         return LocalPin::Blocked;
-    }
-    // See `spend_and_verify_pin_hash`: the superseded pre-OTP verifier is derivable
-    // from the public chip serial, and the one-shot at-rest lap has already run.
-    if migrated {
-        rsk_fs::request_rescrub(fs);
     }
     LocalPin::Ok
 }
@@ -1194,7 +1250,7 @@ pub fn store_local_pin<S: Storage>(
     fs: &mut Fs<S>,
     pin: &[u8],
 ) -> Result<(), SetPinError> {
-    let min = min_pin_length(fs);
+    let min = try_min_pin_length(fs).map_err(|_| SetPinError::Storage)?;
     // Counted in code points, like the host path — the pad types ASCII digits today,
     // but the floor is defined that way and the two must not drift apart.
     let cps = pin_code_points(pin).ok_or(SetPinError::TooShort { min })?;

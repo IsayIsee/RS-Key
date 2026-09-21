@@ -498,11 +498,16 @@ fn main() {
     // under-specifies is dropped here. The knobs below then fall back to the
     // Waveshare RP2350-Touch-LCD defaults.
     let disp_cfg = b.and_then(|b| b.display_cs.map(|_| b));
+    // Half `BUILD_DISPLAY_SYS_CLOCK_HZ`, because the PIO transport spends two
+    // instructions per bit and sets no divider. This fallback mirrors
+    // boards/waveshare-touch-lcd.toml; it kept the pre-PIO 62.5 MHz after that file
+    // moved to 80, which left every display build without an explicit `BOARD=` — the
+    // one check.sh compiles included — asserting itself dead in `PioDisplayTx::new`.
     disp!(
         "PK_DISPLAY_SPI_FREQ_HZ",
         disp_cfg
             .and_then(|b| b.display_spi_freq_hz)
-            .unwrap_or(62_500_000)
+            .unwrap_or(80_000_000)
     );
     disp_pin!(
         "PK_DISPLAY_CS",

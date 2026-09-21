@@ -1,0 +1,146 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 RS-Key contributors
+#
+# WHO POPULATES `NoAuthorizationBypass`'s GHOST, and by how many routes.
+#
+# `RSKeySecurityState.tla` names the actions in a comment above the invariant and
+# calls the list eleven. It is 21, over 24 routes, and nothing compared the
+# sentence to the set until `scripts/ghost_gate.py`. HAND-WRITTEN FIELD: `why`.
+# `name`, `routes` and `policies` are DERIVED from the module and compared both
+# ways -- an action that starts recording arrives here unowned, one that stops
+# arrives as a stale entry, and a route deleted from an action that has two is a
+# finding rather than an edit. That last one is the whole reason routes are
+# counted: `RegisterStart`, `RegisterNdStart` and `AssertStart` each record by
+# TWO independent routes, so a per-action name equality stays green over a
+# half-deleted guard.
+#
+# `policies` is the second axis: the `*Policy` operators the assignment consults.
+# A route kept and its guard swapped is the same defect one layer in.
+# `CmBeginViaPpuat` has none -- it reads `gate.ppuatStale` directly -- and that
+# empty list is a fact about the module, not a gap in this file.
+
+[[action]]
+name = "AssertFinish"
+routes = ["AssertFinish/literal"]
+policies = ["TouchPolicy"]
+why = "the touch a getAssertion is served on -- an assertion completed with no confirm is the §6.2 presence gate skipped"
+
+[[action]]
+name = "AssertStart"
+routes = ["AssertStart/TokenBypass", "AssertStart/literal"]
+policies = ["ButtonFreePolicy", "OpPolicy"]
+why = "the §6.2 token door and, separately, the local ceremony's hold on the button that a host request may not preempt"
+
+[[action]]
+name = "ChangePinStart"
+routes = ["PinAttempt/literal"]
+policies = ["PinAttemptPolicy"]
+why = "the §6.5.5.6 old-PIN attempt, charged against the same retry budget and soft lock as every other"
+
+[[action]]
+name = "CmBeginViaPpuat"
+routes = ["CmBeginViaPpuat/literal"]
+policies = []
+why = "a persistent grant record whose PIN is gone still opening the management surface -- E77, and the only route with no *Policy operator behind it"
+
+[[action]]
+name = "CmBeginViaToken"
+routes = ["CmBeginViaToken/TokenBypass"]
+policies = ["TokenPolicy"]
+why = "the §6.8 session-token door, permission and rpId binding together"
+
+[[action]]
+name = "CmNext"
+routes = ["CmNext/literal"]
+policies = ["CmNextPolicy"]
+why = "the walk's owning channel: a Next carries no authorization of its own, so the cursor's channel IS the check"
+
+[[action]]
+name = "ConfigOp"
+routes = ["ConfigOp/TokenBypass"]
+policies = ["ConfigPolicy"]
+why = "§6.11 authenticatorConfig on a live token holding acfg, and not on a presence somebody else spent"
+
+[[action]]
+name = "DeleteCredStart"
+routes = ["DeleteCredStart/TokenBypass"]
+policies = ["TokenPolicy"]
+why = "§6.8.5's delete, gated by the same token as the reads it sits beside"
+
+[[action]]
+name = "GetPinToken"
+routes = ["PinAttempt/literal"]
+policies = ["PinAttemptPolicy"]
+why = "the §6.5.5.7 PIN door: the retry budget and the mismatch batch that arms the soft lock"
+
+[[action]]
+name = "LocalCeremonyStart"
+routes = ["LocalCeremonyStart/literal"]
+policies = ["ButtonFreePolicy"]
+why = "the panel ceremony taking the button, which a host request may not preempt"
+
+[[action]]
+name = "LocalPinOk"
+routes = ["LocalPinOk/literal"]
+policies = ["LocalPinPolicy"]
+why = "the on-panel PIN door, spending the same EF_PIN budget as the host's"
+
+[[action]]
+name = "LocalPinWrong"
+routes = ["LocalPinWrong/literal"]
+policies = ["LocalPinPolicy"]
+why = "the same door refusing, and it must charge the budget it refused against"
+
+[[action]]
+name = "MintPpuat"
+routes = ["PinAttempt/literal"]
+policies = ["PinAttemptPolicy"]
+why = "the persistent pcmr grant is minted through the PIN door, so it is a PIN attempt like any other"
+
+[[action]]
+name = "RegisterNdStart"
+routes = ["RegisterNdStart/TokenBypass", "RegisterNdStart/literal"]
+policies = ["ButtonFreePolicy", "McTokenlessPolicy"]
+why = "§6.1.2 step 10's token-less non-discoverable arm, and the button hold beside it"
+
+[[action]]
+name = "RegisterNdTouched"
+routes = ["RegisterNdTouched/literal"]
+policies = ["TouchPolicy"]
+why = "the touch that arm is served on -- it is the whole authorization there"
+
+[[action]]
+name = "RegisterStart"
+routes = ["RegisterStart/TokenBypass", "RegisterStart/literal"]
+policies = ["ButtonFreePolicy", "McTokenlessPolicy", "OpPolicy"]
+why = "the §6.1 token door, the makeCredUvNotRqd carve-out, and the button hold"
+
+[[action]]
+name = "RegisterTouched"
+routes = ["RegisterTouched/literal"]
+policies = ["TouchPolicy"]
+why = "the touch a makeCredential is served on"
+
+[[action]]
+name = "ResetConfirmed"
+routes = ["ResetConfirmed/literal"]
+policies = ["TouchPolicy"]
+why = "the touch §6.6 requires inside the window"
+
+[[action]]
+name = "ResetStart"
+routes = ["ResetStart/literal"]
+policies = ["ButtonFreePolicy", "InResetWindowPolicy"]
+why = "the 10 s power-up window, and the button hold beside it"
+
+[[action]]
+name = "SetPinStart"
+routes = ["SetPinStart/literal"]
+policies = ["SetPinPolicy"]
+why = "§6.5.5.4 refuses setPIN over an existing PIN; changePIN is the other door"
+
+[[action]]
+name = "WrongPin"
+routes = ["PinAttempt/literal"]
+policies = ["PinAttemptPolicy"]
+why = "a refused PIN must charge the budget, or the batch that arms the soft lock never fills"

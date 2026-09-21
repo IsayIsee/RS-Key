@@ -366,7 +366,14 @@ fn mark_has_room_matches_raise_mark() {
     // Two owners of one question: the bulk read's skip and `raise_mark`'s own
     // `emit_tlv` arithmetic. Whenever the predicate says a mark fits, the write
     // must succeed — and when it says it does not, the write must fail.
-    for used in [0usize, 100, 900, 957, 958, 959, 1000, CRED_MAX] {
+    //
+    // The last body that still has room for `TAG_LAST_CHAL` + its length byte + a
+    // whole mark — 958 at the shipped CRED_MAX, and DERIVED because the three
+    // probes that straddle it are the only ones that see an off-by-one in either
+    // owner. Copied, `CRED_MAX: 1024 → 1200` moves the edge to 1134, every probe
+    // lands in the fits region, and `<=` → `<` passes.
+    let edge = CRED_MAX - MARK_LEN - 2;
+    for used in [0usize, 100, 900, edge - 1, edge, edge + 1, 1000, CRED_MAX] {
         let mut blob = [0u8; CRED_MAX];
         let mut n = used;
         assert_eq!(

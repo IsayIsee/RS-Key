@@ -15,6 +15,7 @@ import subprocess
 
 import pytest
 
+import gate_lines
 import spdx_gate
 
 HEADER = f"// {spdx_gate.HEADER}\n// Copyright (C) 2026 RS-Key contributors\n"
@@ -233,7 +234,7 @@ def test_the_two_sets_do_not_overlap():
 
 def test_check_sh_still_runs_the_guard():
     check = (spdx_gate.ROOT / "scripts/check.sh").read_text()
-    assert "scripts/spdx_gate.py" in check
+    assert gate_lines.runs(check, "scripts/spdx_gate.py")
 
 
 def test_the_tests_are_named_after_the_guard():

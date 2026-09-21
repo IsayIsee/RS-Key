@@ -1,0 +1,434 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 RS-Key contributors
+#
+# THE DISPOSITION OF EVERY ABSTRACTION NARROWER THAN THE FIRMWARE, and the
+# roster the model page prints. Stage 4's exit asks that each one be closed or
+# carry a separate complementary source obligation; the roster it asks that of
+# lived in formal/README.md as ten hand-typed bullets that NO SCRIPT READ —
+# measured, `grep -rn 'Narrower than the firmware' scripts/` found nothing, and
+# deleting a whole bullet was exit 0 on citation, claims, run-count, threat,
+# evidence, scope, config-gen and comutants alike.
+#
+# HAND-WRITTEN FIELDS ONLY: id, disposition, cites, why, body. What each
+# citation resolves to, whether a mutant configuration is required RED, whether
+# a platform row is still pending, and the page itself are DERIVED by
+# scripts/narrow_gate.py — a hand-kept copy of a derivable fact is the rot this
+# tree has paid for three times now.
+#
+# `body` is the bullet as the page prints it, and it lives HERE rather than
+# there because the page is generated from this file and byte-diffed against it.
+# It is prose with locked `file.rs:line` citations in it, so it is stored
+# wrapped exactly as it reads: re-flowing it here would churn sixty lines of a
+# page whose citations `citation_gate.py` holds by content.
+
+[[abstraction]]
+id = "NAR-CARDINALITY"
+disposition = "bounded-elsewhere"
+cites = [
+  "scopes:RSKeySecurityState/Channels",
+  "scopes:RSKeySecurityState/RPs",
+]
+why = '''
+The cardinality is bounded where it was measured:
+`RSKeySecurityState/Channels` records the two channels
+`BugCmWalkIgnoresChannel` needs, and `RSKeySecurityState/RPs` the single
+relying party every mutant of this roster fires at, so narrowing either below
+its recorded minimum is a red row rather than a quieter run.
+'''
+body = '''
+- **One credential per relying party**, `MAX_RESIDENT_CREDENTIALS` = 2 rather
+  than 256, two RPs, two channels. The retry pair is narrower in some runs and
+  not others, and the difference is the configuration: `MaxRetries` :
+  `MismatchLimit` is the shipped 8 : 3 in `Shipped.cfg` and the mutant family
+  generated from it, so "a defect that needs the sixth retry" is in reach
+  THERE and finds nothing — while `AlwaysUv`, `PermWide`, `ForceChange`,
+  `Fairness` and `Liveness` run 2 : 1 and `TokenRefinement` runs 1 : 1, which
+  is the same relation one size down and not the shipped pair. What
+  remains narrow is the cardinality: a defect needing a third credential or a
+  third channel is still out of reach, and `formal/scopes.txt` records what the
+  roster actually needs — two channels (`BugCmWalkIgnoresChannel` is GREEN at
+  one), and, measured rather than assumed, **one** relying party, which every
+  mutant here fires at. Nothing in the roster probes above two anywhere. That is
+  a measurement of the roster, not a proof about defects it does not contain.
+'''
+
+[[abstraction]]
+id = "NAR-PERMSETS"
+disposition = "bounded-elsewhere"
+cites = ["assumption:WidePerms"]
+why = '''
+The five subsets are the narrow arm of a standing assumption rather than a
+claim about the code: `WidePerms` runs the other arm over all sixteen, so the
+eleven a host can also obtain are covered by a configuration that can fail.
+'''
+body = '''
+- **Permission sets are the five a host actually requests**, not all 16 subsets
+  (`PermSets`); `largeBlobWrite` is modelled as the empty set that
+  `consume_after_user_presence` leaves behind. A defect reachable only from an
+  unusual permission combination is not modelled.
+'''
+
+[[abstraction]]
+id = "NAR-WAIT-SCOPE"
+disposition = "bounded-elsewhere"
+cites = ["test:w8_a_cancel_that_raced_in_does_not_leak_into_the_next_wait"]
+why = '''
+The model and the Kani harness share the blind spot, and the unit test
+`w8_a_cancel_that_raced_in_does_not_leak_into_the_next_wait` is the
+complementary source obligation that pins the drop at the exit of a wait;
+registering it is what stops that test being deleted with every model row
+still green.
+'''
+body = '''
+- **The wait's scope is modelled as the owner of an open touch wait**, where the
+  worker sets it around the whole dispatch (`Arbiter::set_wait_scope`). The
+  review showed this is exactly as narrow as it sounds: the cancel is dropped at
+  **both** ends of a wait (`crates/rsk-device/src/presence.rs:196` *and*
+  `:230`), so removing either alone leaves the model green — a reviewer trusting
+  one citation would see nothing fall. The Kani harness has the same blind spot
+  and says so; the unit test `w8_…` is what pins the drop at exit.
+'''
+
+[[abstraction]]
+id = "NAR-BUTTON-BUILD"
+disposition = "open-obligation"
+cites = ["question:firmware-display"]
+why = '''
+The display build's presence path is not modelled here at all, and the
+obligation is open where it belongs: the `firmware-display` column of the
+build-configuration matrix carries the settling question a panel that bypasses
+the reset window has to be answered in.
+'''
+body = '''
+- **The button build only** (`presence.shows_confirm() = FALSE`), so the reset
+  window always applies; a display build bypasses it by design (`reset.rs:37`)
+  and that path is unmodelled.
+'''
+
+[[abstraction]]
+id = "NAR-TOKENLESS-REGISTRATION"
+disposition = "closed"
+cites = [
+  "cfg:Solo_BugUvNotRqdIgnoresRk.cfg",
+  "cfg:Solo_BugTokenlessIgnoresAlwaysUv.cfg",
+]
+why = '''
+Both halves are falsifiable in the tree: `Solo_BugUvNotRqdIgnoresRk.cfg` and
+`Solo_BugTokenlessIgnoresAlwaysUv.cfg` are required RED, so the closure rests
+on two configurations that must fall rather than on the paragraph that says it
+closed.
+'''
+body = '''
+- **A registration with a PIN set and no token — CLOSED, and what is left of it
+  is one conjunct.** CTAP 2.1 §6.1.2 steps 7/10 serve a NON-discoverable
+  credential on presence alone even where a PIN is set
+  (`makecredential.rs:589-591`), and `Next` carries it now:
+  `RegisterNdStart` / `RegisterNdTouched` / `RegisterNdRefused`, guarded by
+  `McTokenlessGuard(FALSE)`. It writes nothing, because
+  `makecredential.rs:823-824` stores only under `req.rk`, so it carries no `rp`
+  either. What stays narrow is the `~tok.live` conjunct in that guard: above
+  `state.rs:530` the same touch SPENDS a live token without binding it, and tier
+  A has no word for that edge — its `UseMc` admits an authorized event only
+  under `~pinSet \/ (live /\ permissionMc)` and its `Consumed` requires the rpId
+  binding this path never makes. So the model takes the states where B and the
+  firmware agree exactly (`consume_after_user_presence` is a no-op there) and
+  leaves widening tier A to the stage-4 token-refinement work. Falsifiable at
+  both halves: `Solo_BugUvNotRqdIgnoresRk.cfg` (a discoverable credential served
+  token-lessly with a PIN set) and `Solo_BugTokenlessIgnoresAlwaysUv.cfg`
+  (§6.1.2 steps 6.2/6.4 dropped), each RED on `NoAuthorizationBypass`, each with
+  a code co-mutant in the same function.
+'''
+
+[[abstraction]]
+id = "NAR-ABSENT-FLOWS"
+disposition = "open-obligation"
+cites = [
+  "question:largeblob-ext",
+  "platform:PLAT-MODEL-011",
+]
+why = '''
+The absent flows are owed elsewhere and still owed: `largeblob-ext` is a build
+column whose settling question is open, and `PLAT-MODEL-011` carries the
+vendor seed-export surface `EF_DEVICE_PIN` gates — neither is closed, and this
+row says which of the two kinds of not-closed each one is.
+'''
+body = '''
+- **`largeBlobs`, `getNextAssertion`, the MSE seed-backup channel and built-in
+  UV are absent.** They carry their own channel-ownership rules
+  (`state.rs:33-51`, `:326-333`) that this model does not check — the most
+  obvious place to extend it. The trusted-display ceremony is NOT on that list
+  and used to be: `RSKeyTrustedDisplay` models the panel's Approve/Deny with
+  its own configurations in the safety tier. What stays absent is its meeting
+  with the rules above — no configuration here runs a panel ceremony and a
+  CTAPHID channel together.
+'''
+
+[[abstraction]]
+id = "NAR-TWO-TRANSPORTS"
+disposition = "accepted"
+cites = ["threat:TM-HOST-TWO-TRANSPORTS"]
+why = '''
+Two transports is the threat model's own scope: `TM-HOST-TWO-TRANSPORTS` is
+the clause the CTAPHID and CCID pair is stated in, and the OTP and on-panel
+ceremonies are outside what any property here is claimed about.
+'''
+body = '''
+- **Two transports** (CTAPHID, CCID). `SCOPE_OTP` and the on-panel
+  `SCOPE_NONE` ceremonies are not modelled.
+'''
+
+[[abstraction]]
+id = "NAR-OATH-REMOVAL"
+disposition = "closed"
+cites = ["cfg:SeamSolo_BugRemoveCodeUnvalidated.cfg"]
+why = '''
+The step recorder is what closed it, and
+`SeamSolo_BugRemoveCodeUnvalidated.cfg` is required RED — so an ungated
+removal no state predicate could ever have seen now has a configuration that
+falls over it.
+'''
+body = '''
+- **OATH's access-code REMOVAL is modelled now — CLOSED, and the closure proves
+  the diagnosis.** The hole stood recorded for two revisions: an ungated removal
+  is *definitionally* invisible to `NoStatusOutsideItsSelection`, whose
+  `oathCode` exemption fires exactly when `~oathCodeSet` — the very state the
+  removal produces. The repair is therefore a recorder at the STEP, not a change
+  to the exemption: `OathRemoveCode` carries the gate
+  (`crates/rsk-oath/src/lib.rs:330-332`) as a Guard/Policy pair and
+  `AccessCodeRemovalNeedsTheCode` is its own invariant. Measured exactly as the
+  diagnosis predicted: the action adds no new kind of state, while
+  `BugRemoveCodeUnvalidated` falls RED in 71 — a violation no state
+  predicate could ever have seen, caught by the step recorder.
+'''
+
+[[abstraction]]
+id = "NAR-ASSIGNMENT-HOLES"
+disposition = "closed"
+cites = [
+  "cfg:SeamSolo_BugPinFreshOutlivesPin.cfg",
+  "cfg:SeamSolo_BugPinFreshNotSpent.cfg",
+  "cfg:SeamSolo_BugSigPinNotSpent.cfg",
+]
+why = '''
+All three are structural now: `SeamSolo_BugPinFreshOutlivesPin.cfg`,
+`SeamSolo_BugPinFreshNotSpent.cfg` and `SeamSolo_BugSigPinNotSpent.cfg` are
+required RED without their own `viol` assignment, which is the difference
+between a defect the invariant sees and one the mutant announces.
+'''
+body = '''
+- **The two assignment-shaped holes are closed.** `NoKeyOpOnTheAdminStatus`
+  now asserts `fresh = pfresh` and, while OpenPGP is selected under one-shot
+  PW1, `held["pw1"] = psig`. `BugPinFreshOutlivesPin`,
+  `BugPinFreshNotSpent` and `BugSigPinNotSpent` therefore fall structurally in
+  42, 45 and 212 distinct states; they no longer depend on their own `viol`
+  assignment to report the defect.
+'''
+
+[[abstraction]]
+id = "NAR-GATE-FIDS"
+disposition = "open-obligation"
+cites = [
+  "platform:PLAT-MODEL-009",
+  "platform:PLAT-MODEL-011",
+]
+why = '''
+The two absent records are registered questions rather than an omission:
+`PLAT-MODEL-009` is `EF_MINPINLEN`'s floor and disclosure list and
+`PLAT-MODEL-011` is `EF_DEVICE_PIN`'s gated surface, both still pending in the
+platform ledger.
+'''
+body = '''
+- **Three of `is_fido_gate_fid`'s FIVE records are modelled** — `EF_PIN`,
+  `EF_ALWAYS_UV` and `EF_BACKUP_SEALED`. `EF_DEVICE_PIN` and `EF_MINPINLEN` are
+  absent. It was six until `eab4b5c` moved `EF_PAUTHTOKEN` out: the predicate's
+  own rule is "records whose *absence* is permissive", a grant is a permission,
+  so its absence is restrictive, and it was the one member that never met the
+  rule. It is a secret here now, swept in phase 1.
+'''
+
+[[abstraction]]
+id = "NAR-STORE-FIDS"
+disposition = "bounded-elsewhere"
+cites = ["scopes:RSKeyStore/Fids"]
+why = '''
+RSKeyStore/Fids is where the flash layer's two records are recorded, and the
+minimum is the one BugMetaAddDropsOnFault needs: one fid to write, one whose
+record must survive the write.
+'''
+body = '''
+- **The flash layer holds two records** (`Fids`), and stands for `Fs` over a
+  `Storage` backend with none of the applets, the seal, `rsk-store`'s
+  two-partition ring, wear or reclaim in it — and no value bytes beyond "which
+  of two distinct values". A defect needing a third record, a second partition
+  or a particular byte pattern is out of reach.
+'''
+
+[[abstraction]]
+id = "NAR-TRANSPORT-CHANNELS"
+disposition = "bounded-elsewhere"
+cites = ["scopes:RSKeyTransport/Channels"]
+why = '''
+RSKeyTransport/Channels records the two the reassembler needs — one to own the
+transaction and one to splice into it — which is the minimum
+BugContIgnoresChannel falls at.
+'''
+body = '''
+- **Two CTAPHID channels at the reassembler.** One owns the transaction and
+  one splices into it, which is exactly what a cross-channel splice needs and
+  no more. A defect that needs a third channel — an interleaving of two
+  intruders, or a channel table that fills — is not reachable at this scope.
+'''
+
+[[abstraction]]
+id = "NAR-TRANSPORT-CHUNKS"
+disposition = "bounded-elsewhere"
+cites = ["scopes:RSKeyTransport/Cap"]
+why = '''
+RSKeyTransport/Cap is the buffer's whole capacity here, and the module's own
+precondition is two; a frame carries a chunk rather than payload bytes because
+none of the three properties looks at byte contents.
+'''
+body = '''
+- **A frame carries a CHUNK, not payload bytes, and the buffer holds three
+  of them** where CTAPHID's real message is a hundred and twenty-nine frames.
+  The properties look only at which channel a chunk came from, whether it
+  arrived in order and how many the buffer holds, so a defect in byte handling
+  — an offset, a length field, a partial copy — is invisible here by
+  construction.
+'''
+
+[[abstraction]]
+id = "NAR-OTP-COUNTER"
+disposition = "bounded-elsewhere"
+cites = [
+  "scopes:RSKeyAppletPolicies/CounterMax",
+  "scopes:RSKeyAppletPolicies/SessionMax",
+  "scopes:RSKeyAppletPolicies/Slots",
+  "test:use_counter_climbs_and_stops_at_the_ceiling",
+]
+why = '''
+The three scopes are the replay position's own domain, one row each:
+RSKeyAppletPolicies/CounterMax is the persisted half's range,
+RSKeyAppletPolicies/SessionMax is the volatile half's, and
+RSKeyAppletPolicies/Slots is the set a record can be moved between. Every
+mutant of the roster fires at the recorded minimum of each, so the arithmetic
+is checked at a domain the firmware's own is far wider than. What no scope of
+this model reaches is bounded at source instead:
+use_counter_climbs_and_stops_at_the_ceiling quantifies over every session byte
+and both stepped writers across the whole 0x7FFF domain, and which writers it
+does NOT reach is the derived roster of assurance/otp_counter_writers.toml
+rather than a sentence anywhere.
+'''
+body = '''
+- **The OTP use counter runs to a handful of steps** (`CounterMax`) where the
+  record's is `0x7FFF`, and the session to a single wrap (`SessionMax`) where
+  the record's is a byte. Two of the three things this bullet used to say had
+  no state to appear in now do — a session beside the counter, and a second
+  slot (`Slots`) to move a record to — and a mutant falls on each. The third
+  does not: `OtpUse` types and steps in one action, so a press whose advance
+  the store REFUSES has no failing arm here, and neither has the warm reset,
+  which restarts the session over an unchanged counter and is a real repeat
+  the source page carries as a residual. Nor does the top of the range: a
+  defect needing the real ceiling, or more sessions than one wrap, still has
+  nowhere here to appear.
+'''
+
+[[abstraction]]
+id = "NAR-RETRY-LATTICE"
+disposition = "bounded-elsewhere"
+cites = ["scopes:RSKeyRetryLattice/Max"]
+why = '''
+RSKeyRetryLattice/Max is the counter ceiling every mutant of that module fires
+at, and the secret is abstracted to matched or not-matched, so the model is
+the arithmetic around a comparison's answer.
+'''
+body = '''
+- **The PIN comparison is a nondeterministic boolean** (`correct`), the
+  counters run to a single step (`Max`), and OpenPGP's admin path from PW3 to
+  PW1 is deliberately outside the recovery graph because it gates on a live
+  PW3 session. The cryptography, the PIN bytes and the wire framing are
+  elsewhere; a defect in the comparison itself cannot be seen from here.
+'''
+
+[[abstraction]]
+id = "NAR-ADMIN-CAPS"
+disposition = "bounded-elsewhere"
+cites = ["scopes:RSKeyAdminSurface/Caps"]
+why = '''
+RSKeyAdminSurface/Caps is one opaque capability, which is what every mutant of
+the admin surface fires at, and the clamp to the supported set is modelled by
+construction rather than checked.
+'''
+body = '''
+- **The capability mask is a set of opaque capabilities**, not the 16-bit
+  `USB_ENABLED` bitmask, and the clamp to the supported set is enforced by
+  construction rather than checked. The config-lock TLV is present only as the
+  class of write that carries no capability change, and its
+  unsealed-disclosure hole is a data-handling property that stays in the strip
+  function's unit tests.
+'''
+
+[[abstraction]]
+id = "NAR-BOOT-WEAK"
+disposition = "bounded-elsewhere"
+cites = ["scopes:RSKeyBootHardening/MaxWeak"]
+why = '''
+RSKeyBootHardening/MaxWeak is one superseded copy, the scope every mutant of
+the boot module fires at, and the count does not name which record each
+shadows.
+'''
+body = '''
+- **The boot scrub counts superseded weak-sealed copies without naming which
+  record each one shadows** (`MaxWeak`), and the device is assumed
+  OTP-provisioned — a pre-OTP board never laps and has nothing to scrub. A
+  defect that depends on WHICH record a stale copy belongs to is not
+  expressible.
+'''
+
+[[abstraction]]
+id = "NAR-RESET-WINDOW"
+disposition = "bounded-elsewhere"
+cites = ["scopes:RSKeySecurityState/ResetWindow"]
+why = '''
+RSKeySecurityState/ResetWindow is recorded at its floor and measured against
+NoAuthorizationBypass, so the window is modelled at its narrowest rather than
+at the duration the firmware waits.
+'''
+body = '''
+- **The reset window is modelled at its narrowest** (`ResetWindow` at its
+  floor): the model asks whether a reset is refused outside the window at all,
+  not how long the window is. The firmware's is a ten-second timer, so a
+  defect in the timing itself — a clock that does not advance, a window that
+  reopens — is a question about a duration this scope does not carry.
+'''
+
+[[abstraction]]
+id = "NAR-FLASH-WRITES"
+disposition = "open-obligation"
+cites = ["platform:PLAT-CRED-002"]
+why = '''
+PLAT-CRED-002 is the registered form of this and is still pending: no action
+of the module can fail a flash write, so an Err from a put, and a best-effort
+rollback that itself fails, are outside every configuration.
+'''
+body = '''
+- **No modelled action can fail a flash write.** The only tears are a power
+  cut and an aborted reset BETWEEN two writes that succeeded, so a store that
+  answers `Err` — and a best-effort rollback that fails in its turn — is
+  outside every configuration the FIDO properties are checked on.
+'''
+
+[[abstraction]]
+id = "NAR-FACTORY-WIPE"
+disposition = "open-obligation"
+cites = ["platform:PLAT-TOKEN-004"]
+why = '''
+PLAT-TOKEN-004 is the registered form and is still pending: the modelled reset
+is not the only deleter of the PIN record, and no configuration in this tree
+runs the path that bypasses it.
+'''
+body = '''
+- **`reset()` is the only modelled deleter of the PIN record, and it is not
+  the only one.** `Fs::factory_wipe` bypasses it entirely, so every invariant
+  that reads "the PIN record is gone" is about one of the two ways it can go.
+'''

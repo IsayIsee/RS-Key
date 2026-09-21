@@ -393,8 +393,8 @@ fn resident_make_credential_stores_and_returns_resident_id() {
     // global EF_COUNTER stays untouched and the credential's own counter is seeded
     // to 1 so its first assertion reports 1.
     assert_eq!(u32::from_be_bytes(auth_data[33..37].try_into().unwrap()), 0);
-    assert_eq!(crate::seed::get_sign_counter(&mut fs), 0);
-    assert_eq!(crate::seed::cred_sign_counter(&mut fs, 0), Some(1));
+    assert_eq!(crate::seed::global_sign_counter(&mut fs).unwrap(), 0);
+    assert_eq!(crate::seed::cred_sign_counter(&mut fs, 0), Ok(Some(1)));
 }
 
 #[test]
@@ -930,11 +930,27 @@ fn credprotect_out_of_range_rejected() {
     }
 }
 
-#[test]
-fn hmac_secret_mc_empty_salt_rejected() {
-    // hmac-secret-mc present (with the required hmac-secret flag) but carrying
-    // no salt must be rejected up front (MissingParameter), matching the
-    // getAssertion hmac-secret empty-salt guard.
+/// An `hmac-secret-mc` value with no sub-fields in it is not a request to
+/// evaluate anything, and the oracle treats it as if the extension had not been
+/// sent: a YubiKey 5.8.0 registers the credential (and does so even without the
+/// `hmac-secret` flag beside it, which a present one would demand). A map that
+/// carries SOME of the fields is a different thing and still owes the rest —
+/// that card answers MISSING_PARAMETER to one missing `saltEnc`. This test used
+/// to assert the first case was MissingParameter too, which no client sends and
+/// the reference does not do.
+/// The `hmac-secret-mc` value shapes this test distinguishes.
+enum McHmacShape {
+    /// No sub-fields: `{}`.
+    EmptyMap,
+    /// Not a map at all.
+    Boolean,
+    /// Some fields, salts missing.
+    PartialMap,
+}
+
+/// A makeCredential whose `hmac-secret-mc` takes `shape`, with the `hmac-secret`
+/// flag beside it or not.
+fn mc_request_hmac_mc(shape: &McHmacShape, flag: bool) -> std::vec::Vec<u8> {
     let mut buf = [0u8; 256];
     let n = {
         let mut e = Encoder::new(Cursor::new(&mut buf[..]));
@@ -948,14 +964,62 @@ fn hmac_secret_mc_empty_salt_rejected() {
         e.u8(4).unwrap().array(1).unwrap().map(2).unwrap();
         e.str("alg").unwrap().i64(ALG_ES256).unwrap();
         e.str("type").unwrap().str("public-key").unwrap();
-        e.u8(6).unwrap().map(2).unwrap();
-        e.str("hmac-secret").unwrap().bool(true).unwrap();
-        e.str("hmac-secret-mc").unwrap().map(0).unwrap(); // no salt fields
+        e.u8(6).unwrap().map(if flag { 2 } else { 1 }).unwrap();
+        if flag {
+            e.str("hmac-secret").unwrap().bool(true).unwrap();
+        }
+        e.str("hmac-secret-mc").unwrap();
+        match shape {
+            McHmacShape::EmptyMap => {
+                e.map(0).unwrap();
+            }
+            McHmacShape::Boolean => {
+                e.bool(true).unwrap();
+            }
+            McHmacShape::PartialMap => {
+                e.map(1).unwrap();
+                e.u8(4).unwrap().u8(2).unwrap();
+            }
+        }
         e.u8(7).unwrap().map(1).unwrap();
         e.str("rk").unwrap().bool(true).unwrap();
         e.writer().position()
     };
-    assert_eq!(run_err(&buf[..n]), CtapError::MissingParameter);
+    buf[..n].to_vec()
+}
+
+/// An `hmac-secret-mc` value with no sub-fields in it is not a request to
+/// evaluate anything, and the oracle reads it as if the extension had not been
+/// sent: a YubiKey 5.8.0 registers the credential, and does so even without the
+/// `hmac-secret` flag beside it — which a *present* one would demand. A map that
+/// carries SOME of the fields is a different thing and still owes the rest; that
+/// card answers MISSING_PARAMETER to one missing its salts. This test used to
+/// assert the first case was MissingParameter too, which no client sends and the
+/// reference does not do.
+#[test]
+fn hmac_secret_mc_with_no_subfields_is_absent_a_partial_one_is_not() {
+    assert!(
+        !run(&mc_request_hmac_mc(&McHmacShape::EmptyMap, true))
+            .0
+            .is_empty(),
+        "an empty hmac-secret-mc map must register"
+    );
+    assert!(
+        !run(&mc_request_hmac_mc(&McHmacShape::Boolean, true))
+            .0
+            .is_empty(),
+        "a non-map hmac-secret-mc must register"
+    );
+    assert!(
+        !run(&mc_request_hmac_mc(&McHmacShape::EmptyMap, false))
+            .0
+            .is_empty(),
+        "an absent one does not owe the hmac-secret flag"
+    );
+    assert_eq!(
+        run_err(&mc_request_hmac_mc(&McHmacShape::PartialMap, true)),
+        CtapError::MissingParameter
+    );
 }
 
 #[test]
@@ -1315,7 +1379,10 @@ fn make_credential_requires_pin_for_a_discoverable_credential() {
     // A PIN is set and `rk` is true, but the request carries no pinUvAuthParam →
     // PUAT_REQUIRED. makeCredUvNotRqd (§6.1.2 step 7) does NOT cover a
     // discoverable credential.
-    let mut out = [0u8; 256];
+    // Sized for a SERVED response on purpose: at 256 a mutant that drops the
+    // refusal reports the encoder's `Err(Other)`, which reads as "still refused"
+    // — the credential is minted either way (measured `Ok(770)`).
+    let mut out = [0u8; 1024];
     let mut presence = crate::AlwaysConfirm;
     let mut ctx = Ctx {
         presence: &mut presence,
@@ -1369,7 +1436,7 @@ fn always_uv_overrides_make_cred_uv_not_rqd() {
     // §6.1.2 step 6: alwaysUv makes makeCredUvNotRqd false, so even the
     // non-discoverable request above is refused without a token.
     fs.put(EF_ALWAYS_UV, &[1]).unwrap();
-    let mut out = [0u8; 256];
+    let mut out = [0u8; 1024];
     let mut presence = crate::AlwaysConfirm;
     let mut ctx = Ctx {
         presence: &mut presence,
@@ -1606,9 +1673,11 @@ fn always_uv_requires_user_verification_without_pin() {
     let mut state = crate::FidoState::new();
     // No PIN, but alwaysUv is on → makeCredential still demands UV (a verified
     // pinUvAuthToken) and rejects an up-only request. Without the EF_ALWAYS_UV
-    // guard this same request succeeds, so the assert is mutation-proof.
+    // guard this same request succeeds — `Ok(802)`, measured, which is what the
+    // 1024-byte `out` below is for: at 256 the same mutant reported `Err(Other)`
+    // from the encoder and the kill read as a refusal with a different code.
     fs.put(EF_ALWAYS_UV, &[1]).unwrap();
-    let mut out = [0u8; 256];
+    let mut out = [0u8; 1024];
     let mut presence = crate::AlwaysConfirm;
     let mut ctx = Ctx {
         presence: &mut presence,
@@ -2653,4 +2722,76 @@ fn the_trace_reader_reports_the_two_fields_the_gate_is_a_function_of() {
     // A body the device itself would refuse to decode has no gate answer, and
     // the mapper must not invent one from a default.
     assert_eq!(trace_request_flags(&[0xFF, 0xFF]), None);
+}
+
+/// §6.1.2 steps 7/10: with a PIN configured, a DISCOVERABLE credential still needs
+/// a pinUvAuthToken. The whole test is `has_data(EF_PIN)`, which answers the same
+/// `false` for "no PIN" and for a probe the flash could not serve — so a faulted
+/// read made the request look like one on an unprotected authenticator and minted
+/// the credential on user presence alone, `uv` clear.
+#[test]
+fn a_faulted_pin_probe_does_not_drop_the_makecredential_uv_gate() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    let dev = Device {
+        serial_hash: &[0xAB; 32],
+        serial_id: &[1, 2, 3, 4, 5, 6, 7, 8],
+        otp_key: None,
+    };
+    let mut rng = SeqRng(1);
+    ensure_seed(&dev, &mut fs, &mut rng).unwrap();
+    let mut pin_file = [0u8; 35];
+    pin_file[0] = 8; // retries
+    pin_file[1] = 4; // length
+    pin_file[2] = 1; // format
+    fs.put(EF_PIN, &pin_file).unwrap();
+
+    let req = build_request(true);
+    let mut out = [0u8; 1024];
+    let mut state = crate::FidoState::new();
+    let mut presence = crate::AlwaysConfirm;
+    // With the PIN readable the gate is the spec's: a token-less rk request is
+    // refused with PUAT_REQUIRED.
+    let mut ctx = Ctx {
+        presence: &mut presence,
+        dev,
+        fs: &mut fs,
+        rng: &mut rng,
+        state: &mut state,
+        now_ms: 1000,
+    };
+    assert_eq!(
+        make_credential(&mut ctx, &req, &mut out),
+        Err(CtapError::PuatRequired)
+    );
+    medium.stick(Some(EF_PIN));
+    assert_eq!(
+        make_credential(&mut ctx, &req, &mut out),
+        Err(CtapError::Other),
+        "a faulted EF_PIN probe read as 'no PIN configured' and minted the credential"
+    );
+}
+
+/// `Fs::read` answers the record's FULL length, so an `EF_EA_RPIDS` list written
+/// under a wider `MAX_EA_RPIDS` reads back longer than this build's buffer and
+/// `buf[..n]` panicked — inside `makeCredential`, before any response. Clamped
+/// rather than refused, and the direction is the whole argument: the entries this
+/// build can hold still match, the ones past its buffer cannot, so a narrowed
+/// allowlist only ever DECLINES type-1 enterprise attestation. Asserted both ways.
+#[test]
+fn an_ea_list_wider_than_this_build_matches_what_it_holds_and_declines_the_rest() {
+    let mut fs = Fs::new(RamStorage::new());
+    let held = sha256(b"held.example");
+    let past = sha256(b"past-the-buffer.example");
+    let mut list = [0u8; 32 * (MAX_EA_RPIDS + 1)];
+    list[..32].copy_from_slice(&held);
+    list[32 * MAX_EA_RPIDS..].copy_from_slice(&past);
+    fs.put(EF_EA_RPIDS, &list).unwrap();
+
+    assert!(rp_eligible_for_vendor_ea(&mut fs, &held));
+    assert!(
+        !rp_eligible_for_vendor_ea(&mut fs, &past),
+        "an entry past the buffer declines; it must never grant"
+    );
 }

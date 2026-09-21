@@ -492,27 +492,27 @@ async fn serve<PR: rsk_sdk::UserPresence + 'static>(
     };
 
     let mut fido_state = rsk_fido::FidoState::new();
-    {
+    // `main.rs`'s boot block in its order, at process start, replug and warm reboot
+    // alike. The seal migrations are no-ops without an OTP root; `scan_files` lays
+    // down the OpenPGP DOs, without which SELECT succeeds over an empty PW-status DO.
+    let boot_block = || {
         let mut fsb = fs.borrow_mut();
         let mut rngb = rng.borrow_mut();
-        // `main.rs`'s boot block, in its order. The seal migrations are no-ops
-        // without an OTP root, but they are what a device runs and cost nothing
-        // here; `scan_files` is not optional at all — it lays down the OpenPGP
-        // data objects, and without it the applet answers SELECT and then serves
-        // an empty PW-status DO.
         let _ = rsk_fido::seed::migrate_keydev_boot(&dev(), &mut fsb);
         rsk_rescue::keydev::migrate_kbase(&dev(), &mut fsb, &mut *rngb);
         rsk_piv::migrate_kbase(&dev(), &mut fsb, &mut *rngb);
         rsk_oath::migrate_seal(&dev(), &mut fsb, &mut *rngb);
         rsk_otp::migrate_seal(&dev(), &mut fsb, &mut *rngb);
         rsk_fido::credential::migrate_rp_seal(&dev(), &mut fsb);
-        if let Err(e) = rsk_fido::seed::ensure_seed(&dev(), &mut fsb, &mut *rngb) {
-            eprintln!("emu: cannot provision the device seed: {e:?}");
-            return;
-        }
+        let seeded = rsk_fido::seed::ensure_seed(&dev(), &mut fsb, &mut *rngb);
         let _ = rsk_openpgp::scan_files(&dev(), &mut fsb, &mut *rngb);
-        fido_state.ensure_initialized(&mut *rngb);
+        seeded
+    };
+    if let Err(e) = boot_block() {
+        eprintln!("emu: cannot provision the device seed: {e:?}");
+        return;
     }
+    fido_state.ensure_initialized(&mut *rng.borrow_mut());
 
     // The other half of `main.rs`'s boot, and the half a warm reboot must not
     // repeat: advance every plain Yubico-OTP slot's use counter, so the
@@ -723,6 +723,9 @@ async fn serve<PR: rsk_sdk::UserPresence + 'static>(
                     )
                 });
                 ccid.reset_card();
+                // `main.rs` ignores a failed `ensure_seed` too: the next command
+                // answers for whatever store the boot left.
+                let _ = boot_block();
                 power_up_bump();
                 hooks.borrow_mut().warm = false;
                 ctap = AppletHandler::new(
@@ -788,6 +791,7 @@ async fn serve<PR: rsk_sdk::UserPresence + 'static>(
         }
         if reboot_requested.replace(false) || rescue_reboot == Some(false) {
             ccid.reset_card();
+            let _ = boot_block();
             hooks.borrow_mut().warm = true;
             ctap = AppletHandler::new(
                 fs,

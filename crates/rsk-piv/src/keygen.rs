@@ -375,8 +375,23 @@ pub(crate) fn generate_rsa_blocking<S: Storage>(
 ///
 /// Both halves matter: the panel's own picker skips a slot holding only a certificate,
 /// and the generate below overwrites that certificate if it is handed one anyway.
-fn retired_slot_is_free<S: Storage>(fs: &mut Fs<S>, slot: u8) -> bool {
-    !fs.has_key(key_fid(slot)) && !cert_fid_for_slot(slot).is_some_and(|f| fs.has_data(f))
+///
+/// Fallible on purpose: `has_key` / `has_data` answer the same `false` for an absent
+/// record and for one the flash could not read, and this predicate is the *whole*
+/// authorisation for the panel generate — there is no management key behind it. A
+/// collapsed probe therefore reported an occupied slot free and the generate wrote
+/// over the sealed key and the certificate.
+fn retired_slot_is_free<S: Storage>(fs: &mut Fs<S>, slot: u8) -> Result<bool, Sw> {
+    if fs
+        .try_has_key(key_fid(slot))
+        .map_err(|_| Sw::MEMORY_FAILURE)?
+    {
+        return Ok(false);
+    }
+    match cert_fid_for_slot(slot) {
+        Some(f) => Ok(!fs.try_has_data(f).map_err(|_| Sw::MEMORY_FAILURE)?),
+        None => Ok(true),
+    }
 }
 
 /// On-device EC / EdDSA key generation into an empty retired slot (82–95), driven by
@@ -399,7 +414,7 @@ pub(crate) fn generate_retired_ec<S: Storage>(
         return Err(Sw::INCORRECT_P1P2);
     }
     // Never clobber a key or a cert on-device: overwriting a retired slot needs USB + mgmt-key.
-    if !retired_slot_is_free(fs, slot) {
+    if !retired_slot_is_free(fs, slot)? {
         return Err(Sw::SECURITY_STATUS_NOT_SATISFIED);
     }
     let curve = curve_for_algo(algo).ok_or(Sw::WRONG_DATA)?;
@@ -431,7 +446,7 @@ pub(crate) fn store_retired_rsa<S: Storage>(
     if !is_retired(slot) {
         return Err(Sw::INCORRECT_P1P2);
     }
-    if !retired_slot_is_free(fs, slot) {
+    if !retired_slot_is_free(fs, slot)? {
         return Err(Sw::SECURITY_STATUS_NOT_SATISFIED);
     }
     let algo = rsa_algo_from_size(key.size()).ok_or(Sw::EXEC_ERROR)?;

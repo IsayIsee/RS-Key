@@ -51,7 +51,7 @@ flowchart TD
 | `VIDPID` | `RSKey` | `RSKey`, `Yubikey5`, `YubikeyNeo`, `YubiHSM`, `NitroHSM`, `NitroFIDO2`, `NitroStart`, `NitroPro`, `Nitro3`, `Gnuk`, `GnuPG`, `Pico`, `Dev` | USB VID/PID preset. The default `RSKey` (`0x1209:0x0001`) is this project's own [pid.codes](https://pid.codes/) identity, not a masquerade. The opt-in `Yubikey5` (`0x1050:0x0407`) instead presents Yubico's VID/PID **and** swaps the descriptor strings to `Yubico` / `YubiKey RSK …`. That is what makes `ykman`, Yubico Authenticator and the stock Yubico udev rules recognize the device; build it only for local interop / the interop suite. `Pico` = the Raspberry Pi generic id (`0x2E8A:0x10FD`); `Dev` = a non-colliding placeholder (`0xFEFF:0xFCFD`). An unknown preset fails the build. **The vendor-mimicking presets are for local interop only. Never distribute hardware carrying them.** |
 | `USB_VID` / `USB_PID` | from preset | `0xHHHH` | Raw override, applied on top of the preset (you can override either half alone). |
 | `USB_MANUFACTURER` / `USB_PRODUCT` | from preset | string | Raw override of the USB descriptor strings. The default is `RS-Key` / `RS-Key Security Key`; the Yubico VID instead bakes `Yubico` / `YubiKey RSK OTP+FIDO+CCID`. The project's own tools (`rsk`, `rsk-tui`) match the reader by the `RS-Key` (or `RSK`) token in the product string. |
-| `FW_VERSION` | `5.7.4` | `X.Y.Z` or `X.Y` | The firmware version reported everywhere a tool looks: management DeviceInfo (`ykman info`), FIDO getInfo, CTAPHID INIT, OATH/OTP/PIV version fields. Yubico tools gate features on it; 5.7.4 mimics a current YubiKey 5. Does **not** change the OpenPGP card version (3.4) or the USB `bcdDevice` (an internal build counter). |
+| `FW_VERSION` | `5.8.0` | `X.Y.Z` or `X.Y` | The firmware version reported everywhere a tool looks: management DeviceInfo (`ykman info`), FIDO getInfo, CTAPHID INIT, OATH/OTP/PIV version fields, OpenPGP's vendor `VERSION` (INS 0xF1). Yubico tools gate features on it; 5.8.0 mimics a current YubiKey 5. Does **not** change the OpenPGP card version (3.4) or the USB `bcdDevice` (an internal build counter). |
 | `XOSC_DELAY_MULT` | `128` | `1..=1024` | Crystal-oscillator startup-delay multiplier ("delayed boot"). A longer settle wait is intended to harden the early-boot clock-switch window against glitch/fault injection. 128 is the embassy default. |
 | `FLASH_SIZE` | `4M` | bytes, `0xHEX`, or `<n>K`/`<n>M` | External QSPI flash size. build.rs regenerates `memory.x` from it. The KV store (`KVMAIN` + `KVCNT`) stays pinned at the top and the code region is the rest; `4M` with the default `KVMAIN` reproduces the checked-in layout byte-for-byte. Use this for boards with a different flash chip (e.g. `8M`); must be ≤ 16 MB and leave ≥ 1 MB for code after the KV store (a 2 MB board needs a smaller `KVMAIN`, below). |
 | `KVMAIN` | `1408K` | bytes, `0xHEX`, or `<n>K`/`<n>M` | Size of the KV **main** partition (credentials, keys, OpenPGP DOs). The default 1408K is the checked-in layout; shrink it to free code space on a small flash. A **2 MB** board (Seeed XIAO RP2350, Waveshare RP2350-Zero-CM) can't fit the firmware (~900K) under a 1408K KVMAIN, so build it `FLASH_SIZE=2M KVMAIN=896K` (896K creds + 128K counters + 1024K code). Sector-aligned, min 128K; the counter partition (`KVCNT`, 128K) is fixed. Baked into both `memory.x` and `flash_storage.rs` from one value, so the two never drift. **Set at build time only** — changing it on a provisioned device shifts the partition offsets and orphans the store. |
@@ -160,7 +160,7 @@ firmware's writes at runtime.
 ## Examples
 
 ```sh
-# default: touch build, RS-Key identity (0x1209:0x0001), fw 5.7.4
+# default: touch build, RS-Key identity (0x1209:0x0001), fw 5.8.0
 cargo build --release -p firmware
 
 # opt-in Yubico interop flavor (so ykman / Yubico Authenticator see the device)
@@ -212,7 +212,7 @@ check the seal with `picotool`. The flavors mirror the
 
 | Attribute | Image |
 |---|---|
-| `.#firmware` (default) | touch build, RS-Key identity (`0x1209:0x0001`), fw 5.7.4 |
+| `.#firmware` (default) | touch build, RS-Key identity (`0x1209:0x0001`), fw 5.8.0 |
 | `.#firmware-no-touch` | `--features no-touch` (the test build) |
 | `.#firmware-fips` | `--features fips-profile` |
 | `.#firmware-pqc` | `--features advertise-pqc` |
@@ -242,8 +242,8 @@ Two caveats:
   The `.pem` is your signing key, the `.json` is where `seal` writes the
   boot-key fingerprint, and `--major`/`--minor` stamp an **image version** into
   the boot metadata: a plain `major.minor` label, separate from both the
-  firmware version RS-Key reports (`5.7.x`) and the rollback version. The full
-  meaning of each flag is in [production.md](production.md#2b-sign-and-prove-a-signed-image-boots-before-any-fuse).
+  firmware version RS-Key reports (`5.8.0` by default) and the rollback version.
+  The full meaning of each flag is in [production.md](production.md#2b-sign-and-prove-a-signed-image-boots-before-any-fuse).
 
   If you have enabled **anti-rollback**, the seal additionally needs
   `--rollback <your board's floor>`, a separate, deliberate step with its own

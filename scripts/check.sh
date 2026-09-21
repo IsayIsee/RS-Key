@@ -9,6 +9,57 @@ cd "$(dirname "$0")/.."
 
 HOST="${HOST_TARGET:-aarch64-apple-darwin}"
 
+# Five rows below allocate a temp, and this was the one script in scripts/ with
+# no cleanup: ~10 GB of build trees per run, until a full volume took the machine
+# down mid-gate. Bash keeps exactly ONE EXIT trap, so the neighbours' per-site
+# `trap 'rm -rf "$tmp"' EXIT` cannot simply be repeated here — the second call
+# silently replaces the first. Register the paths instead; remove the lot once.
+#
+# The `if` is what protects the verdict, not the `return 0`. Measured on bash
+# 5.3: a handler whose `rm` fails exits a GREEN run 1 and flattens `exit 7` to 1,
+# and a trailing `return 0` does NOT save it — errexit leaves the function at the
+# failing `rm` and never reaches it. In an `if` condition `rm` is exempt, so the
+# failure is reported and the run's own status survives it.
+#
+# Register in the shell that made the temp. A `GATE_TMP+=` inside a command
+# substitution appends to a subshell's copy and is lost, so a helper returning a
+# path cannot do the registering for you — the two lines stay at the site.
+GATE_TMP=()
+gate_cleanup() {
+  if [ "${#GATE_TMP[@]}" -gt 0 ] && ! rm -rf -- "${GATE_TMP[@]}"; then
+    echo "warning: gate temporaries left behind: ${GATE_TMP[*]}" >&2
+  fi
+  return 0
+}
+trap gate_cleanup EXIT
+# The EXIT trap already runs on a fatal signal here (measured), so these are for
+# the verdict, not the cleanup: without the INT one, a SIGINT delivered to this
+# script alone lets the interrupted run report rc 0.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# The other temp this file makes, and the one with no `mktemp` in it: pytest's
+# `tmp_path` lives under $TMPDIR, and `nix develop` hands every invocation a
+# FRESH /tmp/nix-shell.XXXXXX it never removes — so pytest's own "keep the last
+# three runs" retention never meets a previous run, and every gate leaves its
+# scratch behind for good. 361 orphaned bases and 8.9 GB in one day; 351 MB of
+# that per run is the gate-scripts row, spread over ~1400 directories with no
+# fat one to slim. Same volume-to-zero as the mktemp sites above.
+#
+# A pinned --basetemp is removed and recreated by pytest at startup, so a row
+# holds one run instead of every run. It must not be inside the checkout: under
+# `target/`, `git rev-parse` answers from RS-Key's own .git and test_verdict_gate's
+# "git cannot answer here" case goes red (measured, 1788 of 1789). pytest makes the
+# leaf, not its parents. It wipes what it is pointed at, so each row gets a leaf
+# and each checkout a base: one per user let one worktree's gate wipe another's.
+GATE_PYTEST_TMP="${XDG_CACHE_HOME:-$HOME/.cache}/rs-key/pytest/$(git rev-parse --show-toplevel | git hash-object --stdin | cut -c1-12)"
+mkdir -p "$GATE_PYTEST_TMP"
+# A passing test's directory goes as it passes, a failing one's stays — the only
+# kind anybody opens. 351 MB → 1 MB on the row above, which is what keeps a base
+# in a cache directory nobody thinks to sweep from becoming a hoard.
+GATE_PYTEST_KEEP=(-o tmp_path_retention_policy=failed)
+
 run() { echo; echo "== $1 =="; shift; "$@"; }
 
 # `cargo test` calls a selection of nothing a pass: a name filter that matches
@@ -22,6 +73,7 @@ run_tests() {
   local name=$1 log
   shift
   log=$(mktemp)
+  GATE_TMP+=("$log")
   echo; echo "== $name =="
   # `tee`, not a redirect: the output belongs on the console like every other
   # row's. `pipefail` (set above) keeps cargo's own failure the pipeline's, so a
@@ -115,6 +167,31 @@ firmware_stack_floor() {
   fi
 }
 
+# The display flavor's floor. Two things share that stack and the linker can see
+# neither: the same ML-DSA-65 keygen peak as above, and one retained display frame
+# — `rsk_ui::scene::RETAINED_FRAME_STACK_BYTES`, 32 KiB, held there by a const
+# assert over `size_of::<Scene>()` plus the DMA bands. 114 + 32 = 146 KiB if they
+# ever nest, against the 171 KiB this build has.
+#
+# It needs its own row because the plain floor above CANNOT see the regression that
+# matters here: the retained compositor deleted a 4 KiB static pixel buffer and put
+# ~26 KiB on the stack instead, which moves `_stack_start - _stack_end` the RIGHT
+# way while the peak grows. A shared row would have reported an improvement.
+DISPLAY_STACK_FLOOR_KIB=168
+display_stack_floor() {
+  local elf="target/thumbv8m.main-none-eabihf/release/firmware"
+  local top bot kib
+  top=$(arm-none-eabi-nm "$elf" | awk '$3 == "_stack_start" { print $1 }')
+  bot=$(arm-none-eabi-nm "$elf" | awk '$3 == "_stack_end" { print $1 }')
+  kib=$(( (0x$top - 0x$bot) / 1024 ))
+  echo "display stack ${kib} KiB / ${DISPLAY_STACK_FLOOR_KIB} KiB floor; ML-DSA-65 makeCredential near 114 KiB + a retained frame under 32 KiB"
+  if [ "$kib" -lt "$DISPLAY_STACK_FLOOR_KIB" ]; then
+    echo "FAIL: the display build has only ${kib} KiB of stack, under the ${DISPLAY_STACK_FLOOR_KIB} KiB floor." >&2
+    echo "      It carries a retained frame on top of the crypto peak the default build has." >&2
+    exit 1
+  fi
+}
+
 # `assurance-trace` exposes α and generated proof domains to host tooling only.
 # Build two clean default images in one throwaway source tree, poisoning every
 # assurance-only module before the second. The poison must break a feature build
@@ -122,8 +199,14 @@ firmware_stack_floor() {
 assurance_trace_is_image_neutral() {
   local dir src elf_before elf_poison control
   dir=$(mktemp -d)
+  GATE_TMP+=("$dir")
   src="$dir/src"
-  rsync -a --exclude .git --exclude target --exclude result --exclude formal/out ./ "$src/"
+  # `formal/states` too: TLC's on-disk state queues are gitignored run output, hold
+  # no Rust, no manifest and nothing any `include_*!` reaches, so they cannot move
+  # the ELF this row builds three times — and at ~6 GB they were the difference
+  # between the row running and the whole gate dying on ENOSPC.
+  rsync -a --exclude .git --exclude target --exclude result --exclude formal/out \
+    --exclude formal/states ./ "$src/"
 
   if cargo tree -p firmware -e features | grep -q 'rsk-fido feature "assurance-trace"'; then
     echo "FAIL: firmware enables rsk-fido/assurance-trace." >&2
@@ -158,6 +241,9 @@ assurance_trace_is_image_neutral() {
     echo "FAIL: assurance-only source changed the firmware's loadable bytes." >&2
     exit 1
   fi
+  # Eagerly, not only via the trap: this is the largest temp in the file (a source
+  # copy plus three target dirs) and ~60 rows still run after it.
+  rm -rf "$dir"
   echo "assurance sources are absent from firmware; poisoned/default images are byte-identical"
 }
 
@@ -208,8 +294,10 @@ debug_vendor_commands_absent() {
 # symbols — not against pt.sh's arithmetic, which is the thing under test.
 partition_table_fences_the_store() {
   local elf="target/thumbv8m.main-none-eabihf/release/firmware"
-  local out line want got
-  out=$(mktemp -d)/pt.elf
+  local dir out line want got
+  dir=$(mktemp -d)
+  GATE_TMP+=("$dir")
+  out="$dir/pt.elf"
   scripts/pt.sh "$elf" "$out"
   want="$(arm-none-eabi-nm "$elf" | awk '$3 == "__kvmain_start" { print $1 }')"
   want="$want->$(arm-none-eabi-nm "$elf" | awk '$3 == "__kvcnt_end" { print $1 }')"
@@ -245,6 +333,7 @@ release_image_retires_its_unsigned_image_def() {
   local elf dir key first
   elf="target/thumbv8m.main-none-eabihf/release/firmware"
   dir=$(mktemp -d)
+  GATE_TMP+=("$dir")
   key="$dir/throwaway.pem"
   openssl ecparam -genkey -name secp256k1 -noout -out "$key" 2>/dev/null
   scripts/pt.sh "$elf" "$dir/pt.elf" 2>/dev/null
@@ -280,6 +369,7 @@ fuzz_targets_are_alive() {
   manifest=$(mktemp)
   log=$(mktemp)
   empty=$(mktemp)
+  GATE_TMP+=("$manifest" "$log" "$empty")
   # Diagnostics still render to stderr, and `set -e` still stops the gate on a
   # compile error; only the JSON goes to the file.
   cargo build --manifest-path fuzz/Cargo.toml --bins --target "$HOST" \
@@ -496,6 +586,28 @@ run "firmware stack floor"     firmware_stack_floor
 run "no debug vendor command in the image" debug_vendor_commands_absent
 run "partition table fences the store" partition_table_fences_the_store
 run "sealed image retires its unsigned IMAGE_DEF" release_image_retires_its_unsigned_image_def
+# Reads the image the row above just sealed, and it has to be HERE: the 16 MB,
+# display and no-touch builds below overwrite this path, so the same row run with
+# the Python gates would audit the no-touch binary and say nothing about the one
+# that ships.
+run "constant-time sites in the image" python scripts/ct_gate.py
+# Same window and the same reason: segments, the memory map, the vector table
+# and the allocator surface of the DEFAULT image, before the three builds below
+# overwrite it with another profile's.
+run "image segments and allocator" python scripts/elf_gate.py
+# Third reader of the same window: 22 of the 47 owners assurance/token_refinement.toml
+# names have NO symbol — they survive only as an inlined call site in this image's
+# DWARF — and three MUST be absent from it. Which profile it reads is the DISPLAY
+# build below, not the no-touch one: measured over both binaries, the no-touch
+# image (sha cb1830ac…) gives all 47 dispositions and call-site counts of the
+# default image (08dad541…) unchanged, so the earlier claim here that "both
+# answers are profile-specific" was false in the direction it was written for.
+# The display build at line ~600 is what moves them — 17 symbol / 21 inlined /
+# 6 absent — and there this row FALSE-ALARMS: rsk-display links, its two
+# clientpin.rs doors bind, and their `unlinked-crate` rows read as stale
+# exemptions. Recorded rather than handled: the row's window is above that build,
+# and those two absences are absences OF THE DEFAULT IMAGE.
+run "registered owners in the shipped image" python scripts/owner_binding_gate.py
 # The 16 MB geometry is the one that broke: the store used to end at the top of
 # the XIP window, where the bootrom's RP2350-E10 absolute block lives, and
 # `picotool partition create` refuses a table claiming it — a build the release
@@ -507,11 +619,19 @@ run "partition table fences the store (16M)" partition_table_fences_the_store
 # GPIO16 — the compile_error guard in main.rs enforces this), and before the
 # no-touch build below, which stays the last `-p firmware` build so target/ keeps
 # the no-touch test image (see docs/build.md).
-run "build firmware (display)" env LED_KIND=none cargo build --release -p firmware --features display
-run "firmware stack floor (display)" firmware_stack_floor
+#
+# `FLASH_SIZE=16M` because that is what the SHIPPED flavor is: `nix/firmware.nix`
+# gives `firmware-display` `flashSize = "16M"` and `ledKind = "none"` together,
+# and this row used to compile the display feature at the DEFAULT 4 MB geometry —
+# a combination no published package is. The settling question on that matrix
+# column says so in as many words. It does not make the `SEC-DISP-*` rows
+# `covered`: this compiles the shipped image, and their EVIDENCE is still
+# produced at 4 MB.
+run "build firmware (display)" env LED_KIND=none FLASH_SIZE=16M cargo build --release -p firmware --features display
+run "firmware stack floor (display)" display_stack_floor
 # The touchless screen + button form must keep building from the same tree too
 # (the fork's adapted board). Kept after the `display` checks — which own the
-# `firmware_stack_floor` reading — and before the no-touch build, which stays
+# `display_stack_floor` reading — and before the no-touch build, which stays
 # the last `-p firmware` build so target/ keeps the no-touch test image.
 run "build firmware (display keys)" env BOARD=waveshare-geek LED_KIND=none cargo build --release -p firmware --features display-keys
 # Machine-checked "no size cost for keys without a screen": the display UI crate
@@ -543,7 +663,32 @@ run "rsk-wipe refuses an unknown flash size" sh -c '
     echo "FAIL: rsk-wipe failed for the wrong reason:"; printf "%s\n" "$out" | tail -5; exit 1
   }'
 run "flake.lock in sync"       lock_in_sync
+# The row above proves the lock is not STALE and nothing proves what it pins is
+# in the TCB at all: `flip-link`, `rust-lld` and `arm-none-eabi-as` appeared in no
+# registry, no gate and no page, and `cargo-kani` is in no nix file whatsoever —
+# its only pin is an `env:` written three times, of which `kani_gate.py` reads
+# one. This holds every tool's recorded pin against the file that pins it and
+# prints the TCB into docs/supply-chain.md.
+run "toolchain TCB registry"   python scripts/toolchain_gate.py
+# The same question one register out. docs/verified-compilation.md DECIDES about
+# that TCB — whether a kernel of this firmware should move to a language with a
+# verified compiler — and every reason it gives is a number about this tree. A
+# decision record whose numbers nothing re-derives is a decision that was true
+# the day it was typed, which is what the registry above exists to prevent.
+run "11C decision measurements" python scripts/level11c_gate.py
 run "one embassy for all"      embassy_revs_match
+# The same rule one library in, and the case `embassy_revs_match` names in its
+# own comment: the vendored `sequential-storage` fork reaches a build only
+# through `[patch.crates-io]`, wired in three manifests, so a workspace that
+# lost its copy links upstream 8.0.0 — whose walk reports a page it could not
+# read as a COMPLETE enumeration, and whose torn remove leaves an older copy
+# live. The subject is the LOCK and not the stanza: a patched dependency is
+# recorded with no `source` and no `checksum`, which is the half that cannot be
+# talked round. Driven through THIS row, exit taken with no pipe: each of the
+# three stanzas deleted in turn -> rc 1 naming that manifest; a lock entry given
+# a registry `source` -> rc 1 naming that lock. The table is
+# scripts/test_vendored_fork_gate.py.
+run "vendored fork linked"     python scripts/vendored_fork_gate.py
 # No `--ignore`: the tree carries no vulnerability advisory. RUSTSEC-2023-0071
 # (the `rsa` crate, no fixed release) was the last one and left with the crate.
 run "cargo-audit (SCA)"        cargo audit
@@ -578,11 +723,24 @@ run "preview publisher"        node --test .github/scripts/publish-preview.test.
 # It costs ~7 s and needs nothing the shell has not already fetched.
 run "complexity ratchet"       ./scripts/complexity_gate.sh
 run "ci knob groups"           ./scripts/ci-knobs.sh --self-test
+# The reproduction runner an external reviewer is handed. Its own phase list is
+# the thing that rots: a new evidence runner, a new weekly job or a gate row that
+# starts needing something a clean checkout has not got would leave the script
+# claiming to reproduce a tree it no longer describes. `--self-test` holds all
+# three against the tree, and this row is what drives it -- the same shape as the
+# two rows above, and the reason they are rows rather than comments.
+run "reproduction runner"      ./scripts/reproduce.sh --self-test
 # The Kani proofs run nightly, but their roster is a hand-written `-p` list and a
 # crate absent from it is simply not proven — `rsk-ui` and `rsk-led` never were,
 # under a row named "prove every harness". Checking the roster is a grep, so it
 # belongs here, where the harness gets written; the solver stays nightly.
 run "kani roster"              python scripts/kani_gate.py
+# The other half of that roster: production source that means something different
+# under the model checker, so every proof over it says less than its name. The
+# page enumerating those shrinks was hand-kept and rotted twice — "the tree's only
+# one" while there were three, then "one of four" while there were five — so the
+# set is derived from the crates now, in both directions.
+run "kani shrink roster"       python scripts/shrink_gate.py
 # Same failure one file closer to home, and the reason the host rows above say
 # `--workspace --exclude firmware --exclude rsk-wipe` rather than naming crates:
 # the list they used to name was written out nine times over four files and had
@@ -605,37 +763,239 @@ run "IBM Plex font data"       python scripts/generate_ui_fonts.py --check
 # model's ~175 `file.rs:line` citations were checked once, by hand, and a model
 # pointing at a line that has moved reads as authoritative while being wrong.
 run "bcd bump + CHANGELOG"     python scripts/bcd_gate.py
+run "anti-rollback marker"     python scripts/rollback_marker_gate.py
 run "SPDX headers"             python scripts/spdx_gate.py
-# 187 of the 188 configurations say "do not edit by hand" in their first line,
+# The same shape one sentence in: a docstring that spells how many bullets are
+# under it, over a list that has since grown or shrunk. Three shipped that way --
+# platform_gate said Seven over six, threat_gate Three over four, elf_gate Two
+# over three -- each found by hand, each on a different day, and nothing held
+# them. The count is the cheapest number in this tree to derive; the expensive
+# part is not calling a correct docstring wrong, so the rule reads what the
+# bullets SAY (comutate's Three families really do live on two bullets) and stays
+# silent where no cardinal survives its clauses.
+run "docstring list counts"    python scripts/docstring_count_gate.py
+# 229 of the 230 configurations say "do not edit by hand" in their first line,
 # and nothing made that true: deleting a whole mutant family left every row
 # green, because run-tlc.sh lists families with `ls` so the tiers shrank with
 # them. This regenerates into a temp tree and diffs.
 run "generated TLC configs"    python scripts/config_gen_gate.py
 run "formal citations"         python scripts/citation_gate.py
 run "assurance registry"       python scripts/assurance_gate.py
+# The registry above says WHAT is claimed; this says of WHICH IMAGE. `nix build`
+# makes nineteen, `largeblob-ext` swaps the CTAP surface with no flake package at
+# all, and four no-touch builds remove the consent gate the authorization
+# properties are about — so a claim proved on the default build was being
+# asserted about eighteen others by silence.
+run "build-configuration matrix" python scripts/matrix_gate.py
+# And of WHICH THREAT. The threat model is the root of every evidence chain here
+# and was cited by the file name alone on 33 rows, which names no threat. This
+# derives the page's clauses, holds each P0-family row to one of them, and makes
+# a row with none say which of the two things that is.
+run "threat-model traceability" python scripts/threat_gate.py
+# Every caller of the delete family owes a disposition: allowed best-effort wipe,
+# or a device reporting success over a secret still in flash. The audit that
+# wrote them found `force_delete` hiding a faulted metadata drop on the reset
+# path, behind a doc sentence that named the wrong caller as the only one.
+run "delete-caller dispositions" python scripts/deleter_gate.py
+# A dispatch holds four RefCells across the whole CBOR command and then calls the
+# trusted display through them, so a `borrow_mut()` anywhere a host ceremony can
+# reach is a BorrowMutError -- under `panic-halt`, a key that answers nothing
+# until it is unplugged, from one unauthenticated command (issue #107). The
+# comment that would have stopped it existed and said `fs`; the pad drew from
+# `rng`. Cells derived from the dispatch, roots from the handle, reach by call
+# walk. The table is scripts/test_display_borrow_gate.py, driven through THIS row.
+run "display borrows vs dispatch" python scripts/display_borrow_gate.py
+# The same question about RAM rather than flash, and it had no register at all.
+# The threat model has always said key-grade material is wiped "at end of scope
+# including error paths" and nothing held that sentence: 300 of the 444 wipes in
+# the image sit below an early exit of their own function, and the one exit the
+# clause never mentions is the one where nothing runs -- `panic-halt` spins with
+# no unwinding, no Drop, every secret in the frame resident, and that was
+# recorded nowhere. This derives the roster (wipes, `Zeroizing`, self-wiping
+# types -- ELEVEN, not the two a ZeroizeOnDrop grep finds), derives the panic
+# strategy and the reboot's own scrubs, and holds the register both ways.
+# Driven through THIS row, exit taken with no pipe, 48 clauses x 2 arms: each
+# defect -> rc 1 with the message naming THAT defect, and the same defect with
+# that clause alone disabled -> rc 0, which is what makes each one load-bearing
+# rather than decorative. An adversarial review then found nine ways past it,
+# five overclaiming: `n/a` on an exit nothing derives it for (the master seed's
+# row could answer "the error exit cannot happen here"), `explicit` on the reboot
+# exit (escaping the wiper rule and the residual rule at once), a `wiper` row
+# naming ANY of the five scrubs rather than its own, a register-wide residual
+# discharging a per-row `not-wiped`, and `28 of its 22` in the prose. All five
+# redden now. Two more were derivation holes: an inline `#[cfg(test)]` counted as
+# shipped (the highest-value row read 37 where the image has 35) and a `return
+# Sw::…` invisible as an early exit, which is how `rsk-piv/src/lib.rs` derived
+# ZERO over eleven. The table is scripts/test_secrets_gate.py.
+run "secret lifetimes"         python scripts/secrets_gate.py
+# The same shape one crate over, and the finding that asked for it: the OTP use
+# counter's own two files each stated a roster of its writers from memory and
+# each was wrong. `counter.rs` said "both writers … take their step from here"
+# and `counter_kani.rs` said four sites "are every writer of the first two tail
+# bytes". There are eight — `cmd_swap` writes them twice per command and
+# `migrate_seal` twice per boot, and neither sentence mentioned either. A proof
+# whose scope is a sentence has no way to notice a ninth arriving; this derives
+# the roster and the harness cites it. Driven through THIS row, exit taken with
+# no pipe: a ninth writer in a new `crates/rsk-otp/src/*.rs` -> rc 1 naming that
+# file and function; removed -> rc 0. An adversarial review then found four ways
+# past it, three overclaiming: a BARE `seal_put(` (the receiver test), a grouped
+# `use rsk_otp::{…, seal}`, a ledger entry certifying its own coverage through a
+# `via` hop it never calls, and a same-named stepper in another file. All four
+# redden now. A fifth was measured later and is the one every other clause was
+# blind to by construction: they all read PRODUCTION code, so deleting both
+# `#[kani::proof]`s from counter_kani.rs left this row at rc 0 still printing
+# "2 functions take their step from counter.rs" over an empty proof. A rule the
+# ledger's `proved` column is about must now be called by a harness in that file.
+# The table is scripts/test_counter_writers_gate.py, 32 cases, three of them
+# controls that must stay GREEN: twelve lines inserted above every site, a local
+# renamed at one call site, and the harness itself renamed. The second is why the
+# key is (file, fn, ordinal) — keyed on the call TEXT, a rename or a rustfmt
+# reflow was a false red; the third says what this row does NOT measure, since
+# assurance_gate.py forces BOUNDED from a harness NAME.
+run "OTP counter writers"      python scripts/counter_writers_gate.py
+# The same shape one crate down, and the set that has drifted twice already.
+# `rsk_store::is_counter_fid` routes a record to the counter partition or the
+# main one, and it is a `matches!` over four bare literals whose named homes are
+# in rsk-fido, rsk-openpgp and rsk-vendor — so the table and the constants drift
+# with no compile error. `EF_CRED_CTR` joined the table at 0x0821 after 0x081D
+# had been writing it to main, and the `power_cut` mirror listed three of the
+# four with a `& 7` selector over nine entries, so the counter FID could never be
+# written by any input while the sweep asserted it absent on every one. A record
+# on the wrong side reads absent while its old value stays live in the other
+# ring, and every `for_each_key` yields a copy nothing can delete. The values are
+# derived from the applet crates now and all four copies are held to them.
+# Driven through THIS row, exit taken with no pipe: a literal changed in any one
+# of the four -> rc 1 naming that copy and the direction; the constant renamed at
+# its home -> rc 1 saying the name resolves nowhere. The table is
+# scripts/test_partition_routing_gate.py.
+run "partition routing"        python scripts/partition_routing_gate.py
 # A model constant that stands for a fact about the world, not a defect switch.
 # `PowerOnClearsScratch2` was TRUE in all seven Boot configurations and read by
 # no action: deleting its `ASSUME` left every run bit-identical.
 run "standing assumptions"     python scripts/assumption_gate.py
+# And the assumptions no constant can carry, which the row above refuses by
+# construction: a board question, a recorded PASS, emulator fidelity. Their
+# candidates are DERIVED from five sources — the slice bundle's own ids said
+# "registered: no" on eight of ten rows, and `assurance/crates.toml`'s `abstracts`
+# is what anchors a store-backend row so deleting one is a diff — and so is how
+# many are discharged: the row prints the live tally on a green run, because the
+# copy typed here read "one of the eighteen" long after both numbers had moved.
+run "platform assumptions"     python scripts/platform_gate.py
 # `floors.txt` catches a run that got smaller; this catches one whose
 # CONSTANTS are too small to express the defect its own mutants rebuild.
 # Two of the twenty-five module mutants go GREEN one element down.
 run "formal scopes"            python scripts/scope_gate.py
+# The scope row is a `>=`, so `Cap = 3 -> 4` on the transport configuration
+# clears it and no Rust file mentions Cap at all. This holds the four numbers
+# the chunk-to-byte bridge is proved through against each other.
+run "transport bridge"         python scripts/transport_bridge_gate.py
+# And the abstractions no scope constant can express: the "Narrower than the
+# firmware" roster, ten bullets on formal/README.md that NO script read — a
+# whole one could be deleted at exit 0 on citation, claims, run-count, threat,
+# evidence, scope, config-gen and comutants. The list is generated from
+# assurance/abstractions.toml now, and each row's disposition is held to the
+# artifact it rests on: a `closed` needs a mutant a tier runs and floors.txt
+# requires RED, an `open-obligation` reddens when its question is settled.
+run "narrow abstractions"      python scripts/narrow_gate.py
+# And `floors.txt` itself, which only the weekly TLC matrix reads — so between
+# two weeklies it could be weakened with every row here green. Measured: the two
+# layers that did reach it name 2 of its 25 wildcard families, and flipping
+# `SeamMut_*.cfg` from RED to GREEN passed all 98 rows. This one derives the
+# verdict from each configuration's own CONSTANTS instead of trusting the column.
+run "TLA verdict registry"     python scripts/verdict_gate.py
 run "comutants lint"           python scripts/comutate.py --lint
 run "seam trace map"           python scripts/trace_map.py
 run "security trace refinement" python scripts/security_trace.py --check-data formal/TraceSecurityData.tla formal/traces/security-phase4.jsonl
+# A `"Name" \notin viol` clause is only as strong as the set of actions that
+# write the name, and this model named that set in a COMMENT that said eleven.
+# It is 21, over 24 routes -- and three of them record TWICE, so a name-set
+# equality stays green over a half-deleted guard. This derives both.
+run "ghost completeness"       python scripts/ghost_gate.py
+# And the other end of the same question: not what a ghost's writers are, but
+# where a model deliberately stops being about the product. `RSKeyAppletSeams`
+# hard-codes `\/ a = Oath` TWICE -- once to re-lock OATH on a re-SELECT, once to
+# keep the conformance recorder quiet about it -- and deleting either changed the
+# input of no gate. Nothing was a registry for that class: `git grep -i exempt
+# scripts/` found only tier exclusions. This derives the narrowings out of the
+# `.tla` (a narrowing operand, a set literal that omits what its sibling has, a
+# CASE that answers for part of its domain) and holds them to
+# assurance/model_exceptions.toml both ways -- an exception with no row, and a
+# row whose clause the model no longer has. How many there are and how many still
+# owe a mutant is DERIVED and printed on every green run; the ledger records the
+# debt with the file that would pay it, and holds that the file is not there yet.
+run "model exceptions"         python scripts/model_exception_gate.py
+# The first closed slice's raw evidence, held to stage 1A's ten-group contract.
+# Ten headings with one line each satisfy "all ten groups are present", so this
+# counts LEAVES and floors them per group — and refuses a cost written as a
+# range, which is an estimate wearing a measurement's field.
+run "slice evidence bundle"    python scripts/bundle_gate.py
+# And the registry's one word, split into the six questions it was mixing. The
+# slice above moved SEC-FIDO-001 from one Kani harness to four and its `status`
+# would have read the same with either, because the word derives from a harness
+# NAME. This derives six axes apart, rebuilds the word from two of them, and
+# writes the public page so a release sentence cannot outrun the axes.
+run "evidence vector"          python scripts/evidence_gate.py
+# And the bundles' OTHER half: the numbers each obligation was measured at. The
+# row above floors them at 2 per method row and 24 per bundle -- on COUNT and
+# TYPE, never on value -- while the scope table a reader actually reads was
+# fourteen rows typed by hand into docs/authorization-slice.md that nothing read.
+# Six mutations proved it: a docs bound moved while the bundle stood still, the
+# bundle moved while the docs stood still, a row renamed after a constant that
+# does not exist, a row deleted -- exit 0 on all eight gates. This writes all 295
+# from assurance/bundle/*.toml and refuses a second table anywhere.
+run "bundle bounds table"      python scripts/bounds_gate.py
+# And what the pages SAY a run was. Seven were stale the day this row landed --
+# `safety` published as 190 rows against a tier of 195, the model's state space
+# at 63% of the measured count in the paragraph the docs call the one to quote,
+# and five more between them -- because every one was typed. The sentences are
+# written from `formal/runs.toml`, which holds the runner's own matrix per tier
+# and TLC's own summary of the same run beside it, so no number in either has
+# one source. A count typed in any tracked text file under docs/, formal/ or
+# .github/, or on any page at the root, is a finding: by DIRECTORY, because the
+# suffix whitelist this said before let a count into a new formal/*.md, a .tla
+# comment, a .github/*.json, SECURITY.md and eighteen more, all driven at
+# exit 0. `formal/runs.toml` itself and CHANGELOG.md are the two carve-outs.
+run "published run-counts"     python scripts/run_count_gate.py
+# And what the pages SAY a property IS. Stage 0 п.3 and the last exit of stage 4
+# are one predicate -- a public claim about a registered id is generated, and one
+# written by hand fails on a docs row -- and this file carried no docs row at all,
+# so four false sentences including "`SEC-FIDO-001` ... PROVEN on hardware" in
+# README.md were exit 0 on all eight gates. The CI step `docs.sh check` is
+# `mdbook build` plus a link check and never reads a claim. Not "generated or
+# refused", which would refuse true prose no table replaces: a hand-written
+# status is held to the status the registry HOLDS for the id beside it, so
+# `PROVEN` -- no row's status anywhere -- is refused of every id.
+run "published claims"         python scripts/claims_gate.py
+# And what the pages SAY a RELEASE RUNS. Same shape, one layer out: it was prose
+# transcribed from a workflow nothing held it to -- "rebuilds all fourteen
+# flavors", "builds every artifact reproducibly, hashes it, and signs the
+# manifest" -- and that transcription has already rotted once, when the signature
+# asset was renamed `.cosign.bundle` -> `.sigstore.json` and every published
+# verify command went on naming a file that no longer exists. Every command,
+# flavor, action pin and asset name is read out of release.yml, release-build.yml
+# and nix/firmware.nix here and printed into docs/supply-chain.md. Two things it
+# refuses that no other row can see: a rebuild loop covering thirteen of the
+# fourteen images the build loop makes, so the fourteenth is signed and attested
+# with nothing having compared its bytes; and an entry claiming `source->binary`
+# off the reproducibility gate -- determinism is not semantic preservation, and
+# PLAT-TOOLCHAIN-001 is the row that owns that gap. It binds to no tag and no
+# artifact: that half needs a release, and the region says so.
+run "release manifest"        python scripts/release_gate.py
 run "token refinement export" ./scripts/token_refinement.sh --check
 run "token refinement completeness" python scripts/token_refinement_gate.py
 # The two guards above decide whether the gate covers the tree, and neither had
 # a single test while five commits rewrote them by hand. This is that hand
 # battery kept: a fixture workspace, one mutation per case, both directions.
-run "pytest (gate scripts)"    python -m pytest scripts -q
+run "pytest (gate scripts)"    python -m pytest scripts -q \
+  --basetemp="$GATE_PYTEST_TMP/gate" "${GATE_PYTEST_KEEP[@]}"
 run "docs constants match code" python scripts/docs_constants.py
-run "pytest (tools/rsk)"       python -m pytest tools/rsk -q
+run "pytest (tools/rsk)"       python -m pytest tools/rsk -q \
+  --basetemp="$GATE_PYTEST_TMP/rsk" "${GATE_PYTEST_KEEP[@]}"
 # The interop allow-list is the only thing that tells an expected RS-Key/YubiKey
 # divergence from a fidelity gap, and it goes stale silently — a firmware change
 # moved maxSerializedLargeBlobArray and nobody noticed until the next two-key run.
-run "pytest (tests/interop)"   python -m pytest tests/interop -q
+run "pytest (tests/interop)"   python -m pytest tests/interop -q \
+  --basetemp="$GATE_PYTEST_TMP/interop" "${GATE_PYTEST_KEEP[@]}"
 run "gitleaks (tree)"          gitleaks detect --redact --no-banner
 
 echo

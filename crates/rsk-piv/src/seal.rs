@@ -142,7 +142,17 @@ pub fn migrate_kbase<S: Storage>(dev: &Device, fs: &mut Fs<S>, rng: &mut dyn Rng
             plain.zeroize();
             continue;
         }
-        if let Ok(n) = seal_read(&old, fs, fid, &mut plain) {
+        // The copy this re-seal supersedes opened under `old`, i.e. the public chip
+        // serial alone. Ahead of the write and gating it, per
+        // `rsk_fs::request_rescrub` — a boot that skipped this slot already latched.
+        //
+        // RESIDUAL: [`seal_read`] opens the CURRENT arm only, so a skipped slot
+        // answers `6581` at every command until a later boot migrates it (measured).
+        // A reader fallback would re-admit the chip-serial arm at every command,
+        // which is the at-rest widening this class exists to prevent.
+        if let Ok(n) = seal_read(&old, fs, fid, &mut plain)
+            && rsk_fs::request_rescrub(fs).is_ok()
+        {
             let _ = seal_put(dev, fs, rng, fid, &plain[..n]);
         }
         plain.zeroize();

@@ -2,7 +2,21 @@
 # Copyright (C) 2026 RS-Key contributors
 
 # Human-reviewed δC/Step ownership. scripts/token_refinement_gate.py derives
-# domains and flash keys, then refuses any unowned writer/outcome producer.
+# domains, flash keys, the Fs write API, the permission set and the module graph,
+# then refuses any unowned writer/outcome producer.
+#
+# `disposition` is roadmap stage 4 п.4, and every entry answers it: `step`
+# implements the named abstract Step (the default, and the only one that may
+# carry an `op`), `stutter` moves security-visible state the abstraction does not
+# observe, `out-of-scope` is a real gate outside the abstraction's vocabulary.
+# The gate DERIVES which of those a site can be — a writer that moves an A bit
+# cannot be a stutter, and one that moves none cannot be a step — so the field is
+# checked in both directions rather than believed.
+#
+# `column` names the configuration that changes the site's reachability, out of
+# the columns docs/assurance-matrix.md derives. `test_only` and `generic` are
+# derived too: the first from the crate's module graph, the second from whether
+# the function writes a fid it was handed.
 
 [[volatile_writer]]
 file = "crates/rsk-fido/src/state.rs"
@@ -39,10 +53,41 @@ file = "crates/rsk-fido/src/getassertion.rs"
 function = "enforce_pin"
 op = "UseGa"
 
+# `authenticatorReset`'s session wipe, which is `*self = Self::new()` — every
+# abstract bit at once and not one `.paut.` in sight. Found by an adversarial
+# review of the rescan that missed it: the query was written for field writes.
+[[volatile_writer]]
+file = "crates/rsk-fido/src/state.rs"
+function = "reset"
+op = "RevokeToken"
+
+# The board's power-up wipe: building the CTAP handler IS the power cycle, so it
+# replaces the borrowed session state wholesale (`crates/rsk-device/src/ctap.rs:122`).
+# The same write as `state.rs::reset` one crate out, and unowned since the day
+# the axis was written — invisible in two independent ways, both closed
+# 2026-08-31: the whole-token clause only knew the spelling `*self` in the file
+# that declares the type, and the writer axes could not see `rsk-device` at all
+# while the guard axes had scanned it from the start.
+[[volatile_writer]]
+file = "crates/rsk-device/src/ctap.rs"
+function = "new"
+op = "RevokeToken"
+
+# CTAP 2.1 §6.5.5.7's rolling inactivity window: it defers the deadline
+# `expire_stale_token` enforces, so a token lives longer for it having run. That
+# is security-visible and it is not an abstract step — α reads `in_use`,
+# `permissions` and `has_rp_id`, and `last_used_ms` is none of them.
+[[volatile_writer]]
+file = "crates/rsk-fido/src/state.rs"
+function = "mark_token_used"
+disposition = "stutter"
+why = "defers the §6.5.5.7 inactivity deadline; writes no field alpha observes"
+
 [[volatile_writer]]
 file = "crates/rsk-fido/src/conformance/mod.rs"
 function = "arm_token"
 op = "IssueToken"
+test_only = true
 
 [[persistent_writer]]
 file = "crates/rsk-fido/src/clientpin.rs"
@@ -53,6 +98,30 @@ op = "SetPin"
 file = "crates/rsk-fido/src/clientpin.rs"
 function = "write_pin_verifier"
 op = "SetPin"
+generic = true
+
+# The two callers that choose EF_PIN for it. Both were invisible while the gate
+# named the helper by hand instead of deriving which functions hand it a fid:
+# the wire path and the panel path are the SAME write, and only one of them is
+# reachable in any given column.
+[[persistent_writer]]
+file = "crates/rsk-fido/src/clientpin.rs"
+function = "store_new_pin"
+op = "SetPin"
+
+[[persistent_writer]]
+file = "crates/rsk-fido/src/clientpin.rs"
+function = "store_local_pin"
+op = "SetPin"
+column = "firmware-display"
+why = "only crates/rsk-display calls it, and `display` is what pulls that crate in"
+
+[[persistent_writer]]
+file = "crates/rsk-fido/src/clientpin.rs"
+function = "spend_and_verify_local_pin"
+op = "Noop"
+column = "firmware-display"
+why = "the panel's door onto the EF_PIN retry counter; RSKeySecurityState models it as LocalPinGuard"
 
 [[persistent_writer]]
 file = "crates/rsk-fido/src/clientpin.rs"
@@ -60,6 +129,9 @@ function = "spend_and_verify_pin_at"
 op = "Noop"
 generic = true
 
+# `pcmr` issuance is this row. Its other caller, `ensure_seed`, mints the record with
+# no PIN door at a boot, a finished reset and a vendor BACKUP_LOAD: tier A's
+# `ProvisionGrant`, which no row here owns because the function is not the writer.
 [[persistent_writer]]
 file = "crates/rsk-fido/src/seed.rs"
 function = "ensure_ppuat"
@@ -70,16 +142,48 @@ file = "crates/rsk-fido/src/seed.rs"
 function = "clear_ppuat"
 op = "RevokeGrant"
 
+# Where the grant's writes physically happen: it seals whatever KeyFid it is handed,
+# and EF_PAUTHTOKEN is the only token record that reaches it — from `ensure_ppuat`'s
+# mint, which this row is for, and from the boot re-seal below, which mints nothing.
+[[persistent_writer]]
+file = "crates/rsk-fido/src/seed.rs"
+function = "put_sealed32"
+op = "MintGrant"
+generic = true
+
+# The boot pass that moves the record between kbase arms, and the helper it hands
+# the fid to. `Noop`, not `MintGrant`: the record stands before and after and the
+# token value is unchanged, so nothing tier A reads moves.
+[[persistent_writer]]
+file = "crates/rsk-fido/src/seed.rs"
+function = "migrate_slot"
+op = "Noop"
+generic = true
+
+[[persistent_writer]]
+file = "crates/rsk-fido/src/seed.rs"
+function = "migrate_keydev_boot"
+op = "Noop"
+
 [[persistent_writer]]
 file = "crates/rsk-fido/src/conformance/mod.rs"
 function = "set_pin_file"
 op = "SetPin"
+test_only = true
 
 [[persistent_writer]]
 file = "crates/rsk-fido/src/reset.rs"
 function = "sweep"
 op = "ClearPin"
 generic = true
+
+# `authenticatorReset`'s flash half, which chooses the predicates `sweep` deletes
+# by. The roster owned the helper and not its chooser for as long as it existed;
+# the chooser was `reset` until `f06de17` extracted `wipe` out from under it.
+[[persistent_writer]]
+file = "crates/rsk-fido/src/reset.rs"
+function = "wipe"
+op = "ClearPin"
 
 [[outcome_producer]]
 file = "crates/rsk-fido/src/makecredential.rs"
@@ -110,3 +214,144 @@ op = "UseAcfg"
 file = "crates/rsk-fido/src/vendor.rs"
 function = "pin_gate"
 op = "UseAcfg"
+
+# The authenticatorLargeBlobs write gate. It is a real authorization decision on
+# a real permission bit, and the abstraction has no word for it: A carries mc/ga/
+# cm/acfg and the generated Ops domain has no UseLbw. Named here so the axis is
+# complete and the omission is a decision rather than a spelling.
+[[outcome_producer]]
+file = "crates/rsk-fido/src/largeblobs.rs"
+function = "write_fragment"
+disposition = "out-of-scope"
+column = "largeblob-ext"
+why = "gates on PERM_LBW, outside alpha's permission set; and CTAP 2.3 §12.4 makes the whole command unreachable in that column"
+
+
+# ---- The three GUARD axes -----------------------------------------------------
+#
+# `NoAuthorizationBypass` is four clauses and only the first — the token and its
+# permission — had a ledger. The walk's owning channel, the retry budget's soft
+# lock and the reset window were owned NOWHERE, which is what made "the ledger
+# covers the property" a sentence about a quarter of it.
+#
+# A guard writes no token field, so every rule on the writer axes above is silent
+# here: `visible` is None on all three and the disposition is `out-of-scope` with
+# its formal basis, because tier A carries no channel, no retry counter, no soft
+# lock and no clock. That is not a gap being waved through — it is the
+# complementary source obligation the A map names, and B states each of them.
+#
+# The sites are DERIVED, and over three units rather than one: `pin_lock` and
+# `restore_pin_lock` have ZERO callers inside `rsk-fido` — the board marshals the
+# lock — so a family scanned over the applet alone derives an empty roster and
+# passes over it.
+
+[[walk_owner]]
+file = "crates/rsk-fido/src/state.rs"
+function = "may_walk_rps"
+disposition = "out-of-scope"
+why = "the channel test IS the authorization a getNextRP carries — §6.8 exempts a Next from a pinUvAuthParam of its own — and tier A has no channel and no walk, so the obligation is B's CmNextPolicy and no A step"
+
+[[walk_owner]]
+file = "crates/rsk-fido/src/state.rs"
+function = "may_walk_creds"
+disposition = "out-of-scope"
+why = "the same guard one walk over; same reason it maps to no A operation"
+
+[[walk_owner]]
+file = "crates/rsk-fido/src/credmgmt.rs"
+function = "enumerate_rps"
+disposition = "out-of-scope"
+why = "the guard's only production caller: the getNextRP arm. The Begin one frame out is authorize_cm's, and that decision is proved at its call site by no_authorization_bypass_cm_begin_at_call_site"
+
+[[walk_owner]]
+file = "crates/rsk-fido/src/credmgmt.rs"
+function = "enumerate_creds"
+disposition = "out-of-scope"
+why = "the same arm for the credential walk, and the one that also writes cm.rp_id_hash — the cursor field the demux reads back to serve a Next"
+
+
+[[softlock_owner]]
+file = "crates/rsk-fido/src/state.rs"
+function = "pin_lock"
+disposition = "out-of-scope"
+why = "reads the two RAM fields the §6.5.5.6 soft lock is made of into the wire form the board carries; A has no retry counter and no lock"
+
+[[softlock_owner]]
+file = "crates/rsk-fido/src/state.rs"
+function = "restore_pin_lock"
+disposition = "out-of-scope"
+why = "writes them back after a warm reset, whole — the engaged flag without its mismatch batch let a host stop at two and reboot"
+
+[[softlock_owner]]
+file = "crates/rsk-device/src/ctap.rs"
+function = "new"
+disposition = "out-of-scope"
+why = "restores the lock from the board's boot state on every power-up; B's clause is (lock.policyMism >= MismatchLimit) => lock.soft and A has no image of it"
+
+[[softlock_owner]]
+file = "crates/rsk-device/src/ctap.rs"
+function = "handle_cbor"
+disposition = "out-of-scope"
+why = "stores the lock through Hooks after every dispatch, which is what makes it survive an ungated SCB::sys_reset"
+
+[[softlock_owner]]
+file = "crates/rsk-device/src/ctap.rs"
+function = "security_trace_snapshot"
+disposition = "out-of-scope"
+why = "reads the lock for the phase-4 recorder only; it decides nothing and writes nothing"
+
+[[softlock_owner]]
+file = "crates/rsk-device/src/lib.rs"
+function = "store_pin_lock"
+disposition = "out-of-scope"
+why = "the Hooks default: a board with no persistent store keeps no lock across a reboot, which is the pre-0x0857 behaviour this seam replaced"
+
+[[softlock_owner]]
+file = "crates/rsk-device/src/tests.rs"
+function = "store_pin_lock"
+disposition = "out-of-scope"
+test_only = true
+why = "the test double's own store, compiled only under cfg(test)"
+
+[[softlock_owner]]
+file = "firmware/src/handler.rs"
+function = "store_pin_lock"
+disposition = "out-of-scope"
+why = "the board half: hands the lock to the watchdog scratch word"
+
+[[softlock_owner]]
+file = "firmware/src/pin_lock.rs"
+function = "set"
+disposition = "out-of-scope"
+why = "writes the encoded lock into WATCHDOG.scratch2, the register a sys_reset survives and a power-on clears — AS-AUTH-4, and registered against RSKeyBootHardening rather than here"
+
+[[softlock_owner]]
+file = "firmware/src/pin_lock.rs"
+function = "encode"
+disposition = "out-of-scope"
+why = "the codec's forward half; a pure function of the lock"
+
+[[softlock_owner]]
+file = "firmware/src/pin_lock.rs"
+function = "decode"
+disposition = "out-of-scope"
+why = "the codec's inverse, and the one that makes an untagged word read as no lock rather than as garbage"
+
+[[softlock_owner]]
+file = "firmware/src/pin_lock.rs"
+function = "round_trips"
+disposition = "out-of-scope"
+why = "a const fn reached only by compile-time assertions over the codec above"
+
+
+[[reset_window_owner]]
+file = "crates/rsk-fido/src/reset.rs"
+function = "in_reset_window"
+disposition = "out-of-scope"
+why = "§6.6's 10 s window, read off the boot's own origin and the uptime; tier A has no time, so RESET_WINDOW_MS is outside it by construction"
+
+[[reset_window_owner]]
+file = "crates/rsk-fido/src/reset.rs"
+function = "reset"
+disposition = "out-of-scope"
+why = "the window's only production caller, and it consults it only where the presence backend shows no prompt"

@@ -1,0 +1,482 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 RS-Key contributors
+#
+# Which threat each registered property is against. `docs/threat-model.md` is the
+# root of the evidence chain every assurance claim here hangs from, and it was
+# cited by exactly one word — the file name — on 33 rows of
+# `assurance/properties.toml`. "This property is against the threat model" names
+# no threat: a property with no clause behind it is either mis-scoped or
+# unnecessary, and neither was visible.
+#
+# A CLAUSE is one addressable unit of that page: any heading, or any list item.
+# That set is DERIVED by `scripts/threat_gate.py` straight from the markdown,
+# and this file must name every unit exactly once — so a new bullet arrives as a
+# clause nobody classified rather than as prose nothing traces to. What cannot be
+# derived is the naming and the judgement, and that is all this file holds:
+#
+#   id     the stable name a `source` entry cites, as `docs/threat-model.md#ID`.
+#          It is a registry id, NOT a rendered anchor — the page carries no HTML
+#          anchors and gains none for this. Renaming one is a two-file edit.
+#   where  the clause's FIRST LINE, verbatim. It is a content lock, not a line
+#          number: text moves down the page without rotting it, and a reworded or
+#          deleted clause goes red. What it does NOT see is a rewrite BELOW that
+#          first line — the same blind spot `formal/citations.lock` has, kept
+#          because this page's first line is its thesis while its body is edited
+#          constantly. Measured by `threat_gate.clause_bodies` over
+#          `git log --reverse 3d6ec61 -- docs/threat-model.md`: 34 bodies changed
+#          with their first line intact against 12 first lines reworded, so a lock
+#          over the whole body would have fired on 20 of those 30 commits and been
+#          suppressed like any alarm that is usually noise. `rests_on` is the
+#          narrow lock for the sentences that could not afford to be under it.
+#   kind   `defence` — the page states a defence or a defended threat here, so a
+#          property may serve it; `context` — assets, an out-of-scope
+#          declaration, a stated residual, a third-party result, a process. A
+#          `context` clause cannot be cited: "serving" the asset list is not a
+#          claim. Each carries the `why` in one sentence.
+#   rests_on
+#          the sentences UNDER a first line that some verdict argues FROM, held
+#          against the body of the clause they belong to. Whitespace-normalised,
+#          so a re-wrap is not a rewrite and a reword still is. Which ones are
+#          owed is READ OFF the tree rather than remembered — an `[[untraced]]`
+#          whose `why` names a clause id owes a pin inside that clause, and a
+#          clause whose body hands part of its claim to a `PLAT-…` assumption
+#          owes one on the sentence naming it — so a new dependency arrives owing
+#          a pin instead of arriving unlocked. What it cannot reach: a sentence
+#          load-bearing for a reason no entry here states.
+#
+# WHEN A PROPERTY TRACES — one rule, written down because leaving it implicit is
+# what let two entries below contradict each other in a first draft. A property
+# traces to a clause when that clause states the THREAT it defends against, even
+# where the clause's list of examples does not name its applet; it is untraced
+# when the page states no such threat in any form. So `SEC-POL-005` traces to
+# `TM-HOST-GATES` (an access secret guarding a privileged mutation IS that
+# clause, though its enumeration lists OATH and PIV and no OTP) while
+# `SEC-POL-006` did NOT, for as long as the page said nothing about replay:
+# re-emitting a counter is not a gate, and reading `TM-HOST-GATES` generously
+# enough to cover it would have been the mis-mapping this rule exists to refuse.
+# What ended it was writing `TM-HOST-OTP-REPLAY`, which is the only thing that
+# ever ends a `missing-clause`. The enumeration gap is a docs finding of its own,
+# not the reason for a verdict.
+#
+# The `[[untraced]]` half is the finding, not a blank. A P0-family property with
+# no clause means one of exactly two things and has to say which: `missing-clause`
+# (the page does not state a threat this tree defends against) or
+# `defends-nothing` (the property is against nothing). ONE row is here now, the
+# p0-launch `SEC-FIDO-007`, and its verdict is neither of those two: every P0b row
+# has a root, and the last two to get one were the applet-policy pair
+# `TM-HOST-ALGO-CHANGE` and `TM-HOST-OTP-REPLAY`. Both were written the way this
+# programme now requires — the code read FIRST, which dropped three sentences
+# before the draft (an at-rest erase, an unconditional "never repeats", and a rule
+# that would have covered `TERMINATE DF`) and weakened seven more when an
+# independent review read the same code again. That second pass is the argument
+# for having it: reading first is not the same as reading enough, and every one of
+# the seven was a sentence the author had already checked. Before them, two
+# clauses were written to close the store rows, and the second is worth reading
+# twice, because the first pass named the wrong absence. That pass read "the page
+# states no power-interruption threat, though the whole store tranche is against
+# one"; the page states one now (`TM-HOST-POWER-CUT`) and it roots exactly ONE of
+# the four store rows, because `RSKeyStore.tla` gives `Delete` the only cut point.
+# The other three were against a FAILED READ, a different threat — not because a
+# cut cannot cause one (a torn item header is deterministic AND returns
+# `Error::Corrupted`, so `crates/rsk-store/src/lib.rs`'s old "a cut cannot
+# produce a read fault" was false and the comment says so now), but because the
+# cut clause is about what a write leaves behind and in what order, while these
+# three are about a read the medium refused, whoever caused it.
+# `TM-HOST-READ-FAULT` states that threat and roots all three. Its own open half
+# is written into it: the walk meets `Error::Corrupted` and skips it on purpose,
+# so whether any host-reachable page state makes a per-key `fetch_item` return an
+# error is unmeasured — and the clause's three rules are spelled so that the
+# answer does not change them.
+#
+# Every [[untraced]] row also names an `owner`, from scripts/platform_gate.py's
+# four roles — borrowed rather than re-picked, like the word floor above it, and
+# for its reason: this is a register of obligations and an obligation nobody owns
+# is a wish with a verdict column. What would END the finding is already typed by
+# `verdict` and needs no second field: `missing-clause` says write the clause,
+# and `defends-nothing` is a decision rather than a deferral. The row left is
+# `maintainer`'s, and that is the shape of what is left: every `missing-clause`
+# finding — a page standing behind code that already defends the threat — has been
+# closed by a contributor writing the clause, and what does not close that way is
+# a decision about what this project will never claim.
+#
+# Both records here take a fixed set of keys now, and so does the file. Neither
+# had one: a key added to a [[clause]] or an [[untraced]] was held by no rule and
+# shown to no reader, which is the hole matrix_gate's [[question]] had, asked of
+# this file — and the same question one level out found the file's own tables
+# unguarded too.
+
+[[clause]]
+id = "TM-TITLE"
+kind = "context"
+where = "# Threat model"
+why = """
+the page's own title; the standing it sets is the whole document, and every \
+clause of it is one of the entries below"""
+
+[[clause]]
+id = "TM-ASSETS"
+kind = "context"
+where = "## Assets"
+why = """
+the asset inventory the rest of the page defends; it states no threat and \
+no defence"""
+
+[[clause]]
+id = "TM-ATTACKERS"
+kind = "context"
+where = "## Attackers, strongest defense first"
+why = """
+a container heading that owns no prose of its own — unlike each attacker \
+below it, whose own paragraph states the threat that attacker brings"""
+
+[[clause]]
+id = "TM-HOST"
+kind = "defence"
+where = "### 1. A hostile host (malware on the computer)"
+
+[[clause]]
+id = "TM-HOST-MEMSAFE"
+kind = "defence"
+where = "- **Memory safety.** `no_std` Rust end to end. The parsers and applet"
+
+[[clause]]
+id = "TM-HOST-FUZZ"
+kind = "defence"
+where = "- **Fuzzing.** Every parser and every applet's full dispatch path has a"
+
+[[clause]]
+id = "TM-HOST-GATES"
+kind = "defence"
+where = "- **Protocol gates.** PINs/UV with retry counters and lockout, physical-touch"
+
+[[clause]]
+id = "TM-HOST-AUTHORIZED-OPS"
+kind = "context"
+where = "- What a hostile host **can** do: drive any operation you have authorized"
+why = """
+a stated residual: it names what an authorized key deliberately does not \
+prevent"""
+
+[[clause]]
+id = "TM-HOST-POWER-CUT"
+kind = "defence"
+where = "- **A flash write can be interrupted, and a host picks which one is in flight.**"
+rests_on = ["""
+It is registered as `PLAT-FLASH-001` and is discharged by a board measurement, \
+not by code ([platform-assumptions.md](platform-assumptions.md))."""]
+
+[[clause]]
+id = "TM-HOST-READ-FAULT"
+kind = "defence"
+where = "- **A flash read can come back an error, and this firmware spells \"not"
+
+[[clause]]
+id = "TM-HOST-CRED-REVOCABLE"
+kind = "defence"
+where = "- **You must be able to see and revoke every credential the device holds.**"
+
+[[clause]]
+id = "TM-HOST-ALGO-CHANGE"
+kind = "defence"
+where = "- **A key must not outlive the algorithm attribute it was made under.** An"
+rests_on = ["""
+the card reads that record again at the moment of every *private-key*
+operation: `PSO:CDS`, the asymmetric arm of `PSO:DECIPHER` and `INTERNAL
+AUTHENTICATE` take one byte of it to decide whether the slot is RSA or EC
+before they touch the key.""", """
+drops that slot's private key and the stored public key it would go on serving
+*first* — whenever the store reports the slot present — and only then writes the
+new value. A key the present cache reads absent while the backend still holds it
+is not dropped, and the attribute goes in over it."""]
+
+[[clause]]
+id = "TM-HOST-OTP-REPLAY"
+kind = "defence"
+where = "- **A Yubico OTP the host watched being typed must not validate twice.** The OTP"
+rests_on = ["""
+`SWAP` leaves the stored counter alone too — but it moves the record to the
+*other* slot index, and the RAM half travels with it, because the pair belongs
+to the public id inside the record and not to the slot number that record
+happens to sit at.""", """
+**Six residuals, and the rule above hides none of them.**""", """
+And the move that carries the pair is not atomic: `SWAP` writes the two records
+one after the other and swaps the RAM halves only once both are through, with
+nothing to undo a step that failed. A refused second write answers `6581` with
+the first already landed, and so does a refused delete — the answer is read now,
+but where the record write has already gone in it buys the report and not the
+state. That direction still leaves one public id in two slots with only one of the
+two session halves its own, and the other slot can then type a position that id
+has already typed this power cycle"""]
+
+[[clause]]
+id = "TM-HOST-CONFIG-UNGATED"
+kind = "defence"
+where = "- **Device config is UNGATED on the default build.** The shipped default is the"
+
+[[clause]]
+id = "TM-HOST-TWO-TRANSPORTS"
+kind = "defence"
+where = "- **The FIDO applet answers on two transports, and the second one is easier to"
+
+[[clause]]
+id = "TM-HOST-INTENT"
+kind = "defence"
+where = "- **The residual gap is *intent*. The trusted-display flavor closes it.** Because"
+
+[[clause]]
+id = "TM-THIEF"
+kind = "defence"
+where = "### 2. A thief with the powered-off device (at-rest)"
+
+[[clause]]
+id = "TM-THIEF-SEALED"
+kind = "defence"
+where = "- All key material is sealed in flash: FIDO seed, PIV keys and OATH records"
+
+[[clause]]
+id = "TM-THIEF-OTP-ROOT"
+kind = "defence"
+where = "- **OTP master key** ([production.md](production.md) stage 1): with the MKEK"
+rests_on = ["""
+for every record a boot pass can re-root. A PIN-derived one cannot be re-rooted \
+without its secret, so it waits for its own reference to be presented; see \
+[limitations](limitations.md) and `PLAT-THREAT-002`."""]
+
+[[clause]]
+id = "TM-THIEF-SEAL-FORGERY"
+kind = "defence"
+where = "- **The seals give confidentiality, not authenticity.** Records written before"
+
+[[clause]]
+id = "TM-THIEF-SOFTLOCK"
+kind = "defence"
+where = "- **Soft-lock** ([guides/soft-lock.md](guides/soft-lock.md)): optionally, the"
+
+[[clause]]
+id = "TM-THIEF-REMNANTS"
+kind = "defence"
+where = "- Caveat: superseded records linger. The flash log is append-only, so"
+
+[[clause]]
+id = "TM-THIEF-REMNANT-SCRUB"
+kind = "defence"
+where = "  - The **OTP-burn migration** supersedes the *pre-OTP* seed, which was sealed"
+
+[[clause]]
+id = "TM-THIEF-REMNANT-SOFTLOCK"
+kind = "defence"
+where = "  - The **soft-lock** transition leaves the same kind of lingering record, but"
+
+[[clause]]
+id = "TM-THIEF-SEED-NOT-PIN-WRAPPED"
+kind = "defence"
+where = "- The FIDO seed is **never PIN-wrapped at rest** (a deliberate design"
+
+[[clause]]
+id = "TM-FLASHER"
+kind = "defence"
+where = "### 3. An attacker who can flash their own firmware"
+
+[[clause]]
+id = "TM-FLASHER-SECURE-BOOT"
+kind = "defence"
+where = "- **Secure boot** ([production.md](production.md) stage 2): the bootrom"
+
+[[clause]]
+id = "TM-FLASHER-ANTI-ROLLBACK"
+kind = "defence"
+where = "- **Anti-rollback** ([anti-rollback.md](anti-rollback.md), optional): with"
+
+[[clause]]
+id = "TM-FLASHER-PRE-SECURE-BOOT"
+kind = "context"
+where = "- Before secure boot is enabled, this attacker wins against the OTP tier:"
+why = """
+states that this attacker wins before secure boot is on; there is no \
+defence here to serve"""
+
+[[clause]]
+id = "TM-FLASHER-IDENTITY-COSMETIC"
+kind = "defence"
+where = "- The **USB/smartcard identity** (VID/PID, manufacturer, product, OpenPGP AID"
+
+[[clause]]
+id = "TM-PHYSICAL-OOS"
+kind = "context"
+where = "### 4. Physical / lab attacks — OUT OF SCOPE"
+why = """
+declared out of scope; a property here would claim what this page refuses \
+to claim"""
+# The body hands the RSA window residual's severity and its hardening to two
+# registry rows, so the sentence naming them is pinned: without it that sentence
+# can go and the section reads as an exclusion with nothing behind it.
+rests_on = [
+  "Severity, the reasoning and what would re-open it are registered as `PLAT-CRYPTO-002`, and the hardening that would remove it is `PLAT-BUILD-005`, deferred with a stated price ([platform-assumptions.md](platform-assumptions.md), [ct-audit.md](ct-audit.md)).",
+]
+
+[[clause]]
+id = "TM-NETWORK"
+kind = "context"
+where = "### 5. Network"
+why = """
+no attack surface exists: the device speaks USB only, so there is nothing \
+to defend"""
+
+[[clause]]
+id = "TM-ROLLBACK"
+kind = "defence"
+where = "## Flash snapshot rollback (the PIN-counter reset)"
+
+[[clause]]
+id = "TM-ROLLBACK-PARTITION"
+kind = "defence"
+where = "- **Partition table** (always on since `0x0871`). The shipped image embeds an RP2350"
+
+[[clause]]
+id = "TM-ROLLBACK-VERIFIER"
+kind = "defence"
+where = "- **OTP-seeded PIN verifier** (always on after the OTP burn). The stored verifier is"
+
+[[clause]]
+id = "TM-ROLLBACK-PIN-ENTROPY"
+kind = "defence"
+where = "- **`strong-pin` / `fips-profile` builds** (opt-in). Raise the clientPIN floor to six code"
+
+[[clause]]
+id = "TM-ROLLBACK-SOFTLOCK"
+kind = "defence"
+where = "- **Soft-lock** (opt-in). The FIDO seed is wrapped under a key only you hold"
+
+[[clause]]
+id = "TM-SILICON"
+kind = "context"
+where = "## Platform silicon: the RP2350 security challenges"
+why = """
+published silicon results that bound the physical posture; its mitigation \
+is a provisioning choice"""
+
+[[clause]]
+id = "TM-SILICON-CULLEN"
+kind = "context"
+where = "- **Aedan Cullen**: voltage glitch on the `USB_OTP_VDD` rail, reading OTP"
+why = """
+a published third-party attack result in the out-of-scope physical class"""
+
+[[clause]]
+id = "TM-SILICON-MUENCH"
+kind = "context"
+where = "- **Marius Muench**: a glitch plus a boot-ROM flaw, bypassing secure boot to run"
+why = """
+a published third-party attack result in the out-of-scope physical class"""
+
+[[clause]]
+id = "TM-SILICON-COURDESSES"
+kind = "context"
+where = "- **Kévin Courdesses**: laser fault injection corrupting the boot-time signature"
+why = """
+a published third-party attack result in the out-of-scope physical class"""
+
+[[clause]]
+id = "TM-SILICON-IOACTIVE"
+kind = "context"
+where = "- **IOActive**: focused-ion-beam (FIB) plus passive voltage contrast (PVC),"
+why = """
+a published third-party attack result in the out-of-scope physical class"""
+
+[[clause]]
+id = "TM-SEED-BACKUP"
+kind = "defence"
+where = "## Seed backup (the deliberate exception)"
+
+[[clause]]
+id = "TM-ZEROIZATION"
+kind = "defence"
+where = "## Zeroization"
+# Three sentences `assurance/secrets.toml` argues from, pinned because that
+# register is the only reader this clause has ever had and every one of them is
+# BELOW the locked first line. The first is the claim the register answers per
+# source and per exit; the second names three residuals it re-registers against
+# rows rather than re-litigating; the third is a measurement with a stated
+# revalidation trigger, and 47 rows' reboot answer is that measurement. What is
+# NOT pinned, deliberately: the panic exit, because the clause does not mention
+# it. That silence is the register's own finding and `RES-PANIC-HALT` is where
+# it is written down; a sentence added here would be the thing to pin next.
+#
+# The fourth is owed rather than chosen: the body hands the SRAM half of its
+# claim to `PLAT-MEM-001`, and `check_rests_on` demands a pin on the sentence
+# naming it — without one that hand-off can be deleted and the clause reads as
+# a defence the firmware implements, which is the one reading the registry row
+# and this pin both refuse.
+rests_on = ["""
+Key-grade material in RAM is wiped (`zeroize`, volatile writes) when its use
+ends: session state and PIN/UV tokens on drop, transient key copies at end of
+scope including error paths, and the transport/exchange buffers as soon as a
+message completes (requests carry PINs and imported keys).""", """
+Accepted residuals: `Copy` temporaries inside RustCrypto curve arithmetic, digest
+internals, and heap limbs inside `num-bigint-dig` (which has no zeroizing `Drop`
+of its own — every value `rsk-rsa` owns rides in a `Zeroizing`, but a temporary
+the library allocates internally does not).""", """
+This is a property of the silicon revision and boot
+configuration, so it is re-measured when either moves; the explicit wipes stay as
+depth in case a future one keeps SRAM.""", """
+It discharges `PLAT-MEM-001` in the platform
+registry ([platform-assumptions.md](platform-assumptions.md)) — read the row for
+the transcript, the picotool version, and what the result does *not* establish,
+which is that the firmware's own scrub works."""]
+
+[[clause]]
+id = "TM-SUPPLY-CHAIN"
+kind = "defence"
+where = "## Supply chain & process"
+
+[[clause]]
+id = "TM-SUPPLY-SCANNERS"
+kind = "defence"
+where = "- `cargo audit` + `cargo deny` (advisories, license allow-list, source"
+
+[[clause]]
+id = "TM-SUPPLY-PINNED"
+kind = "defence"
+where = "- Dependencies are pinned (`Cargo.lock`). The git dependencies are restricted"
+
+[[clause]]
+id = "TM-SUPPLY-ADVISORIES"
+kind = "defence"
+where = "- **No vulnerability advisory is ignored.** The one that used to be —"
+
+[[clause]]
+id = "TM-PQC"
+kind = "defence"
+where = "## Post-quantum notes"
+
+[[clause]]
+id = "TM-REPORTING"
+kind = "context"
+where = "## Reporting"
+why = """
+a private-disclosure process, not a threat or a defence a property could \
+serve"""
+
+[[untraced]]
+id = "SEC-FIDO-007"
+owner = "maintainer"
+verdict = "would-overclaim"
+why = """
+it was SOURCED to TM-ZEROIZATION and that link was linkage, not coverage — the \
+clause states one rule, that RAM key material is wiped when its use ends, and \
+names session state, PIN/UV tokens, transient copies, transport buffers, DEVK \
+and MKEK. It never names the vendor-unlock seed copy, and that copy is a \
+documented EXCEPTION to the rule it was filed under: state.rs says keydev_dec is \
+held until power-off, a reset or an AUT_DISABLE, and config.rs says "that is \
+accepted". Nor is it TM-HOST-POWER-CUT, which is about a torn write. Writing a \
+clause for it would be worse than leaving it here: formal/README.md records the \
+invariant as INERT on the shipped tree — dropping the ram disjunct leaves the \
+state set identical — so a threat clause would be a threat model stronger than \
+its firmware, the one direction this page may not be wrong in"""
+rests_on = ["""
+Key-grade material in RAM is wiped (`zeroize`, volatile writes) when its use \
+ends: session state and PIN/UV tokens on drop, transient key copies at end of \
+scope including error paths, and the transport/exchange buffers as soon as a \
+message completes""", """
+**Scope: the interrupted
+  write.**"""]

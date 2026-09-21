@@ -62,7 +62,7 @@ fn select_returns_version_string() {
     let mut fs = fs();
     let (sw, body) = select(&mut app, &mut fs);
     assert_eq!(sw, Sw::OK);
-    assert_eq!(&body, b"5.7.4");
+    assert_eq!(&body, b"5.8.0");
 }
 
 #[test]
@@ -75,7 +75,7 @@ fn read_config_reports_version_caps_serial() {
     // Leading overall-length byte.
     assert_eq!(body[0] as usize, body.len() - 1);
     let tlv = &body[1..];
-    assert_eq!(tlv_get(tlv, TAG_VERSION), Some(&[5u8, 7, 4][..]));
+    assert_eq!(tlv_get(tlv, TAG_VERSION), Some(&[5u8, 8, 0][..]));
     assert_eq!(
         tlv_get(tlv, TAG_USB_SUPPORTED),
         Some(&SUPPORTED_CAPS.to_be_bytes()[..])

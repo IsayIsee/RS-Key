@@ -240,4 +240,4 @@ Substitute this device wherever it says YubiKey.
 - **Verify the reader:** `pcsc_scan` (or `opensc-tool -l`) should list
   `RS-Key Security Key` on the default build (or `Yubico YubiKey RSK
   OTP+FIDO+CCID` on the opt-in `VIDPID=Yubikey5` build). On that opt-in build,
-  `ykman info` should report `5.7.4` with all six applications enabled.
+  `ykman info` should report `5.8.0` with all six applications enabled.

@@ -33,8 +33,9 @@
 #          `scripts/kani.sh` (docs/testing.md). The fast tier of that same script runs
 #          per-PR in ci.yml; these four owe the whole roster between them. They
 #          are separate jobs for two measured reasons — `rsk-phy`'s
-#          round-trip peaks at 11.1 GB and takes the runner down with it, so its
-#          death costs its own crate only; and the rest, run in one job, cost the
+#          round-trip peaks at 19.9 GiB (2026-08-26; 11.1 GB when this was
+#          written) and has taken the runner down with it twice, so its death
+#          costs its own crate only; and the rest, run in one job, cost the
 #          sum of every crate's solving rather than the slowest shard's. Kani is
 #          not in nixpkgs and its setup downloads a prebuilt CBMC bundle, so
 #          these jobs are rustup-based, not nix.
@@ -46,12 +47,17 @@
 #   comutants — the semantic model mutants re-injected into production Rust
 #          (`scripts/comutate.py run`). Gating: every recorded code-level kill
 #          must still go red, and a new GAP is an abstraction-fidelity finding.
-#   formal — TLC over formal/: the model, its 44 mutants, their floors and the
-#          vacuity check (formal/run-tlc.sh `safety`). Gating. It also runs on
+#   formal — TLC over formal/: every configuration `run-tlc.sh safety` lists,
+#          its floor and the vacuity check, each row GREEN or RED as
+#          `floors.txt` says and on the invariant it names wherever it names
+#          one. How many of each is that file's to say: the copy that stood here
+#          said 194 rows, 20 GREEN and 174 RED, and the tier had moved past all
+#          three. Gating, and sharded three ways since the model outgrew the one
+#          job it used to run in (`TLC_SHARD`, and the job's own comment). It also runs on
 #          any push touching formal/, so an edit to the model is checked at once
 #          rather than up to a week later. The `liveness` tier is deliberately
-#          not here — it needs a 12g heap, and 11.1 GB is where the kani `heavy`
-#          runner already died twice.
+#          not here — it needs a 12g heap, and the kani `heavy` runner has
+#          already died twice under a harness that peaks at 19.9 GiB.
 #
 # `complexity` used to be here and is gone: scripts/check.sh already runs
 # scripts/complexity_gate.sh on every pull request, so the row re-proved a merge
@@ -119,7 +125,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
       - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
         with:
@@ -153,7 +159,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
       - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
         with:
@@ -218,7 +224,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
       - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
         with:
@@ -283,7 +289,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
       - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
         with:
@@ -312,7 +318,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
       - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
         with:
@@ -394,7 +400,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
       - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
         with:
@@ -432,10 +438,19 @@ jobs:
     if: github.event.schedule != '17 5 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    # One comutant now carries a PROOF half — `cargo kani` over the harness its
+    # defect must redden — so this job needs the same out-of-band install the
+    # `kani` job has. Without it the proof command answers `error: no such
+    # command`, which `comutate.py` classifies as `proof-broke` and the row goes
+    # red for the tool rather than for the patch. This is the one place kani runs
+    # INSIDE `nix develop`; the `kani` job above is rustup-based for the reason
+    # its own comment gives, and the two environments are not the same one.
+    env:
+      KANI_VERSION: "0.67.0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
       - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
         with:
@@ -450,6 +465,16 @@ jobs:
             target
           key: comutants-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'formal/comutants.toml') }}
           restore-keys: comutants-${{ runner.os }}-
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin
+          key: kani-${{ runner.os }}-${{ env.KANI_VERSION }}
+
+      - name: install kani (rustup-based — not packaged in nixpkgs)
+        run: |
+          command -v cargo-kani >/dev/null || cargo install --locked kani-verifier --version "$KANI_VERSION"
+          cargo kani setup
 
       - name: co-refutation — inject every semantic defect into production Rust
         run: |
@@ -467,13 +492,15 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # The TLA+ model checker. It ran in no workflow at all until now: `floors.txt`,
-  # the vacuity check and the 44-mutant matrix were ratchets whose only puller was
+  # the vacuity check and the mutant matrix -- 156 of the 194 configurations
+  # `run-tlc.sh --tiers` lists under `safety` -- were ratchets whose only puller was
   # whoever remembered `./formal/run-tlc.sh`, on the one machine that had a jar at
   # a hardcoded store path. The tool is pinned in the dev shell now, which is what
   # makes this row possible.
   #
   # `safety`, not `all`: the liveness family needs the 12g heap `floors.txt` gives
-  # it, and 11.1 GB is where the kani `heavy` runner already died twice. The tier
+  # it, and the kani `heavy` runner has already died twice under a harness that
+  # peaks at 19.9 GiB. The tier
   # membership lives in formal/run-tlc.sh and nowhere else, so this row cannot
   # drift from it — see that file for what `liveness` costs and where to run it.
   #
@@ -482,37 +509,60 @@ jobs:
   # on VACUOUS (a spec nothing enabled). `scripts/test_run_tlc.py`, collected by
   # the merge gate, keeps the roadmap's four corruptions: broken jar, a Solo
   # invariant that misses its mutant, one-state VACUOUS, and a muted Mut switch.
-  # Direct RED and FLOOR cases make all three job verdict boundaries explicit.
+  # Direct RED and FLOOR cases make all three job verdict boundaries explicit,
+  # and four more hold every reader of a log with a NUL hole in it — the state
+  # that reported a finished 48.7 M-state GREEN as VACUOUS. The last hold TLC's
+  # metadir, which a row refuted in its initial state leaves for the next start.
   formal:
     if: github.event.schedule != '17 5 * * *'
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # Three shards, and a cap well past what one of them needs. A single runner
+    # carried this tier until the model outgrew it: the job reported ONE row of
+    # 224 and was killed for time, `Shipped.cfg` alone having taken most of its
+    # budget (`formal/runs.toml` holds the wall clocks; the CHANGELOG dates the
+    # measurement). `run-tlc.sh` splits by recorded cost, so the three shards are
+    # within a minute of each other, and none can come under the heaviest single
+    # configuration — which is what the cap leaves room for, not the tier's sum.
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
       - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
 
-      # Shipped.cfg alone is 61 M distinct states at 1137 s on the author's
-      # machine; the rest of the matrix is seconds apiece. Two workers is what
-      # run-tlc.sh caps at, and the runner has four cores.
+      # Shipped.cfg alone dominates the tier and the rest of the matrix is
+      # seconds apiece; its states and its wall clock are a row of
+      # formal/runs.toml, which is where the last observed run of this tier is
+      # kept. A copy here said 48.7 M and 539 s until that file existed, against
+      # 77.6 M and half an hour. Two workers is what run-tlc.sh caps at, and the
+      # runner has four cores.
       # `set -o pipefail` is load-bearing: a `run:` block is `bash -e` WITHOUT it,
       # so the pipe below would report tee's exit code and a RED matrix would pass
       # as green — the exact hole this row exists to close, in the row itself.
+      # The denominator is `strategy.job-total` and not a second hand-kept 3, for
+      # the reason the mutants row above gives: two numbers that must agree is how
+      # a shard space silently loses a slice. The runner refuses a shard that
+      # selected nothing, so widening the matrix past the tier is a red row.
       - name: formal — TLC over the model, its mutants and their floors
         run: |
           set -o pipefail
           nix develop -c ./formal/run-tlc.sh safety | tee "$RUNNER_TEMP/formal.log"
+        env:
+          TLC_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
 
       - name: publish the matrix
         if: always()
         run: |
           {
-            echo "### TLA+ — safety tier"
+            echo "### TLA+ — safety tier, shard ${{ matrix.shard }}/${{ strategy.job-total }}"
             echo '```'
             cat "$RUNNER_TEMP/formal.log"
             echo '```'
@@ -521,6 +571,6 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: formal-logs-${{ github.run_id }}
+          name: formal-logs-${{ github.run_id }}-${{ matrix.shard }}
           path: formal/out/
           if-no-files-found: ignore

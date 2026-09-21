@@ -24,7 +24,9 @@ Part A (host-only, always runs):
 Part B (runs only if a FIDO HID device is plugged in):
   * decodes the live `authenticatorGetInfo` and asserts it equals the embedded
     one, IGNORING the stateful fields (options.ep / options.clientPin /
-    forcePINChange / minPINLength) which depend on PIN/enterprise state.
+    forcePINChange / minPINLength) which depend on PIN/enterprise state;
+  * encIdentifier / encCredStoreState change on every call, so only presence is
+    compared, one way: a member the device sends must be declared.
 
 The statement describes the DEFAULT (shipping) build profile, which advertises
 EdDSA (-8): the Windows WebAuthn API drops unadvertised algorithms, breaking
@@ -64,6 +66,9 @@ REQUIRED = [
 ]
 # Fields whose value tracks device state, not model identity.
 STATEFUL = {"forcePINChange", "minPINLength", "remainingDiscoverableCredentials"}
+# Re-encrypted under a fresh IV per call, so a statement carries each as the
+# empty placeholder MDS3 takes, and only presence can be compared.
+ENCRYPTED_MEMBERS = ((0x19, "encIdentifier"), (0x1E, "encCredStoreState"))
 # `makeCredUvNotRqd` tracks alwaysUv (CTAP 2.1 §6.4 requires it false while alwaysUv
 # is on), so like `alwaysUv` itself it is device state, not a statement property.
 STATEFUL_OPTIONS = {"ep", "clientPin", "makeCredUvNotRqd"}
@@ -121,6 +126,10 @@ def part_a(stmt):
 
     if stmt.get("authenticatorVersion") != gi.get("firmwareVersion"):
         fails.append("authenticatorVersion != authenticatorGetInfo.firmwareVersion")
+
+    for _, name in ENCRYPTED_MEMBERS:
+        if gi.get(name, "") != "":
+            fails.append(f"authenticatorGetInfo.{name} must be the empty placeholder")
 
     if fails:
         for f in fails:
@@ -210,9 +219,9 @@ def part_b(stmt):
         "maxCredentialCountInList": m[0x07],
         "maxCredentialIdLength": m[0x08],
         "algorithms": [{"alg": a["alg"], "type": a["type"]} for a in m[0x0A]],
-        # 0x0B and 0x15 are profile-dependent: a `largeblob-ext` build withdraws the
-        # first with the command it describes, so read both leniently and decide
-        # below rather than dying on a KeyError.
+        # 0x0B is profile-dependent: a `largeblob-ext` build withdraws it with the
+        # command it describes, so read it leniently and decide below rather than
+        # dying on a KeyError.
         "maxSerializedLargeBlobArray": m.get(0x0B),
         "forcePINChange": m[0x0C],
         "minPINLength": m[0x0D],
@@ -221,22 +230,20 @@ def part_b(stmt):
         "transports": m[0x09],
         "maxRPIDsForSetMinPINLength": m[0x10],
         "remainingDiscoverableCredentials": m[0x14],
-        # 0x15 is u64-valued; `10_fido_getinfo`'s decoder needs its 8-byte-uint
-        # arm for this to parse at all. A member missing from THIS map reads as a
-        # drift against the statement, not as an oversight — add both together.
+        # A member missing from THIS map reads as a drift against the statement,
+        # not as an oversight — add both together.
         "vendorPrototypeConfigCommands": m[0x15],
         "attestationFormats": m[0x16],
-        # 0x19 encIdentifier and 0x1E encCredStoreState are deliberately NOT
-        # mirrored: both appear only once a persistent pinUvAuthToken exists, and
-        # both are re-encrypted under a fresh IV on every getInfo, so no static
-        # statement can carry either. MDS3 allows them only as empty placeholders;
-        # absent here on purpose, not by oversight.
         "longTouchForReset": m[0x18],
         "transportsForReset": m[0x1A],
         "pinComplexityPolicy": m[0x1B],
         "maxPINLength": m[0x1D],
         "authenticatorConfigCommands": m[0x1F],
     }
+    # A member the device sends must be declared, which is the pinned P-1 rule.
+    sent = {name for key, name in ENCRYPTED_MEMBERS if key in m}
+    for name in sent:
+        live[name] = ""
     # The shipped statements describe builds that serve the CTAP 2.1 large-blob
     # design. A `largeblob-ext` build swaps it for the 2.3 extension (§12.4 forbids
     # both), so its getInfo is a different profile — say so instead of reporting
@@ -264,6 +271,13 @@ def part_b(stmt):
     always_uv_on = bool(live.get("options", {}).get("alwaysUv"))
     want = _norm(ref["authenticatorGetInfo"], drop_u2f=always_uv_on)
     got = _norm(live, drop_u2f=always_uv_on)
+    # One the device withholds is not drift: a PIN set, change or forced change
+    # revokes the grant both are sealed under until the next boot or pcmr request,
+    # and a soft lock hides 0x19. P-1 checks the other direction only.
+    for _, name in ENCRYPTED_MEMBERS:
+        if name not in sent and want.pop(name, None) is not None:
+            print(f"NOTE: the device withholds {name} right now — its placeholder is "
+                  "compared only when the member is sent.")
     if want != got:
         for k in sorted(set(want) | set(got)):
             if want.get(k) != got.get(k):

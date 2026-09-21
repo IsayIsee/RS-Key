@@ -58,7 +58,12 @@ fn seeded_fs_with_pin() -> Fs<RamStorage> {
     fs
 }
 
-fn run(fs: &mut Fs<RamStorage>, state: &mut FidoState, req: &[u8], out: &mut [u8]) -> CtapResult {
+fn run<S: rsk_fs::Storage>(
+    fs: &mut Fs<S>,
+    state: &mut FidoState,
+    req: &[u8],
+    out: &mut [u8],
+) -> CtapResult {
     let mut rng = SeqRng(1);
     let mut presence = crate::AlwaysConfirm;
     let mut ctx = Ctx {
@@ -571,4 +576,42 @@ fn an_unsupported_protocol_is_judged_before_the_missing_token() {
             "protocol {proto}"
         );
     }
+}
+
+/// §6.10.2 gates the write on "the authenticator is protected by some form of user
+/// verification", and this applet spells that `has_data(EF_PIN)` — the same
+/// `false` for "no PIN configured" and for a probe the flash could not serve. An
+/// unverified write cannot read the array (entries stay AEAD-sealed) but it can
+/// destroy it, so the faulted probe is refused rather than let through.
+#[test]
+fn a_faulted_pin_probe_does_not_open_the_large_blob_write_gate() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    fs.put(EF_LARGEBLOB, &LARGEBLOB_INITIAL).unwrap();
+    let mut pin_file = [0u8; 35];
+    pin_file[0] = 8;
+    pin_file[1] = 4;
+    pin_file[2] = 1;
+    fs.put(EF_PIN, &pin_file).unwrap();
+
+    medium.stick(Some(EF_PIN));
+    let mut state = FidoState::new();
+    let mut out = [0u8; 128];
+    let blob = valid_blob(&[0xA5; 8]);
+    assert_eq!(
+        run(
+            &mut fs,
+            &mut state,
+            &set_request(0, Some(blob.len() as u64), &blob, &TOKEN),
+            &mut out
+        ),
+        Err(CtapError::Other),
+        "a faulted EF_PIN probe let an unverified host write the large-blob array"
+    );
+    assert_eq!(
+        medium.value(EF_LARGEBLOB).as_deref(),
+        Some(&LARGEBLOB_INITIAL[..]),
+        "and the array it would have destroyed is still the one on flash"
+    );
 }

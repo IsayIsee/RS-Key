@@ -4,6 +4,7 @@
 use super::*;
 use crate::dying_storage::DyingStorage;
 use rsk_fs::storage::ram::RamStorage;
+use rsk_sdk::Sw;
 
 /// Deterministic counter RNG for tests.
 struct CountRng(u8);
@@ -282,4 +283,218 @@ fn a_refused_sex_repair_leaves_the_old_byte_and_retries() {
     assert_eq!(&b[..n], SEX_DEFAULT);
     budget.set(0);
     scan_files(&dev(), &mut fs, &mut CountRng(0)).unwrap();
+}
+
+/// The same shape as PIV's `scan_files`, at boot instead of at SELECT: one
+/// faulted probe must not re-seed the factory PW1 verifier.
+///
+/// `Storage::read`/`size` answer the same `None` for "no such record" and for
+/// "that read failed", and every guard here writes a factory default over the
+/// file it reads absent — so a faulted `EF_PW1` probe put `PW1_DEFAULT` back over
+/// the owner's verifier, locking the owner out and handing `123456` the PW1
+/// security status. `scan_files` runs from `main`'s boot path, so no host command
+/// is needed to reach it.
+#[test]
+fn a_faulted_probe_does_not_reseed_the_factory_pw1() {
+    const OWNER_PW1: &[u8] = b"9988776655";
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    scan_files(&dev(), &mut fs, &mut CountRng(0)).unwrap();
+    let mut sess = crate::pin::Session::default();
+    let mut change = PW1_DEFAULT.to_vec();
+    change.extend_from_slice(OWNER_PW1);
+    assert_eq!(
+        crate::pin::change_pin(
+            &dev(),
+            &mut fs,
+            &mut sess,
+            &mut CountRng(9),
+            0,
+            0x81,
+            &change
+        ),
+        Sw::OK
+    );
+    let owner = medium
+        .value(EF_PW1)
+        .expect("the owner's verifier is on the medium");
+
+    // The next boot re-runs `scan_files`, with EF_PW1's reads faulting.
+    let mut fs = Fs::new(fs.into_storage());
+    fs.scan();
+    medium.stick(Some(EF_PW1));
+    let r = scan_files(&dev(), &mut fs, &mut CountRng(0));
+    assert_eq!(
+        medium.value(EF_PW1).as_deref(),
+        Some(&owner[..]),
+        "a faulted EF_PW1 probe re-seeded the owner's verifier with PW1_DEFAULT"
+    );
+    assert_eq!(
+        r,
+        Err(Error::Storage),
+        "an init that could not read the files it provisions must say so"
+    );
+
+    // The medium recovers; the card must be exactly as its owner left it.
+    medium.stick(None);
+    let mut sess = crate::pin::Session::default();
+    assert_ne!(
+        crate::pin::verify(
+            &dev(),
+            &mut fs,
+            &mut sess,
+            &mut CountRng(0),
+            0,
+            0x81,
+            PW1_DEFAULT
+        ),
+        Sw::OK,
+        "the factory PW1 must not verify on a card whose owner changed it"
+    );
+    let mut sess = crate::pin::Session::default();
+    assert_eq!(
+        crate::pin::verify(
+            &dev(),
+            &mut fs,
+            &mut sess,
+            &mut CountRng(0),
+            0,
+            0x81,
+            OWNER_PW1
+        ),
+        Sw::OK,
+        "and the owner's PW1 must still verify"
+    );
+}
+
+/// Every guard in [`scan_files`] writes a FACTORY DEFAULT over the record it reads
+/// absent, and the fallible probe is the only thing that stops a flash fault from
+/// taking that arm. One row per guard, each aimed at its own record and — where two
+/// guards read the SAME record — at its own probe of it, because a persistent fault
+/// is caught by whichever guard reads first and the ones behind it never run.
+///
+/// The `Fs` is rebuilt over a TRUNCATED boot walk on purpose: a complete scan
+/// decides the whole FID space, so `try_*` short-circuits an absent record before
+/// the backend and no fault can reach the guards whose record is legitimately
+/// absent (`EF_RC` on every settled card). A walk one read fault cut short is the
+/// state where they are live, and it is reachable on the same flaky medium.
+#[test]
+fn every_scan_files_guard_refuses_its_own_faulted_probe() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    scan_files(&dev(), &mut fs, &mut CountRng(0)).unwrap();
+
+    // An admin-set resetting code, so the two guards that probe `EF_RC` both reach
+    // the backend: the first `try_*` over an ABSENT record caches the absence, and
+    // the second then answers from RAM with no probe to fault.
+    let mut rc = std::vec![32u8, 0x01];
+    rc.extend_from_slice(&[0x5A; 32]);
+
+    for (fid, skip, plant_rc, what) in [
+        (EF_PW1, 0, false, "the first-boot latch's PW1 probe"),
+        (EF_PW1, 1, false, "the PW1 verifier"),
+        (EF_PW3, 0, false, "the PW3 verifier"),
+        (EF_SIG_COUNT, 0, false, "the signature counter"),
+        (EF_PW_PRIV, 0, false, "the PW-status record"),
+        (EF_UIF_SIG, 0, false, "the signature UIF flag"),
+        (EF_KDF, 0, false, "the KDF DO"),
+        (EF_PW_RETRIES, 0, false, "the retry counters"),
+        (EF_RC, 0, true, "the resetting-code verifier"),
+        (EF_RC, 1, true, "the RC probe that holds C4's error counter"),
+        (
+            EF_PW_PRIV,
+            1,
+            false,
+            "the PW-status record settle_rc_retry_counter reads",
+        ),
+        (
+            EF_PW_PRIV,
+            2,
+            false,
+            "the PW-status record settle_pw_status_maxima reads",
+        ),
+        (EF_SEX, 0, false, "the sex DO"),
+    ] {
+        // A boot walk the medium cut short: nothing is decided, so every probe
+        // below reaches the backend whether its record is present or absent.
+        let mut fs2 = Fs::new(fs.into_storage());
+        medium.truncate_walk(true);
+        fs2.scan();
+        medium.truncate_walk(false);
+        // `force_delete`, not `delete`: the truncated walk left every present bit
+        // clear, and `delete` skips the backend on a clear one — so the record would
+        // survive and `settle_rc_retry_counter` would return early on it.
+        if plant_rc {
+            fs2.put(EF_RC, &rc).unwrap();
+        } else {
+            let _ = fs2.force_delete(EF_RC);
+        }
+
+        let before = medium.value(fid);
+        medium.stick_after(fid, skip);
+        let r = scan_files(&dev(), &mut fs2, &mut CountRng(9));
+        medium.stick(None);
+        assert_eq!(
+            medium.value(fid),
+            before,
+            "a faulted probe rewrote {what} with the factory default"
+        );
+        assert_eq!(
+            r,
+            Err(Error::Storage),
+            "a boot that could not read {what} must refuse, not re-provision"
+        );
+        fs = fs2;
+    }
+}
+
+/// The four DEK guards run only inside the first-boot window — `provisioning`,
+/// i.e. NEITHER PW verifier exists — and their absent arm mints a fresh random DEK
+/// and re-seals both copies. Every key on the card is wrapped under the old one, so
+/// that write is the most destructive this module makes. The window is reachable
+/// after a torn first boot, which is exactly what the latch is for; each row leaves
+/// the card in the state its own guard is the last one standing in.
+#[test]
+fn every_first_boot_dek_guard_refuses_its_own_faulted_probe() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    scan_files(&dev(), &mut fs, &mut CountRng(0)).unwrap();
+
+    for (fid, drop_dek_pw1, what) in [
+        (EF_DEK_PW1.get(), false, "PW1's DEK copy"),
+        (EF_DEK_PW3.get(), false, "PW3's DEK copy"),
+        (EF_DEK_RC.get(), true, "the resetting code's DEK copy"),
+        (EF_DEK, true, "the legacy DEK"),
+    ] {
+        let mut fs2 = Fs::new(fs.into_storage());
+        medium.truncate_walk(true);
+        fs2.scan();
+        medium.truncate_walk(false);
+        // A first boot torn between the DEK writes and the PW verifiers.
+        let _ = fs2.force_delete(EF_PW1);
+        let _ = fs2.force_delete(EF_PW3);
+        if drop_dek_pw1 {
+            let _ = fs2.force_delete(EF_DEK_PW1.get());
+        }
+        let survivor = if drop_dek_pw1 { EF_DEK_PW3 } else { EF_DEK_PW1 };
+        let before = medium.value(survivor.get()).expect("a DEK copy survives");
+
+        medium.stick(Some(fid));
+        let r = scan_files(&dev(), &mut fs2, &mut CountRng(9));
+        medium.stick(None);
+        assert_eq!(
+            medium.value(survivor.get()).as_deref(),
+            Some(&before[..]),
+            "a faulted {what} probe minted a new DEK over the one every key is wrapped under"
+        );
+        assert_eq!(
+            r,
+            Err(Error::Storage),
+            "a boot that could not read {what} must refuse, not re-key"
+        );
+        fs = fs2;
+    }
 }

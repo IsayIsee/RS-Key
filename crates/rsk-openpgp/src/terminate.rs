@@ -87,32 +87,48 @@ pub fn terminate_df<S: Storage>(
     }
     // A sweep that could not prove it cleared the range must not report success — the
     // host would file the card as factory-reset over surviving private-key records.
-    if let Err(sw) = wipe_openpgp(fs) {
-        return sw;
+    let wiped = wipe_openpgp(fs);
+    // Re-seed even when the sweep failed, the rule `rsk_piv::files::reset_files`
+    // states: an applet with no EF_PW_PRIV answers 6A88 to every later TERMINATE,
+    // and only a reboot runs `scan_files` again. Safe because every record it
+    // re-seeds is swept LAST, so a sweep that failed never reached one.
+    let ensured = scan_files(dev, fs, rng).map_err(|_| Sw::MEMORY_FAILURE);
+    match wiped.and(ensured) {
+        Ok(()) => Sw::OK,
+        Err(sw) => sw,
     }
-    if scan_files(dev, fs, rng).is_err() {
-        return Sw::MEMORY_FAILURE;
-    }
-    Sw::OK
 }
 
-/// The records that *gate* the applet: the three PW verifiers, the retry/status
-/// records they share, and the three UIF (touch) flags. Exists for the device-wide
-/// `Fs::factory_wipe`, which must remove every applet's gate records only after
-/// everything else is provably gone. It lives here rather than open-coded in the
+/// The records every wipe removes LAST: the three PW verifiers, the retry/status
+/// records they share, the three UIF (touch) flags, and the working DOs
+/// [`scan_files`] re-seeds. Exists for the device-wide `Fs::factory_wipe`, which
+/// must remove them only after everything else is provably gone; the applet-local
+/// sweep inherits the same set. It lives here rather than open-coded in the
 /// firmware so the applet that owns the knowledge owns the list (audit run-36: the
 /// list nobody could name from outside its crate was the one that got forgotten).
 ///
-/// `wipe_openpgp` itself is deliberately single-phase, and that stays justified
-/// for the *verifiers*: unlike PIV's, OpenPGP's private keys are sealed under a
-/// PIN-derived DEK, so a re-seeded default PW1 opens nothing that survived the same
-/// tear. It is **not** justified for the UIF flags, which [`scan_files`] re-seeds
-/// to touch-OFF and which gate a key the surviving DEK can still open — so those
-/// are deferred here too, and the applet-local sweep inherits the same set.
+/// The PW verifiers are uniformity: unlike PIV's, OpenPGP's private keys are sealed
+/// under a PIN-derived DEK, so a re-seeded default PW1 opens nothing that survived
+/// the same tear. Every other member is load-bearing for one reason — the re-seed
+/// runs whatever the wipe answered, so a record taken in phase 1 comes back as a
+/// FACTORY DEFAULT beside a key still on the card: touch-OFF for a UIF flag, a
+/// rolled-back signature counter, factory cardholder data, and for `EF_KDF` a
+/// lockout, since PW1/PW3 are verified over the KDF *output* and a card advertising
+/// KDF-none makes `gpg` send the raw passphrase until both counters are spent.
 pub fn is_openpgp_gate_fid(fid: u16) -> bool {
     matches!(
         fid,
-        EF_PW1 | EF_RC | EF_PW3 | EF_PW_PRIV | EF_PW_RETRIES | EF_UIF_SIG | EF_UIF_DEC | EF_UIF_AUT
+        EF_PW1
+            | EF_RC
+            | EF_PW3
+            | EF_PW_PRIV
+            | EF_PW_RETRIES
+            | EF_UIF_SIG
+            | EF_UIF_DEC
+            | EF_UIF_AUT
+            | EF_KDF
+            | EF_SIG_COUNT
+            | EF_SEX
     )
 }
 
@@ -121,21 +137,56 @@ pub fn is_openpgp_gate_fid(fid: u16) -> bool {
 /// bounds a pathological store (mirrors PIV's `RESET_MAX_DELETES`).
 const WIPE_MAX_DELETES: u32 = 512;
 
-/// Delete every live OpenPGP file. Batched because `for_each_key` cannot delete
+/// Fids one [`wipe_openpgp`] pass collects before deleting them. Named because the
+/// wrap to a second pass is a code path, and the test that crosses it has to size
+/// its fixture off this rather than off a copy of the number.
+const SWEEP_BATCH: usize = 64;
+
+/// Delete every live OpenPGP file, with the at-rest lap re-armed around the sweep.
+fn wipe_openpgp<S: Storage>(fs: &mut Fs<S>) -> Result<(), Sw> {
+    // A tombstone appends like a re-seal, and PW1 / PW3 / RC migrate only on their
+    // own verify — so this can supersede a chip-serial-rooted verifier and owes the
+    // at-rest lap (rsk-fs `EF_HARDENED`) a re-arm, ahead of the sweeps.
+    //
+    // The failure does NOT stop the write, unlike the gated sites: "leave the
+    // record in force" means, on a wipe, leave the secrets live.
+    let _ = rsk_fs::request_rescrub(fs);
+    let swept = sweep(fs);
+    // Retry, BETWEEN the sweep and its `?` rather than after its last one: a refused
+    // head leaves the marker latched over every tombstone [`sweep`] appended, and a
+    // sweep that faults on the way is exactly when that is true and unrecoverable.
+    //
+    // A single-shot refusal is the only kind either call recovers from (`rsk_otp`'s
+    // BUMP_TRIES states the same), and where the head landed this costs no append at
+    // all — `Fs::delete` skips a backend it already marked absent.
+    let _ = rsk_fs::request_rescrub(fs);
+    swept
+}
+
+/// The delete half of [`wipe_openpgp`]. Batched because `for_each_key` cannot delete
 /// mid-iteration; each round deletes ≥1 key, so it converges (mirrors the FIDO and
 /// PIV resets — including their two hardening rules, which this sweep predates:
 /// `force_delete` rather than `delete`, and an incomplete enumeration must fail
 /// rather than read as "the range is clear").
-fn wipe_openpgp<S: Storage>(fs: &mut Fs<S>) -> Result<(), Sw> {
+///
+/// Its own function so the at-rest re-arm can stand between it and its caller's
+/// answer: every early return in here is one a re-arm written BELOW them would be
+/// skipped by, which is the case that re-arm exists for.
+fn sweep<S: Storage>(fs: &mut Fs<S>) -> Result<(), Sw> {
     // Two phases, the rule the three sibling sweeps carry: `for_each_key` yields in
-    // flash-ring order, not FID order, so one combined sweep can reach a gate record
-    // before the secrets it protects. The PW verifiers do not need it — the DEK chain
-    // makes a restored default PW1 useless — but the UIF flags do: `scan_files`
-    // re-seeds them to touch-OFF over a private key a surviving DEK can still open.
+    // flash-ring order, not FID order, so one combined sweep can reach a deferred
+    // record before the secrets it sits beside. The PW verifiers do not need it —
+    // the DEK chain makes a restored default PW1 useless — but everything
+    // `scan_files` re-seeds does, over a key a surviving DEK can still open.
     let mut deleted = 0u32;
+    // A metadata record that could not be PROVEN dropped is carried to the end
+    // rather than stopped on, for the reason `Fs::force_delete_halves` states:
+    // EF_META is one blob shared by every applet, so a fault reading it would end
+    // the wipe after a single file — at the same fid on every retry.
+    let mut orphaned = false;
     for gates in [false, true] {
         loop {
-            let mut keys = [0u16; 64];
+            let mut keys = [0u16; SWEEP_BATCH];
             let mut k = 0usize;
             let complete = fs.for_each_key(&mut |fid| {
                 if is_openpgp_fid(fid)
@@ -164,9 +215,14 @@ fn wipe_openpgp<S: Storage>(fs: &mut Fs<S>) -> Result<(), Sw> {
             for &fid in &keys[..k] {
                 // force_delete: `delete` skips a false-absent file that `for_each_key`
                 // keeps yielding, so the sweep would spin instead of converging.
-                fs.force_delete(fid).map_err(|_| Sw::MEMORY_FAILURE)?;
+                let gone = fs.force_delete_halves(fid);
+                gone.value.map_err(|_| Sw::MEMORY_FAILURE)?;
+                orphaned |= gone.record.is_err();
             }
         }
+    }
+    if orphaned {
+        return Err(Sw::MEMORY_FAILURE);
     }
     Ok(())
 }

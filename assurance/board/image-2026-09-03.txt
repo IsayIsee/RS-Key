@@ -1,0 +1,4 @@
+# capture 2026-09-03, Waveshare RP2350-Zero 4M, RP2350 A4, chipid 0x6e4a9b82bbbc05a7
+uf2  sha256 b5be8a3fd0f153bea66e06d27bf6716e8969545a227a35908cf45cf728c886d4
+elf  sha256 d551ff6ec9a71febe087a6ca1485c319be3e206caafc92d06ff2a9428a3fb1b9
+bcdDevice 2500 = 0x09C4

@@ -55,6 +55,7 @@ fn roundtrip(proto: PinProto, two_salts: bool) {
     let (salt_enc, salt_auth, shared) = platform(proto, &plat_scalar, &ax, &ay, salt);
 
     let req = HmacSecretReq {
+        peer_present: true,
         peer_x: px,
         peer_y: py,
         salt_enc: Some(&salt_enc),
@@ -106,6 +107,7 @@ fn uv_half_differs_from_non_uv() {
     let salt = [0xA1u8; 32];
     let (salt_enc, salt_auth, shared) = platform(PinProto::Two, &plat_scalar, &ax, &ay, &salt);
     let req = HmacSecretReq {
+        peer_present: true,
         peer_x: px,
         peer_y: py,
         salt_enc: Some(&salt_enc),
@@ -145,6 +147,7 @@ fn bad_salt_auth_is_pin_auth_invalid() {
     let (salt_enc, mut salt_auth, _shared) = platform(PinProto::Two, &plat_scalar, &ax, &ay, &salt);
     salt_auth[0] ^= 0xFF; // corrupt the MAC
     let req = HmacSecretReq {
+        peer_present: true,
         peer_x: px,
         peer_y: py,
         salt_enc: Some(&salt_enc),
@@ -172,6 +175,7 @@ fn bad_salt_auth_is_pin_auth_invalid() {
 fn bad_salt_length_rejected() {
     let auth_scalar = scalar(0x11);
     let req = HmacSecretReq {
+        peer_present: true,
         salt_enc: Some(&[0u8; 20]), // not one of the four legal wire lengths
         salt_auth: Some(&[0u8; 32]),
         proto: 2,
@@ -191,5 +195,87 @@ fn bad_salt_length_rejected() {
             &mut out
         ),
         Err(CtapError::InvalidLength)
+    );
+}
+
+/// A value with no sub-fields in it asks for no evaluation, and the oracle reads
+/// it as if the extension had not been sent at all: a YubiKey 5.8.0 completes the
+/// ceremony for an empty map and for a boolean, on `getAssertion` and
+/// `makeCredential` alike, and even on an `up:false` request — where a *present*
+/// extension is refused. Ours used to answer MISSING_PARAMETER to the empty map and
+/// INVALID_CBOR to the boolean, both of which end the ceremony.
+///
+/// The refused half is the correction: this was measured on a BOOLEAN and written
+/// as "not a map", which is wider than the reference. Sweeping the value shapes
+/// against a real 5.8.0 gives a map or a boolean accepted and every other CBOR type
+/// refused with CBOR_UNEXPECTED_TYPE — the same for both extensions.
+#[test]
+fn only_a_map_or_a_boolean_is_a_value_with_no_subfields() {
+    for (label, bytes) in [
+        ("empty map", &[0xA0u8][..]),
+        ("boolean true", &[0xF5u8][..]),
+        ("boolean false", &[0xF4u8][..]),
+    ] {
+        // Matched, not unwrapped: deriving Debug/PartialEq on a struct that holds
+        // salt ciphertext just to let a test print it is the wrong trade.
+        match parse_bytes(bytes) {
+            Ok(req) => assert!(!req.present, "{label} must read as absent"),
+            Err(_) => panic!("{label} must parse, not fail"),
+        }
+    }
+    for (label, bytes) in [
+        ("uint 1", &[0x01u8][..]),
+        ("uint 0", &[0x00u8][..]),
+        ("nint -1", &[0x20u8][..]),
+        ("text string", &[0x61u8, b'x'][..]),
+        ("byte string", &[0x41u8, b'x'][..]),
+        ("empty array", &[0x80u8][..]),
+        ("array [1]", &[0x81u8, 0x01][..]),
+    ] {
+        assert!(
+            matches!(parse_bytes(bytes), Err(CtapError::CborUnexpectedType)),
+            "{label} is the wrong CBOR type for this extension and must be refused \
+             as one — reading it as absent is the over-wide rule this replaces"
+        );
+    }
+}
+
+/// The carve-out the rule above must not widen: an INDEFINITE-length map is a map,
+/// so it is not "no sub-fields" — it stays the non-canonical encoding `def_map`
+/// has always refused.
+#[test]
+fn an_indefinite_length_map_is_still_invalid_cbor() {
+    assert!(matches!(
+        parse_bytes(&[0xBFu8, 0xFF]),
+        Err(CtapError::InvalidCbor)
+    ));
+}
+
+/// `keyAgreement` absent from a map that carries other fields. The coordinates
+/// default to zero, which is not a point, so this used to surface as the ECDH's
+/// INVALID_PARAMETER; a YubiKey 5.8.0 calls it MISSING_PARAMETER, like the salts.
+#[test]
+fn an_absent_key_agreement_is_missing_parameter() {
+    let req = HmacSecretReq {
+        peer_present: false,
+        salt_enc: Some(&[0u8; 32]),
+        salt_auth: Some(&[0u8; 32]),
+        proto: 2,
+        present: true,
+        ..Default::default()
+    };
+    let mut rng = SeqRng(1);
+    let mut out = [0u8; 80];
+    assert_eq!(
+        eval(
+            &req,
+            &scalar(0x11),
+            &SEED,
+            &CRED_ID,
+            false,
+            &mut rng,
+            &mut out
+        ),
+        Err(CtapError::MissingParameter)
     );
 }

@@ -31,6 +31,191 @@ bulk stream, ISO-7816 APDUs, CTAP2 CBOR. Defenses:
   while the device is plugged in and unlocked (sign, decrypt, assert). A
   security key authenticates *presence and possession*, not the intent of
   every byte the host sends. Touch requirements bound the rate.
+- **A flash write can be interrupted, and a host picks which one is in flight.**
+  The device is bus-powered with no reserve, so the supply belongs to whoever
+  holds the cable or the hub port, and because the host drives every operation it
+  chooses which write a cut lands in. It needs no attacker — a knocked cable does
+  the same thing — but it is cheap to aim, so treat it as aimed. There is no
+  transaction underneath: one applet operation is several `Fs` writes, and a cut
+  lands between any two of them. What the device owes across a cut is that
+  nothing comes back *weaker*: an interrupted write left the old value or the new
+  one, never a third; a record committed before the cut still reads back after
+  it; a delete the cut caught halfway leaves behind no metadata describing the
+  value it removed; and no gate comes up softer on the next boot than it went
+  down — a torn `authenticatorReset` may not drop the PIN or `alwaysUv` record
+  while leaving a credential usable. Write ORDER is what buys that, chosen per
+  operation and stated where the code does it: `Fs::delete` drops the metadata
+  before the value, registration writes the `EF_RP` entry before the credential,
+  a reset deletes the seed before anything derived from it. Underneath the order
+  sits an assumption about the silicon rather than a defence this firmware
+  implements — that a torn NOR write leaves the old bytes or detectably bad ones,
+  never a plausible wrong value. It is registered as `PLAT-FLASH-001` and is
+  discharged by a board measurement, not by code
+  ([platform-assumptions.md](platform-assumptions.md)). **Scope: the interrupted
+  write.** A flash *read* that comes back an error is a different condition and
+  has its own clause below. Not that a cut cannot produce one: a half-programmed
+  item header is deterministic *and* reads back as an error, and what keeps a
+  store walk honest is that it skips that error on purpose rather than never
+  meeting it.
+- **A flash read can come back an error, and this firmware spells "not
+  configured" as an absence.** The backend answers a probe with the value, with
+  *no such key*, or with a failure — and its own API folds the last two together:
+  `Storage::read` and `Storage::size` return `None` for either, which is why a
+  second call, `last_error`, exists to tell them apart. The fold is what makes
+  this a security condition rather than a reliability one, because absence is how
+  the tree spells *no PIN set*, *no gate configured* and *not provisioned yet*: a
+  probe that merely failed then reads as a decision the owner never made.
+  Measured, before it was fixed: one refused `EF_PIN` probe on an unauthenticated
+  PIV `SELECT` re-seeded the factory PIN over the owner's, after which
+  `VERIFY 123456` answered `9000` — and the same fault aimed at the
+  management-key slot re-minted the default management key. What the device owes
+  is that a refusal is never laundered into an answer, and three rules carry it.
+  Two are owned by one function each and cited from the store's refinement: a
+  failed probe is never memoised as a decided absence, so one transient fault
+  cannot become a permanent "file absent" for the rest of the boot; and an
+  enumeration the medium truncated leaves the keys it never reached *undecided*,
+  so a walk that stopped early cannot report them gone. The third is a **per-site
+  discipline and not a mechanical property, which is worth saying plainly**: a
+  probe whose absent arm would overwrite configured material or open a gate is
+  answered fallibly — either propagating the failure, or resolving it to the
+  restrictive arm where that is the safe answer — rather than collapsing it into
+  an absence. Which class a site belongs in is decided by asking what becomes
+  reachable if the probe answers *absent* where the truth is *present*, and it is
+  held by a test at the site; no gate can check it, and the tree carries far more
+  collapsing probes than fallible ones because most absences cost only a status
+  field or a repeated repair. **Scope: the read the medium refused, whoever
+  caused it.** How much of a lever a host has here is deliberately not claimed. A
+  cut it aims leaves a half-programmed item header that reads back
+  `Error::Corrupted`, and the store walk skips that one on purpose, so it
+  truncates nothing; an interrupted page *erase* leaves a marker pair the backend
+  also reports as `Corrupted`, and that one does reach a per-key probe in the
+  source. Whether any of it is reachable on a board is unmeasured. The three
+  rules hold either way, because none of them asks who caused the refusal.
+- **You must be able to see and revoke every credential the device holds.**
+  Resident credentials live in `EF_CRED`, and the two surfaces that let you
+  BROWSE them — `enumerateRPs` and the trusted-display Passkeys view — reach them
+  through `EF_RP`. So a credential whose `EF_RP` entry is missing is one
+  `getAssertion` signs with happily and neither surface will show you.
+  `enumerateCredentials` and `deleteCredential` scan `EF_CRED` directly, on an
+  rpIdHash the host supplies, so a caller who already knows the rp can still
+  reach it: what a strand costs is DISCOVERY, and revocation only so far as
+  revoking a thing means finding it first. It does not heal on its own either — a
+  later registration of the same (rp, user) dedups onto the record already there
+  instead of writing the missing entry (audit run-35). Registration and
+  credential-management delete are therefore ordered to fail the harmless way
+  round: the `EF_RP` entry is written before the credential, and the credential
+  goes before the count that names it. **The resets are not, and this page will
+  not pretend otherwise.** There the seed leads and the rest is swept in ring
+  order, which reaches `EF_RP` before `EF_CRED` — a torn wipe can still strand a
+  credential, and what the ordering buys is that the survivor is undecryptable
+  rather than that it does not exist. The harmless direction is not free either:
+  an `EF_RP` entry that outlives its credential keeps a count nothing reconciles,
+  so it goes on listing an rp with no passkeys behind it until the next reset.
+- **A key must not outlive the algorithm attribute it was made under.** An
+  OpenPGP slot's algorithm attribute is one `PUT DATA` away for anyone holding
+  PW3, and the card reads that record again at the moment of every *private-key*
+  operation: `PSO:CDS`, the asymmetric arm of `PSO:DECIPHER` and `INTERNAL
+  AUTHENTICATE` take one byte of it to decide whether the slot is RSA or EC before
+  they touch the key. The symmetric arms read no attribute at all: a
+  `PSO:DECIPHER` body opening `0x02` and every `PSO:ENCIPHER` route to
+  `EF_AES_KEY` and have returned before that read, so nothing below is about
+  them. Only that byte — the curve and the modulus size come from the stored blob
+  itself — so what an attribute change *under* a surviving key does depends on
+  which way it goes.
+  Across the families it is caught by accident: the old blob does not parse as the
+  new algorithm and the operation fails. Within a family nothing catches it, and
+  that is the case worth stating. Swap Ed25519 for P-256, or RSA-2048 for
+  RSA-4096, and the card goes on signing and deciphering with the old key while
+  `GET DATA` publishes the new parameters over it — a slot whose published
+  description no longer describes the secret behind it. So what the device owes
+  here is a deletion and not a validation: a `PUT DATA` of `C1`/`C2`/`C3` that
+  resolves to an attribute different from the one the slot already holds drops
+  that slot's private key and the stored public key it would go on serving
+  *first* — whenever the store reports the slot present — and only then writes the
+  new value. A key the present cache reads absent while the backend still holds it
+  is not dropped, and the attribute goes in over it. Every probe on that path is
+  fallible on purpose: an unreadable attribute, an unreadable key slot, or a drop
+  the store refused each answer `6581` **without writing the attribute**, rather
+  than skipping an invalidation the card could not prove unnecessary. And the
+  internal EF the attribute lives in is not addressable — `PUT DATA` answers
+  `6B00` to it even under PW3 — so the `C1`/`C2`/`C3` tags are the only door.
+  **Scope: the attribute write.** A write that resolves to the attribute already
+  in force is not a change and keeps the key, and an absent attribute reads as the
+  RSA-2048 default on both sides of that comparison. Three things this does NOT
+  claim. The fingerprint DOs are outside the drop, so a slot goes on publishing
+  the old key's fingerprint in `C5` until something overwrites it. `TERMINATE DF`
+  sweeps attributes and keys in flash-ring order, so a factory reset that fails
+  partway can leave a key beside a cleared attribute, and what it owes there is
+  the `6581` it returns rather than an order. And the binding at the other end —
+  `GENERATE` and `IMPORT` reading the slot's attribute as they mint or take the
+  key — is one command for every arm but the two-step RSA generate, which reads
+  the attribute when it starts the prime search and does not read it again when it
+  stores the key. Nothing in the applet closes that window; what closes it is the
+  worker dispatching one command at a time.
+- **A Yubico OTP the host watched being typed must not validate twice.** The OTP
+  applet types its ticket as keystrokes into whatever has focus, so a hostile host
+  reads every OTP the key emits; what stops one being replayed is not secrecy but
+  position. Among the fields each press of a Yubico-OTP slot encrypts into its
+  ticket is a *pair* — the slot's persisted 15-bit use counter and a one-byte RAM
+  session counter — and the protocol's replay rule is that a validation server
+  rejects any OTP whose pair does not exceed the last pair it saw for that public
+  id. The pair is therefore the defence, and the rule is that a press emits the
+  pair the slot holds and then moves it: the session counter on every press, and
+  the persisted use counter whenever the session counter wraps past 255. One press
+  does not read that way — the first on a freshly configured slot, whose stored
+  zero is written up to one *before* the ticket is built, so what it types is the
+  moved value and not the zero it held. The two paths that ADVANCE the persisted
+  half are that press and the boot-time bump, and the step that can reach the
+  15-bit ceiling comes from one module for both, so the ceiling cannot be enforced
+  two different ways. The first-press `0 → 1` write sits beside it in `ticket.rs`
+  and cannot reach the ceiling. `UPDATE` and the boot seal migration carry a
+  slot's record forward and leave the counter alone. `SWAP` leaves the stored
+  counter alone too — but it moves the record to the *other* slot index, and the
+  RAM half travels with it, because the pair belongs to the public id inside the
+  record and not to the slot number that record happens to sit at. Because the
+  session counter lives in RAM and comes back at zero, a *cold* boot advances the
+  persisted counter of every plain Yubico-OTP slot it can read and re-seal and
+  that still has room to advance — never a HOTP, short or static slot, and never
+  one already at the ceiling — before USB is up and any press can be served, which
+  is what keeps one power cycle's pairs out of the next one's.
+  **Six residuals, and the rule above hides none of them.** A host-requested warm
+  reset is ungated and does not advance the counter — deliberately, since bumping
+  on every reboot a host can ask for would let it walk the 15-bit counter to the
+  ceiling — so the session counter restarts at zero over an unchanged use counter
+  and the current power cycle's pairs are typed again. At that ceiling neither
+  path advances anything and the key goes on typing, so the pair repeats every
+  256 presses. Of the two counter WRITES, the press's answer is read — a ticket
+  whose advance the store would not take is not typed at all, because typing it
+  re-emits: the next press reads the old counter back and pairs it with a session
+  this cycle has already used. The boot bump's is not, and cannot be: it is
+  retried, and a refusal that outlasts the retries is dropped, leaving the last
+  cycle's positions typeable again. **That one needs no fault at all** — `Fs::put`
+  answers `NoMemory` on a full store. **It is a choice and not a limit**, and the
+  page will not dress it as one: the device could deny the press instead of typing
+  a position it cannot move past, and two ways of doing that were built and
+  measured. One carries the boot pass's failure out to the applet; the other keeps
+  it in the applet entirely, by making the first press of each slot in a power
+  cycle perform the advance itself and refuse if the store will not take it. What
+  is shipped is the *other* arm of the same choice — keep typing — because a store
+  that cannot be written to would otherwise silence every slot on the key, and
+  which of those two costs more is a decision for the maintainer rather than a
+  fact about the code. A test pins the repeat, so whichever arm lands is visible. So is the boot *read* dropped, though only
+  where the medium keeps refusing: a sealed read that faults is retried, and a
+  slot the retries never reach is skipped by the bump entirely — which is the
+  faulted-read clause above wearing this applet's clothes. A press answers that
+  same refusal by typing nothing, so what the skip costs is a fault that clears
+  before the first press. And position is not monotone across
+  re-provisioning: `CONFIGURE` writes a fresh record with a zeroed counter, gated
+  by the slot access code whenever the existing slot reads back. And the move that
+  carries the pair is not atomic: `SWAP` writes the two records one after the
+  other and swaps the RAM halves only once both are through, with nothing to undo
+  a step that failed. A refused second write answers `6581` with the first already
+  landed, and so does a refused delete — the answer is read now, but where the
+  record write has already gone in it buys the report and not the state. That
+  direction still leaves one public id in two slots with only one of the two
+  session halves its own, and the other slot can then type a position that id has
+  already typed this power cycle — which a plain `ykman otp swap` reaches
+  unauthenticated, an unprotected slot's stored access code being all-zero.
 - **Device config is UNGATED on the default build.** The shipped default is the
   full-ykman/YubiKey-compatible admin surface: a hostile USB host can silently
   rewrite the DeviceInfo / enabled-applications / USB identity — over CCID
@@ -97,7 +282,10 @@ bulk stream, ISO-7816 APDUs, CTAP2 CBOR. Defenses:
   fused and page-58 hard-locked, a flash dump (even with BOOTSEL access and
   the chip id) does not reproduce the sealing key. Without the burn, the
   sealing key derives from on-chip state an attacker with full flash + chip
-  access could reconstruct. The burn is what makes at-rest real.
+  access could reconstruct. The burn is what makes at-rest real — for every
+  record a boot pass can re-root. A PIN-derived one cannot be re-rooted without
+  its secret, so it waits for its own reference to be presented; see
+  [limitations](limitations.md) and `PLAT-THREAT-002`.
 - **The seals give confidentiality, not authenticity.** Records written before
   the burn are keyed from the public chip serial alone, and those pre-OTP arms
   stay readable afterwards so a provisioned device keeps working across the
@@ -114,12 +302,14 @@ bulk stream, ISO-7816 APDUs, CTAP2 CBOR. Defenses:
   re-sealing or deleting a secret leaves the old copy on flash until its page
   is reclaimed. Two cases differ in how much that matters:
   - The **OTP-burn migration** supersedes the *pre-OTP* seed, which was sealed
-    under the chip-serial-only root (no fuse secret). Left alone, a flash dump
-    plus the chip id would recover it, bypassing the burn. So it is **not**
-    left to lazy healing: the first boot after provisioning runs a one-shot
-    compaction (`Fs::compact`, gated by the `EF_HARDENED` marker, crash-safe)
-    that drives a full GC lap over the credential partition and physically
-    erases every superseded pre-OTP record before the device re-attaches to USB.
+    under the chip-serial-only root (no fuse secret), and the persistent `pcmr`
+    grant, which provisioning mints at the first boot under that same root. Left
+    alone, a flash dump plus the chip id would recover them, bypassing the burn.
+    So it is **not** left to lazy healing: the first boot after provisioning runs
+    a one-shot compaction (`Fs::compact`, gated by the `EF_HARDENED` marker,
+    crash-safe) that drives a full GC lap over the credential partition and
+    physically erases every superseded pre-OTP record before the device
+    re-attaches to USB.
   - The **soft-lock** transition leaves the same kind of lingering record, but
     on a provisioned device it is already sealed under the fused root (moot
     against anything short of a fused-key compromise), so soft-lock's at-rest
@@ -164,6 +354,23 @@ too large to verify-in-place from SRAM. An in-package-flash part (RP2354) leaves
 no discrete flash chip to tap, raising a reliable swap to decap-class effort. The
 RP2350 is not a secure element and RS-Key does not pretend otherwise. If your
 threat model includes a funded lab, buy a certified key.
+
+**One residual straddles this line, and it is written down rather than left to
+the reader.** The RSA private operation picks a modexp window per four bits of
+`dP`/`dQ`, and the choice lands in an ADDRESS: PIV GENERAL AUTHENTICATE and
+OpenPGP PSO:CDS / INTERNAL AUTHENTICATE / DECIPHER all drive it over USB against
+a long-lived key, and the per-operation blinding randomises the base, never the
+exponent. Reading the window sequence back needs a time-resolved look inside a
+single operation, and the only observer holding one is the power/EM capture
+already listed above — so that half is out of scope for the reason this section
+already gives, not for a new one. The other half is not out of scope: a host that
+can time whole operations is the §1 attacker, and against it the pattern is one
+scalar per signature over an exponent that never changes. Severity, the reasoning
+and what would re-open it are registered as `PLAT-CRYPTO-002`, and the hardening
+that would remove it is `PLAT-BUILD-005`, deferred with a stated price
+([platform-assumptions.md](platform-assumptions.md), [ct-audit.md](ct-audit.md)).
+This paragraph adds a residual to the page; it excludes no observer the section
+did not already exclude.
 
 ### 5. Network
 
@@ -285,7 +492,17 @@ seed over an ephemeral encrypted channel (P-256 ECDH → HKDF →
 ChaCha20-Poly1305), and requires (all at once) physical touch, the FIDO
 PIN/UV token when a PIN is set, and the **one-time setup window**: after an
 explicit `finalize`, export is refused until a full reset regenerates a new
-seed. Malware cannot exfiltrate the seed silently or later. Restore re-seals
+seed. Malware cannot exfiltrate the seed silently or later.
+
+The PIN factor has **two** forms and the second is easy to miss: with a clientPIN
+set it is the PIN/UV token; with no clientPIN but a **device PIN** set, the same
+gate collects that PIN on the device's own pad, so a display-flavor key whose
+owner never set a clientPIN is still two-factor. With neither set there is no PIN
+factor and the gate is the encrypted channel plus a touch — which is the state a
+factory-fresh key is in, and the reason `finalize` exists. A device PIN the
+running build cannot collect (the record survives a reflash to a screenless
+image, which has no pad) is **refused**, not waived: an owner who set a PIN does
+not silently drop to a touch. Restore re-seals
 the seed under the *destination* chip's root. The host driving a backup
 necessarily sees the seed plaintext. Do it on a machine you trust.
 Scope: the deterministic identity only (resident passkeys, OpenPGP, PIV are
@@ -360,7 +577,14 @@ assumed: on RP2350 A4 the platform clears main SRAM across the drop. All 520 KiB
 read back as zeros while a pattern written through picoboot read straight back,
 so the zeros are the memory and not a refused read
 ([`tests/54_sram_residue.py`](https://github.com/TheMaxMur/RS-Key/blob/main/tests/54_sram_residue.py),
-2026-08-05, secure boot off). This is a property of the silicon revision and boot
+2026-09-03, secure boot off). That run is the one on the record: it carries the
+sha256 of the image it ran on, and it is read against an expectation committed
+before the board was powered. It discharges `PLAT-MEM-001` in the platform
+registry ([platform-assumptions.md](platform-assumptions.md)) — read the row for
+the transcript, the picotool version, and what the result does *not* establish,
+which is that the firmware's own scrub works. An earlier run on 2026-08-05
+reached the same outcome and is superseded here because nobody kept the hash of
+the image it ran on. This is a property of the silicon revision and boot
 configuration, so it is re-measured when either moves; the explicit wipes stay as
 depth in case a future one keeps SRAM.
 

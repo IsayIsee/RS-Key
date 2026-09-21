@@ -80,7 +80,18 @@ const ENCID_SALT: [u8; 32] = [0u8; 32];
 pub const LOCK_BLOB_LEN: usize = 12 + 32 + 16;
 
 /// Whether the soft lock is engaged (the wrapped blob is what's on flash).
+/// A probe the medium could not answer reads as ENGAGED — every caller treats
+/// `true` as "refuse until unlocked", and [`ensure_seed`] treats it as "do not
+/// mint a seed over this one" (see [`lock_state`]).
 pub fn lock_engaged<S: Storage>(fs: &mut Fs<S>) -> bool {
+    lock_state(fs).unwrap_or(true)
+}
+
+/// [`lock_engaged`] with a failed probe kept apart from an absence.
+/// `Fs::has_key` answers the same `false` for both, and this pair is what
+/// `ensure_seed` decides seed regeneration on — the one write on the device that
+/// destroys every credential derived from the old seed.
+pub fn lock_state<S: Storage>(fs: &mut Fs<S>) -> Result<bool> {
     // Both halves, not just the sealed copy. `aut_enable` writes `EF_KEY_DEV_ENC`
     // and *then* deletes the plaintext `EF_KEY_DEV`; a power cut between the two
     // left both records, and testing only the sealed one reported `locked: true`
@@ -88,7 +99,7 @@ pub fn lock_engaged<S: Storage>(fs: &mut Fs<S>) -> bool {
     // operation worked and BACKUP_EXPORT still handed out the seed without the lock
     // key. Reading the torn state as *unlocked* is the truth, and it lets
     // `rsk lock enable` simply be retried (audit run-33).
-    fs.has_key(EF_KEY_DEV_ENC) && !fs.has_key(EF_KEY_DEV)
+    Ok(fs.try_has_key(EF_KEY_DEV_ENC)? && !fs.try_has_key(EF_KEY_DEV)?)
 }
 
 /// Wrap the seed value under a host-supplied 32-byte lock key (AUT_ENABLE).
@@ -285,22 +296,22 @@ pub fn store_att_key<S: Storage>(dev: &Device, fs: &mut Fs<S>, key: &[u8; 32]) -
 }
 
 /// The persistent pinUvAuthToken (CTAP 2.2 §6.5.2.2), sealed exactly like the
-/// seed. `None` means no platform holds a `pcmr` grant. Presence is necessary but
-/// NOT sufficient — a build whose wipe deferred this record could leave it behind
-/// its PIN, so [`crate::credmgmt`] owns the grant test, not this reader.
+/// seed; `None` if never minted, dropped by a PIN change, or unreadable here.
+/// Presence is necessary but NOT sufficient — provisioning mints it before any PIN
+/// exists, so [`crate::credmgmt`] owns the grant test, not this reader.
 pub fn load_ppuat<S: Storage>(dev: &Device, fs: &mut Fs<S>) -> Option<[u8; 32]> {
     get_sealed32(dev, fs, EF_PAUTHTOKEN)
 }
 
-/// [`load_ppuat`], minting and persisting a fresh token when none exists — the
-/// `pcmr` half of §6.5.5.7.2/.3. Unlike the session token it outlives the power
+/// [`load_ppuat`], minting a fresh token only when the record is confirmed absent —
+/// the `pcmr` half of §6.5.5.7.2/.3. Unlike the session token it outlives the power
 /// cycle, so it must reach flash before it reaches the platform.
 pub fn ensure_ppuat<S: Storage>(
     dev: &Device,
     fs: &mut Fs<S>,
     rng: &mut impl Rng,
 ) -> Result<[u8; 32]> {
-    if let Some(tok) = load_ppuat(dev, fs) {
+    if let Some(tok) = try_get_sealed32(dev, fs, EF_PAUTHTOKEN)? {
         return Ok(tok);
     }
     let mut tok = [0u8; 32];
@@ -315,6 +326,13 @@ pub fn ensure_ppuat<S: Storage>(
 /// `resetPersistentPinUvAuthToken` (§6.5.4): drop the token, which clears its
 /// permissions with it. `force_delete`, not `delete` — this revokes a capability,
 /// so a false-absent present bit must not leave the record live in the backend.
+///
+/// The FOLDED answer, deliberately, though EF_PAUTHTOKEN carries no EF_META head of
+/// its own: `att_clear` and OpenPGP's attribute-change erase are in exactly that
+/// position too, and splitting the halves for this one caller would re-open, at this
+/// caller alone, the swallowed metadata drop 0x0987 closed. All four call sites are
+/// one-shot commands, so refusing costs the command and no sweep's progress — the
+/// reason the four reset sweeps, which lose a whole range, decided the other way.
 /// Refines `RSKeySecurityState!NoTokenAfterInvalidation` — SEC-FIDO-003.
 pub fn clear_ppuat<S: Storage>(fs: &mut Fs<S>) -> Result<()> {
     fs.force_delete(EF_PAUTHTOKEN.get())
@@ -335,17 +353,17 @@ pub fn clear_ppuat<S: Storage>(fs: &mut Fs<S>) -> Result<()> {
 /// stops being linkable to its pre-reset self. Deriving it from the silicon root
 /// instead would have survived the reset and defeated that.
 ///
-/// `None` when no persistent token has been issued yet, or the seed is unreadable
-/// behind a soft lock. The member is optional, and a placeholder built from some
-/// other value would be a claim no platform could detect as false.
+/// `None` while the grant record is absent (a PIN change dropped it and nothing has
+/// minted it again) or the seed is unreadable behind a soft lock: a placeholder built
+/// from some other value would be a claim no platform could detect as false.
 pub fn enc_identifier<S: Storage>(
     dev: &Device,
     fs: &mut Fs<S>,
     rng: &mut impl Rng,
 ) -> Option<[u8; ENC_GETINFO_MEMBER_LEN]> {
-    // The token is the gate, so it is read FIRST: a device that has never issued one
-    // is the common case, and opening the seal on the seed only to discard it would
-    // be a ChaCha20-Poly1305 open on every getInfo for nothing.
+    // The token is the gate, so it is read FIRST: while a PIN change has the grant
+    // dropped, opening the seal on the seed only to discard it would be a
+    // ChaCha20-Poly1305 open on every getInfo for nothing.
     let mut token = load_ppuat(dev, fs)?;
     let mut key = [0u8; 16];
     let derived = hkdf_sha256(&ENCID_SALT, &token, INFO_ENCID, &mut key);
@@ -382,8 +400,11 @@ pub fn enc_identifier<S: Storage>(
 /// the token is sealed under the device root rather than the seed. So unlike
 /// [`enc_identifier`] this member survives a soft lock.
 ///
-/// `None` when no persistent token has been issued yet: the member is optional, and
-/// a value under a key nobody holds says nothing to anyone.
+/// `None` while the grant record is absent (a PIN change dropped it and nothing has
+/// minted it again): there is no key to seal under. `None` too when the tag
+/// itself cannot be read — an absent member equals no tag a platform is holding, so
+/// it re-enumerates, where the collapsed zero is exactly the tag a fresh device
+/// publishes and would tell one its cache is still good.
 pub fn enc_cred_store_state<S: Storage>(
     dev: &Device,
     fs: &mut Fs<S>,
@@ -397,7 +418,7 @@ pub fn enc_cred_store_state<S: Storage>(
         key.zeroize();
         return None;
     }
-    let mut block = crate::credential::cred_store_state(fs);
+    let mut block = crate::credential::cred_store_state(fs).ok()?;
     let out = seal_getinfo_member(&key, &mut block, rng);
     key.zeroize();
     out
@@ -429,9 +450,24 @@ fn seal_getinfo_member(
 
 /// Read and unseal a 32-byte value from any supported at-rest form (read-both).
 fn get_sealed32<S: Storage>(dev: &Device, fs: &mut Fs<S>, fid: KeyFid) -> Option<[u8; 32]> {
+    try_get_sealed32(dev, fs, fid).ok().flatten()
+}
+
+/// [`get_sealed32`] keeping a confirmed absence (`Ok(None)`) apart from a read that
+/// failed or a record that will not open under `dev` (`Err`): the OTP root is read per
+/// operation, so either can be one bad read. Mint over `Ok(None)` only.
+fn try_get_sealed32<S: Storage>(
+    dev: &Device,
+    fs: &mut Fs<S>,
+    fid: KeyFid,
+) -> Result<Option<[u8; 32]>> {
     let mut buf = [0u8; 64];
-    let n = fs.read_key(fid, &mut buf)?;
-    let out = open_any(dev, &buf[..n.min(buf.len())]);
+    let out = match fs.try_read_key(fid, &mut buf) {
+        Ok(Some(n)) => open_any(dev, &buf[..n.min(buf.len())])
+            .map(Some)
+            .ok_or(Error::ExecError),
+        other => other.map(|_| None),
+    };
     buf.zeroize();
     out
 }
@@ -455,16 +491,21 @@ fn put_sealed32<S: Storage>(
     r
 }
 
-/// Boot-pass migration for the seed and the attestation key: bring each to the
-/// current ChaCha form under the current kbase arm — upgrading a legacy CBC
-/// record (removing the fixed-IV / no-MAC weakness) and re-sealing a pre-OTP
-/// blob under the OTP arm once the fuse key is present. A PIN-wrapped (0x03/0x13)
-/// seed is left untouched — that migrates at the first PIN verify
-/// ([`migrate_keydev_pin`]). Idempotent and crash-safe: each re-seal is one
-/// atomic record write, and a torn write leaves the prior record intact.
+/// Boot-pass migration for the seed, the attestation key and the persistent
+/// grant: bring each to the current ChaCha form under the current kbase arm —
+/// upgrading a legacy CBC record (removing the fixed-IV / no-MAC weakness) and
+/// re-sealing a pre-OTP blob under the OTP arm once the fuse key is present. A
+/// PIN-wrapped (0x03/0x13) seed is left untouched — that migrates at the first
+/// PIN verify ([`migrate_keydev_pin`]). Idempotent and crash-safe: each re-seal
+/// is one atomic record write, and a torn write leaves the prior record intact.
+///
+/// The grant is here because provisioning mints it ([`ensure_seed`]) and a device
+/// is burned after its first boot, so the record a `pcmr` holder and getInfo's
+/// encIdentifier hang off would otherwise stay under the chip-serial arm for life.
 pub fn migrate_keydev_boot<S: Storage>(dev: &Device, fs: &mut Fs<S>) -> Result<()> {
     migrate_slot(dev, fs, EF_KEY_DEV)?;
-    migrate_slot(dev, fs, EF_ATT_KEY)
+    migrate_slot(dev, fs, EF_ATT_KEY)?;
+    migrate_slot(dev, fs, EF_PAUTHTOKEN)
 }
 
 /// Re-seal one slot forward if it is not already current-arm ChaCha. Absent
@@ -484,11 +525,26 @@ fn migrate_slot<S: Storage>(dev: &Device, fs: &mut Fs<S>, fid: KeyFid) -> Result
         buf.zeroize();
         return Ok(());
     }
+    // `weak`: 0x01/0x02 are sealed under the chip-serial arm, so the re-seal below
+    // supersedes a copy the public serial alone derives. This pass runs BEFORE the
+    // boot's lap, but a boot that skipped the slot already latched the marker.
+    //
+    // 0x11 is deliberately OUT: the copy it displaces is fixed-IV/no-MAC CBC, but
+    // under the OTP arm, so a flash dump alone cannot open it. That is a second
+    // at-rest weakness this re-seal repairs and the lap owes nothing for.
+    let weak = matches!(buf[0], FORMAT_F1 | FORMAT_G1) && dev.otp_key.is_some();
     let recovered = open_any(dev, &buf[..n]);
     buf.zeroize();
     match recovered {
         Some(mut v) => {
-            let r = put_sealed32(dev, fs, fid, &v);
+            // Ahead of the write and gating it, per `rsk_fs::request_rescrub`: a
+            // reset in the window then costs one idempotent lap, and a medium that
+            // refuses the re-arm leaves the pre-OTP record in force instead.
+            let r = if weak && rsk_fs::request_rescrub(fs).is_err() {
+                Err(Error::MemoryFatal)
+            } else {
+                put_sealed32(dev, fs, fid, &v)
+            };
             v.zeroize();
             r
         }
@@ -508,9 +564,12 @@ pub fn migrate_keydev_pin<S: Storage>(dev: &Device, fs: &mut Fs<S>, pin_hash: &[
     let Some(KEYDEV_F3_LEN) = fs.read_key(EF_KEY_DEV, &mut buf) else {
         return Ok(());
     };
-    let (seal_dev, cbc_tag) = match buf[0] {
-        FORMAT_F3 => (dev.without_otp(), FORMAT_F1),
-        FORMAT_F3_OTP if dev.otp_key.is_some() => (*dev, FORMAT_F1_OTP),
+    // `weak`: a 0x03 record on an OTP card is sealed under the chip-serial arm, so
+    // the re-seal below supersedes a copy the public serial alone derives. 0x13 is
+    // already OTP-rooted, and a card with no OTP key has no lap to re-arm.
+    let (seal_dev, cbc_tag, weak) = match buf[0] {
+        FORMAT_F3 => (dev.without_otp(), FORMAT_F1, dev.otp_key.is_some()),
+        FORMAT_F3_OTP if dev.otp_key.is_some() => (*dev, FORMAT_F1_OTP, false),
         _ => return Ok(()),
     };
     // Strip the outer PIN AEAD, leaving the inner CBC record the seed was sealed
@@ -531,7 +590,14 @@ pub fn migrate_keydev_pin<S: Storage>(dev: &Device, fs: &mut Fs<S>, pin_hash: &[
     cbc.zeroize();
     match recovered {
         Some(mut seed) => {
-            let r = put_sealed32(dev, fs, EF_KEY_DEV, &seed);
+            // The re-arm belongs here, not at the two callers: theirs is gated on
+            // EF_PIN's verifier having been pre-OTP, and one faulted `read_key` here
+            // is enough to leave that verifier migrated and this record at 0x03.
+            let r = if weak && rsk_fs::request_rescrub(fs).is_err() {
+                Err(Error::MemoryFatal)
+            } else {
+                put_sealed32(dev, fs, EF_KEY_DEV, &seed)
+            };
             seed.zeroize();
             r
         }
@@ -549,8 +615,8 @@ pub fn migrate_keydev_pin<S: Storage>(dev: &Device, fs: &mut Fs<S>, pin_hash: &[
 /// the seed is unreadable here anyway).
 /// Refines `RSKeySecurityState!RamNeverOutlivesFlashSeed` — SEC-FIDO-007.
 pub fn ensure_seed<S: Storage>(dev: &Device, fs: &mut Fs<S>, rng: &mut impl Rng) -> Result<()> {
-    let locked = lock_engaged(fs);
-    if !fs.has_key(EF_KEY_DEV) && !locked {
+    let locked = lock_state(fs)?;
+    if !fs.try_has_key(EF_KEY_DEV)? && !locked {
         let mut seed = [0u8; 32];
         loop {
             rng.fill(&mut seed);
@@ -562,10 +628,13 @@ pub fn ensure_seed<S: Storage>(dev: &Device, fs: &mut Fs<S>, rng: &mut impl Rng)
         seed.zeroize();
         r?;
     }
-    if !fs.has_data(EF_COUNTER) {
+    // Not `has_data`: a faulted probe here would roll the signature counter back
+    // to zero and overwrite the large-blob array — the same absent-means-first-boot
+    // reading the seed guard above makes, at two records the owner cannot rebuild.
+    if !fs.try_has_data(EF_COUNTER)? {
         fs.put(EF_COUNTER, &[0u8; 4])?;
     }
-    if !fs.has_data(EF_LARGEBLOB) {
+    if !fs.try_has_data(EF_LARGEBLOB)? {
         fs.put(EF_LARGEBLOB, &LARGEBLOB_INITIAL)?;
     }
     if !locked {
@@ -573,6 +642,11 @@ pub fn ensure_seed<S: Storage>(dev: &Device, fs: &mut Fs<S>, rng: &mut impl Rng)
         let r = rebuild_att_cert(fs, rng, &seed);
         seed.zeroize();
         r?;
+        // getInfo 0x19/0x1E are sealed under this grant, so a device never asked for
+        // one published neither — and a conformance runner reads getInfo before it
+        // can ask. The reference device publishes both from the factory.
+        let mut tok = ensure_ppuat(dev, fs, rng)?;
+        tok.zeroize();
     }
     Ok(())
 }
@@ -589,6 +663,24 @@ pub fn rebuild_att_cert<S: Storage>(
 ) -> Result<()> {
     let key = P256Key::from_scalar(seed).ok_or(Error::ExecError)?;
     let mut buf = [0u8; 512];
+    // The collapsing probe stands. The arm it collapses into REWRITES the leaf,
+    // which reads like the class this file is full of — but the rewrite is built
+    // from the seed the caller already holds, so it is always correct: everything
+    // but the serial and the signature is a fixed template, and the attesting key,
+    // the AAGUID and the subject come out byte-identical. The cost is a new serial
+    // and one flash write, i.e. a repeated repair.
+    //
+    // Skipping on the failure instead was tried and REFUTED by measurement: a
+    // truncated `scan` leaves `EF_EE_DEV` undecided, so the probe reaches the
+    // medium on a first boot too — and the skip then leaves the device with NO
+    // certificate, or lets `backup_load` install a new seed and report success
+    // over the leaf that certifies the old one.
+    //
+    // That rewrite IS a superseding write — measured, `[Write(0xce00, 490B)]` on a
+    // fully provisioned card with a stale template — so `ensure_seed` owes the
+    // at-rest lap no re-arm for the REASON stated here and not for "it writes only
+    // what it found absent": `EF_EE_DEV` is a public X.509 leaf, not a
+    // chip-serial-sealed secret, so the copy it displaces discloses nothing.
     let fresh = match fs.read(EF_EE_DEV, &mut buf) {
         Some(n) => cert_matches_template(&buf[..n.min(buf.len())], &key),
         None => false,
@@ -611,20 +703,27 @@ pub fn rebuild_att_cert<S: Storage>(
     fs.put(EF_EE_DEV, &buf[..n])
 }
 
-/// The global signature counter, stored little-endian.
-pub fn get_sign_counter<S: Storage>(fs: &mut Fs<S>) -> u32 {
+/// The global signature counter, stored little-endian; 0 when the record is
+/// absent or short (`authenticatorReset` deletes it, `ensure_seed` recreates it
+/// at the next boot).
+///
+/// Not `Fs::read`, and no collapsing sibling: signCount is the ONLY clone
+/// evidence a relying party gets (WebAuthn L3 §6.1.1), and the value a failed
+/// probe would collapse to is 0 — the one that erases it. The safe default the
+/// [`crate::vendor::backup_sealed`] pair leans on does not exist for a `u32`.
+pub fn global_sign_counter<S: Storage>(fs: &mut Fs<S>) -> Result<u32> {
     let mut buf = [0u8; 4];
-    match fs.read(EF_COUNTER, &mut buf) {
+    Ok(match fs.try_read(EF_COUNTER, &mut buf)? {
         Some(4) => u32::from_le_bytes(buf),
         _ => 0,
-    }
+    })
 }
 
 /// Persist `counter+1`; returns the value *before* the bump — the value to
 /// report in the current operation. Now used only by U2F authenticate (CTAP2
 /// signature counters are per-credential, see [`cred_sign_counter`]).
 pub fn bump_sign_counter<S: Storage>(fs: &mut Fs<S>) -> Result<u32> {
-    let ctr = get_sign_counter(fs);
+    let ctr = global_sign_counter(fs)?;
     fs.put(EF_COUNTER, &ctr.wrapping_add(1).to_le_bytes())?;
     Ok(ctr)
 }
@@ -632,30 +731,52 @@ pub fn bump_sign_counter<S: Storage>(fs: &mut Fs<S>) -> Result<u32> {
 /// Packed EF_CRED_CTR length: one `u32` per resident slot.
 const CRED_CTR_LEN: usize = MAX_RESIDENT_CREDENTIALS as usize * 4;
 
-/// The per-credential signature counter stored for EF_CRED `slot`, or `None` when
-/// the slot has no LIVE entry — meaning "unmaterialized". `None` covers three
-/// cases that are all handled identically (seed from the frozen global): the
-/// packed file is absent, it is shorter than `slot`, OR the slot reads as **0**.
+/// The per-credential signature counter stored for EF_CRED `slot`. Three answers,
+/// deliberately kept apart: `Err` is a probe the medium could not serve,
+/// `Ok(None)` is an UNMATERIALIZED slot, `Ok(Some(v))` a live counter.
 ///
-/// The zero case matters: a write to a HIGHER slot zero-extends the packed file
-/// across every lower slot, so a legacy slot below a freshly written one reads
-/// back a real `0` rather than staying short. A LIVE counter is always `>= 1`
-/// (`credential_store` seeds a new credential at 1; each assertion stores `ctr+1`;
-/// a migrated credential seeds from the global, which is `>= 1` whenever any
-/// resident credential exists), so `0` unambiguously marks an unmaterialized slot.
-/// The caller seeds a `None` from the frozen global counter so a migrated
-/// credential's signCount never DEcreases (see [`crate::getassertion`]).
-pub fn cred_sign_counter<S: Storage>(fs: &mut Fs<S>, slot: u16) -> Option<u32> {
+/// `Ok(None)` covers three cases that are all handled identically (seed from the
+/// frozen global): the packed file is absent, it is shorter than `slot`, OR the
+/// slot reads as **0**. The zero case matters: a write to a HIGHER slot
+/// zero-extends the packed file across every lower slot, so a legacy slot below a
+/// freshly written one reads back a real `0` rather than staying short. A LIVE
+/// counter is always `>= 1` (`credential_store` seeds a new credential at 1; each
+/// assertion stores `ctr+1`; a migrated credential seeds from the global, which is
+/// `>= 1` whenever any resident credential exists), so `0` unambiguously marks an
+/// unmaterialized slot.
+///
+/// The fault is the fourth state and cannot join them: the caller seeds an
+/// unmaterialized slot from the global counter, so collapsing the two hands a LIVE
+/// credential a signCount off a different sequence (see [`report_sign_counter`]).
+pub fn cred_sign_counter<S: Storage>(fs: &mut Fs<S>, slot: u16) -> Result<Option<u32>> {
     let off = slot as usize * 4;
     let mut buf = [0u8; CRED_CTR_LEN];
-    let n = fs.read(EF_CRED_CTR, &mut buf)?;
+    let Some(n) = fs.try_read(EF_CRED_CTR, &mut buf)? else {
+        return Ok(None);
+    };
     let end = off + 4;
     if end > n.min(CRED_CTR_LEN) {
-        return None;
+        return Ok(None);
     }
-    match u32::from_le_bytes(buf[off..end].try_into().unwrap()) {
-        0 => None, // a zero-filled gap slot is unmaterialized, not a live signCount 0
-        v => Some(v),
+    Ok(
+        match u32::from_le_bytes(buf[off..end].try_into().unwrap()) {
+            0 => None, // a zero-filled gap slot is unmaterialized, not a live signCount 0
+            v => Some(v),
+        },
+    )
+}
+
+/// The signCount to report for EF_CRED `slot`: its own counter, or the frozen
+/// global one for a slot that has none yet — a credential from before EF_CRED_CTR
+/// existed, whose count must not DEcrease across the upgrade.
+///
+/// Fallible on both reads. A counter that could not be read has no substitute:
+/// the global is not this credential's sequence, and 0 is the value an RP reads
+/// as "no clone detection here".
+pub fn report_sign_counter<S: Storage>(fs: &mut Fs<S>, slot: u16) -> Result<u32> {
+    match cred_sign_counter(fs, slot)? {
+        Some(v) => Ok(v),
+        None => global_sign_counter(fs),
     }
 }
 
@@ -664,6 +785,10 @@ pub fn cred_sign_counter<S: Storage>(fs: &mut Fs<S>, slot: u16) -> Option<u32> {
 /// entries in the newly grown gap are left 0, which [`cred_sign_counter`] reads
 /// back as unmaterialized (so a legacy slot below this one still seeds from the
 /// global counter). `slot` is an EF_CRED index (`< MAX_RESIDENT_CREDENTIALS`).
+///
+/// Not `Fs::read`: this read is the merge, so a fault collapsing to "absent"
+/// writes a ZERO-filled buffer truncated to `end` — one bad probe zeroes every
+/// lower slot and drops every higher one, for credentials this call never named.
 pub fn set_cred_sign_counter<S: Storage>(fs: &mut Fs<S>, slot: u16, value: u32) -> Result<()> {
     let off = slot as usize * 4;
     let end = off + 4;
@@ -672,7 +797,7 @@ pub fn set_cred_sign_counter<S: Storage>(fs: &mut Fs<S>, slot: u16, value: u32) 
     }
     let mut buf = [0u8; CRED_CTR_LEN];
     let n = fs
-        .read(EF_CRED_CTR, &mut buf)
+        .try_read(EF_CRED_CTR, &mut buf)?
         .unwrap_or(0)
         .min(CRED_CTR_LEN);
     buf[off..end].copy_from_slice(&value.to_le_bytes());

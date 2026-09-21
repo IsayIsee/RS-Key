@@ -147,10 +147,10 @@ pub fn config_tlv<S: Storage>(serial: &[u8; 4], fs: &mut Fs<S>, res: &mut ResBuf
     // has only ever guarded the write path, so a record a **pre-`9171ccf` build**
     // accepted — a 1-byte `USB_ENABLED`, a duplicate tag — survived the upgrade and
     // kept being echoed, which is how one permanently hid the device from ykman
-    // (audit run-34 #25). An unusable record falls back to the factory default: the
-    // host then sees "everything supported is enabled", which is exactly what
-    // `enabled_from_conf` enforces for a record it cannot read either, so the two
-    // sides agree instead of diverging.
+    // (audit run-34 #25). An unusable record falls back to the arm below, which
+    // synthesises the echo from `read_enabled_caps` — so what is reported is what is
+    // enforced by construction, for an unreadable record as much as an unparseable
+    // one, instead of the two sides diverging.
     let stored = match fs.read(EF_DEV_CONF, &mut conf) {
         Some(full) if full > 0 && full <= conf.len() && well_formed_writable(&conf[..full]) => {
             Some(full)
@@ -232,7 +232,8 @@ pub enum DevConfError {
     /// `writable_tag`). Refused so a host cannot forge an identity field or
     /// store a blob that makes the DeviceInfo response unparseable.
     BadTlv,
-    /// The flash write failed.
+    /// The flash access failed — the write, or the read of the record it merges
+    /// onto (see `overlay_dev_conf`).
     Store,
 }
 
@@ -364,14 +365,17 @@ fn overlay_dev_conf<S: Storage>(
     out: &mut [u8],
 ) -> Result<usize, DevConfError> {
     let mut stored = [0u8; EF_DEV_CONF_READ_MAX];
-    let stored_n = fs
-        .read(EF_DEV_CONF, &mut stored)
-        .map(|n| n.min(EF_DEV_CONF_READ_MAX))
-        .unwrap_or(0);
-    // A stored record an older build may have written is only merged onto when it
-    // parses; otherwise the incoming blob replaces it, which is what the previous
-    // behaviour did for every input and is still the safe answer for a record we
-    // cannot read.
+    // Three answers, not two. ABSENT (`Ok(None)`) merges onto nothing, so the
+    // request becomes the record — a first write. UNPARSEABLE keeps only the whole
+    // TLV prefix below, so the tail an older, laxer build wrote is replaced; that is
+    // what the previous behaviour did for every input and is still right for bytes
+    // no parser can attribute to a tag. FAULTED is neither: merging onto nothing
+    // turns ykman's one-field delta into a REPLACEMENT that discards every other
+    // setting the owner wrote, so refusing is the only answer that cannot lose data.
+    let stored_n = match fs.try_read(EF_DEV_CONF, &mut stored) {
+        Ok(n) => n.unwrap_or(0).min(EF_DEV_CONF_READ_MAX),
+        Err(_) => return Err(DevConfError::Store),
+    };
     let stored = &stored[..whole_tlvs(&stored[..stored_n])];
 
     let mut n = 0usize;
@@ -594,20 +598,33 @@ pub fn enabled_from_conf(conf: &[u8]) -> u16 {
 
 /// Read `EF_DEV_CONF` and return its enabled-applications mask ([`enabled_from_conf`]).
 /// The firmware caches this and re-reads it when [`take_dev_conf_dirty`] fires.
+///
+/// No record, or an empty one, is the factory default: everything supported is
+/// enabled. A probe the backend could not answer is NOT that absence: it enables
+/// nothing gated, because resolving it permissively re-enabled every application
+/// the owner had disabled. Failing closed is recoverable in the direction that
+/// matters — [`cap_enabled`] keeps management, vendor and rescue selectable at
+/// `cap == 0`, so the owner can still rewrite the record, and the next boot or
+/// config write re-reads flash.
 pub fn read_enabled_caps<S: Storage>(fs: &mut Fs<S>) -> u16 {
     // The read width, not the write cap: a pre-cap build's larger record must still
     // be scanned whole, or a disabled applet silently comes back after the upgrade.
     let mut conf = [0u8; EF_DEV_CONF_READ_MAX];
-    match fs.read(EF_DEV_CONF, &mut conf) {
-        Some(full) if full > 0 => enabled_from_conf(&conf[..full.min(conf.len())]),
-        _ => SUPPORTED_CAPS,
+    match fs.try_read(EF_DEV_CONF, &mut conf) {
+        Ok(Some(full)) if full > 0 => enabled_from_conf(&conf[..full.min(conf.len())]),
+        Ok(_) => SUPPORTED_CAPS,
+        Err(_) => NO_CAPS,
     }
     // Deliberately NOT gated on `well_formed_writable`, unlike the echo: this walk
     // is already defensive (a `USB_ENABLED` that is not exactly two bytes is
-    // skipped, and an unreadable record yields the default), and refusing to honour
-    // a record it cannot *fully* validate would silently re-enable applets the owner
-    // disabled. The echo is normalised to this answer instead (audit run-34 #25).
+    // skipped), and refusing to honour a record it cannot *fully* validate would
+    // silently re-enable applets the owner disabled. The echo is normalised to this
+    // answer instead (audit run-34 #25).
 }
+
+/// What a `EF_DEV_CONF` probe the backend could not answer enables: nothing gated.
+/// The argument for the direction is on [`read_enabled_caps`], its one caller.
+const NO_CAPS: u16 = 0;
 
 /// Whether an applet guarded by capability bit `cap` is enabled under `mask`.
 /// `cap == 0` marks an always-available applet (management, vendor, rescue) — the

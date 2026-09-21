@@ -36,6 +36,7 @@ use zeroize::Zeroize;
 use rsk_crypto::mac::hkdf_sha256;
 use rsk_crypto::{Device, sha256};
 use rsk_fs::{Fs, Storage};
+use rsk_sdk::error::Result as FsResult;
 
 use crate::consts::{AUDIT_RING_SLOTS, EF_AUDIT_ENABLED, EF_AUDIT_META, EF_AUDIT_RING};
 use crate::ec::{MAX_DER_SIG, P256Key};
@@ -118,9 +119,15 @@ fn chain(h: &[u8; 32], entry: &[u8; ENTRY_LEN]) -> [u8; 32] {
     sha256(&buf)
 }
 
-fn load_meta<S: Storage>(dev: &Device, fs: &mut Fs<S>) -> Meta {
+/// The ring state, or `Err` when the medium could not answer for `EF_AUDIT_META`.
+///
+/// The absent arm is *genesis* — the state of a journal that has never been written
+/// — so `Fs::read`'s collapse let one faulted probe rewind the ring to slot 0, and
+/// `put_meta` persisted that: ten entries left the live window and the head then
+/// covered an empty log while looking freshly initialised.
+fn load_meta<S: Storage>(dev: &Device, fs: &mut Fs<S>) -> FsResult<Meta> {
     let mut buf = [0u8; META_LEN];
-    if let Some(META_LEN) = fs.read(EF_AUDIT_META, &mut buf)
+    if let Some(META_LEN) = fs.try_read(EF_AUDIT_META, &mut buf)?
         && buf[0] == META_VER
     {
         let seq_next = u32::from_le_bytes(buf[1..5].try_into().unwrap());
@@ -131,18 +138,18 @@ fn load_meta<S: Storage>(dev: &Device, fs: &mut Fs<S>) -> Meta {
         // rather than let the vendor_read / fold walk overrun its fixed
         // AUDIT_RING_SLOTS-entry buffer.
         if seq_next.wrapping_sub(start) <= AUDIT_RING_SLOTS {
-            return Meta {
+            return Ok(Meta {
                 seq_next,
                 start,
                 epoch: buf[9..].try_into().unwrap(),
-            };
+            });
         }
     }
-    Meta {
+    Ok(Meta {
         seq_next: 0,
         start: 0,
         epoch: genesis(dev),
-    }
+    })
 }
 
 fn put_meta<S: Storage>(fs: &mut Fs<S>, m: &Meta) -> Result<(), ()> {
@@ -158,10 +165,15 @@ fn slot_fid(seq: u32) -> u16 {
     EF_AUDIT_RING + (seq % AUDIT_RING_SLOTS) as u16
 }
 
-fn read_slot<S: Storage>(fs: &mut Fs<S>, seq: u32, out: &mut [u8; ENTRY_LEN]) -> Option<()> {
-    match fs.read(slot_fid(seq), out) {
-        Some(ENTRY_LEN) => Some(()),
-        _ => None,
+/// `Ok(true)` the entry was read, `Ok(false)` the slot holds no entry, `Err` the
+/// medium could not answer. The two `Ok` arms are the same skip for a *reader*; at
+/// an eviction or a fold they are not, and that is what the `Err` keeps apart — an
+/// entry dropped from the chain without being folded into the epoch leaves a head
+/// that still verifies over the shortened history.
+fn read_slot<S: Storage>(fs: &mut Fs<S>, seq: u32, out: &mut [u8; ENTRY_LEN]) -> FsResult<bool> {
+    match fs.try_read(slot_fid(seq), out)? {
+        Some(ENTRY_LEN) => Ok(true),
+        _ => Ok(false),
     }
 }
 
@@ -241,13 +253,17 @@ fn target_bit(target: u8) -> u8 {
 /// bit. `false` when there is no such entry — or its slot could not be rewritten —
 /// leaving the caller to append a fresh one.
 fn coalesce_config_write<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>, target: u8) -> bool {
-    let m = load_meta(&ctx.dev, ctx.fs);
+    // A probe the medium could not serve declines the coalesce, which sends the
+    // caller to `append` — and that path refuses outright rather than guessing.
+    let Ok(m) = load_meta(&ctx.dev, ctx.fs) else {
+        return false;
+    };
     if m.seq_next == m.start {
         return false;
     }
     let seq = m.seq_next.wrapping_sub(1);
     let mut e = [0u8; ENTRY_LEN];
-    if read_slot(ctx.fs, seq, &mut e).is_none() || e[8] != EV_CONFIG_WRITE {
+    if read_slot(ctx.fs, seq, &mut e) != Ok(true) || e[8] != EV_CONFIG_WRITE {
         return false;
     }
     bump_repeats(&mut e, CW_REPEATS_AT);
@@ -280,12 +296,14 @@ pub fn append_run<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>, ev: u8, aux: u8, deta
 /// `false` when the window holds none — or its slot could not be rewritten — leaving
 /// the caller to append a fresh one.
 fn coalesce_run<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>, ev: u8) -> bool {
-    let m = load_meta(&ctx.dev, ctx.fs);
+    let Ok(m) = load_meta(&ctx.dev, ctx.fs) else {
+        return false; // as in `coalesce_config_write`: decline, don't guess
+    };
     let mut e = [0u8; ENTRY_LEN];
     let mut seq = m.seq_next;
     while seq != m.start {
         seq = seq.wrapping_sub(1);
-        if read_slot(ctx.fs, seq, &mut e).is_some() && e[8] == ev {
+        if read_slot(ctx.fs, seq, &mut e) == Ok(true) && e[8] == ev {
             bump_repeats(&mut e, RUN_REPEATS_AT);
             return ctx.fs.put(slot_fid(seq), &e).is_ok();
         }
@@ -307,12 +325,14 @@ fn raw_append<S: Storage>(
     aux: u8,
     detail: &[u8],
 ) -> Result<(), ()> {
-    let mut m = load_meta(dev, fs);
+    let mut m = load_meta(dev, fs).map_err(|_| ())?;
     if m.seq_next.wrapping_sub(m.start) >= AUDIT_RING_SLOTS {
         // Full: fold the oldest entry into the epoch and commit that *before*
         // its slot is reused — see the module docs for the power-cut argument.
+        // A slot the medium could not read refuses the append: evicting it
+        // unfolded is the one loss the chain exists to make impossible.
         let mut e = [0u8; ENTRY_LEN];
-        if read_slot(fs, m.start, &mut e).is_some() {
+        if read_slot(fs, m.start, &mut e).map_err(|_| ())? {
             m.epoch = chain(&m.epoch, &e);
         }
         m.start = m.start.wrapping_add(1);
@@ -346,11 +366,17 @@ pub fn append_local<S: Storage>(dev: &Device, fs: &mut Fs<S>, now_ms: u64, ev: u
 /// `authenticatorReset` so a handed-over device keeps chain continuity without
 /// leaking where it has been.
 pub fn fold_and_scrub<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>) {
-    let mut m = load_meta(&ctx.dev, ctx.fs);
+    let Ok(mut m) = load_meta(&ctx.dev, ctx.fs) else {
+        return; // keep the slots — the same rule as a failed `put_meta` below
+    };
     let mut e = [0u8; ENTRY_LEN];
     while m.start != m.seq_next {
-        if read_slot(ctx.fs, m.start, &mut e).is_some() {
-            m.epoch = chain(&m.epoch, &e);
+        match read_slot(ctx.fs, m.start, &mut e) {
+            Ok(true) => m.epoch = chain(&m.epoch, &e),
+            Ok(false) => {}
+            // Scrubbing past an entry the epoch never absorbed is exactly the
+            // silent chain break; leave the whole window alone instead.
+            Err(_) => return,
         }
         m.start = m.start.wrapping_add(1);
     }
@@ -363,18 +389,20 @@ pub fn fold_and_scrub<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>) {
 }
 
 /// The current chain head: the epoch folded through the live window.
-pub fn chain_head<S: Storage>(dev: &Device, fs: &mut Fs<S>) -> ([u8; 32], Meta) {
-    let m = load_meta(dev, fs);
+pub fn chain_head<S: Storage>(dev: &Device, fs: &mut Fs<S>) -> FsResult<([u8; 32], Meta)> {
+    let m = load_meta(dev, fs)?;
     let mut h = m.epoch;
     let mut e = [0u8; ENTRY_LEN];
     let mut seq = m.start;
     while seq != m.seq_next {
-        if read_slot(fs, seq, &mut e).is_some() {
+        // `?`, not a skip: this head gets SIGNED, and one silently omitted entry
+        // is an attestation over a history the device does not hold.
+        if read_slot(fs, seq, &mut e)? {
             h = chain(&h, &e);
         }
         seq = seq.wrapping_add(1);
     }
-    (h, m)
+    Ok((h, m))
 }
 
 /// A decoded journal entry for the read-only on-device audit log. The host export
@@ -396,13 +424,18 @@ pub fn for_each_event<S: Storage, F: FnMut(&EventView) -> bool>(
     fs: &mut Fs<S>,
     mut f: F,
 ) -> u32 {
-    let m = load_meta(dev, fs);
+    // The one reader that keeps the collapse: it writes nothing, signs nothing and
+    // opens no gate, and its caller is a display screen with no error state to paint.
+    // A faulted `EF_AUDIT_META` therefore still renders as an empty log.
+    let Ok(m) = load_meta(dev, fs) else {
+        return 0;
+    };
     let total = m.seq_next.wrapping_sub(m.start);
     let mut seq = m.seq_next;
     let mut e = [0u8; ENTRY_LEN];
     while seq != m.start {
         seq = seq.wrapping_sub(1);
-        if read_slot(fs, seq, &mut e).is_some() {
+        if read_slot(fs, seq, &mut e) == Ok(true) {
             let view = EventView {
                 uptime_ms: u32::from_le_bytes(e[4..8].try_into().unwrap()),
                 event: e[8],
@@ -441,13 +474,15 @@ pub fn attestation_key(devk: &[u8; 32], serial_hash: &[u8]) -> Option<P256Key> {
 /// `{1: start, 2: seq_next, 3: epoch, 4: entries}`. The host recomputes
 /// `fold(epoch, entries)` and matches it against a checkpoint head.
 pub fn vendor_read<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>, out: &mut [u8]) -> CtapResult {
-    let m = load_meta(&ctx.dev, ctx.fs);
+    // The host folds this window and matches it against a checkpoint head, so an
+    // export the medium could not fill is a wrong verdict either way it lands.
+    let m = load_meta(&ctx.dev, ctx.fs).map_err(|_| CtapError::Other)?;
     let mut entries = [0u8; AUDIT_RING_SLOTS as usize * ENTRY_LEN];
     let mut len = 0usize;
     let mut e = [0u8; ENTRY_LEN];
     let mut seq = m.start;
     while seq != m.seq_next {
-        if read_slot(ctx.fs, seq, &mut e).is_some() {
+        if read_slot(ctx.fs, seq, &mut e).map_err(|_| CtapError::Other)? {
             entries[len..len + ENTRY_LEN].copy_from_slice(&e);
             len += ENTRY_LEN;
         }
@@ -487,7 +522,7 @@ pub fn vendor_checkpoint<S: Storage, R: Rng>(
     let key = attestation_key(&devk, ctx.dev.serial_hash);
     devk.zeroize();
     let key = key.ok_or(CtapError::Other)?;
-    let (head, m) = chain_head(&ctx.dev, ctx.fs);
+    let (head, m) = chain_head(&ctx.dev, ctx.fs).map_err(|_| CtapError::Other)?;
 
     let mut msg = [0u8; CKPT_TAG.len() + 32 + 4 + 32];
     let mut p = 0;

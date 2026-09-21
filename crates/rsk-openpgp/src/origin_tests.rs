@@ -171,3 +171,78 @@ fn an_import_that_cannot_record_its_origin_stores_no_key() {
     let n = fs.read(EF_PK_SIG.get(), &mut slot).unwrap_or(0);
     assert_eq!(&slot[..n], SENTINEL);
 }
+
+/// `mark` rewrites the whole record to change one slot, so it has to read the other
+/// slots first. It read with `Fs::read` and DISCARDED the result, which for a short
+/// record from an older build is right — `of` reads an uncovered slot as imported
+/// anyway. A FAILED read is not that: the buffer stays zeroed and is written straight
+/// back, so one faulted probe reset every other slot's origin to IMPORTED, which is
+/// §4.4.3.8's whole claim and reaches the host through DO `0xDE`.
+#[test]
+fn a_faulted_origin_probe_does_not_reset_the_other_slots() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    let d = dev();
+    crate::init::scan_files(&d, &mut fs, &mut CountRng(0)).unwrap();
+    let mut sess = crate::Session::new();
+    assert_eq!(
+        crate::pin::verify(
+            &d,
+            &mut fs,
+            &mut sess,
+            &mut CountRng(0),
+            0x00,
+            PW3_MODE83,
+            PW3_DEFAULT
+        ),
+        Sw::OK
+    );
+    fs.put(
+        EF_ALGO_PRIV2,
+        &[ALGO_ECDH, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07],
+    )
+    .unwrap();
+    mark(&mut fs, EF_PK_SIG, ORIGIN_GENERATED).unwrap();
+    mark(&mut fs, EF_PK_AUT, ORIGIN_GENERATED).unwrap();
+
+    // The real IMPORT, which marks the DEC slot on its way past the other two.
+    let body = [
+        &[CRT_DEC, 0x00][..],
+        &[0x7F, 0x48, 0x02, 0x92, 0x20][..],
+        &[0x5F, 0x48, 0x20][..],
+        &[0x44u8; 32][..],
+    ]
+    .concat();
+    let mut ehl = vec![0x4D, body.len() as u8];
+    ehl.extend_from_slice(&body);
+
+    medium.stick_once(EF_KEY_ORIGIN);
+    let sw = crate::importdata::import_data(&d, &mut fs, &sess, 0x3F, 0xFF, &ehl);
+    medium.stick(None);
+    assert_eq!(
+        (of(&mut fs, EF_PK_SIG), of(&mut fs, EF_PK_AUT)),
+        (ORIGIN_GENERATED, ORIGIN_GENERATED),
+        "a faulted probe reset the other slots' key-origin claim to imported"
+    );
+    assert_eq!(
+        sw,
+        Sw::MEMORY_FAILURE,
+        "a mark that could not read the slots it carries forward has to refuse"
+    );
+
+    // Control: the same import on a healthy medium records its own slot and leaves
+    // the other two alone.
+    assert_eq!(
+        crate::importdata::import_data(&d, &mut fs, &sess, 0x3F, 0xFF, &ehl),
+        Sw::OK
+    );
+    assert_eq!(
+        (
+            of(&mut fs, EF_PK_SIG),
+            of(&mut fs, EF_PK_DEC),
+            of(&mut fs, EF_PK_AUT)
+        ),
+        (ORIGIN_GENERATED, ORIGIN_IMPORTED, ORIGIN_GENERATED)
+    );
+}

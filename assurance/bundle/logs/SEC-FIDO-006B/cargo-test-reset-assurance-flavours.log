@@ -1,0 +1,29 @@
+# The reset_assurance module on both arms of the always-uv build feature, driven
+# for assurance/bundle/SEC-FIDO-006B.toml on 2026-08-31, aarch64-apple-darwin.
+# The alpha carries no cfg(feature = "always-uv") site, and the two verdicts below
+# are what that costs: the same six tests, the same six passes, on a build where
+# EF_ALWAYS_UV's presence means the opposite thing.
+
+$ cargo test -p rsk-fido --target aarch64-apple-darwin reset_assurance
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.11s
+     Running unittests src/lib.rs (target/aarch64-apple-darwin/debug/deps/rsk_fido-f5d8ff78571a8849)
+running 6 tests
+test reset_assurance::tests::reset_property_controls_go_red_on_each_early_gate_mutant ... ok
+test reset_assurance::tests::reset_projection_finishes_only_after_every_ordered_phase ... ok
+test reset_assurance::tests::the_secret_sweep_is_where_a_seed_the_medium_kept_stops_the_wipe ... ok
+test reset_assurance::tests::reset_projection_rejects_a_gate_delete_before_the_secrets_phase_empties ... ok
+test reset_assurance::tests::a_backup_seal_swept_with_the_secrets_is_a_reopened_export_window ... ok
+test reset_assurance::tests::reset_projection_stitches_a_torn_epoch_to_the_next_boot ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 664 filtered out; finished in 0.00s
+
+$ cargo test -p rsk-fido --features always-uv --target aarch64-apple-darwin reset_assurance
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.13s
+     Running unittests src/lib.rs (target/aarch64-apple-darwin/debug/deps/rsk_fido-e1858dd7a29d0379)
+running 6 tests
+test reset_assurance::tests::reset_property_controls_go_red_on_each_early_gate_mutant ... ok
+test reset_assurance::tests::the_secret_sweep_is_where_a_seed_the_medium_kept_stops_the_wipe ... ok
+test reset_assurance::tests::reset_projection_rejects_a_gate_delete_before_the_secrets_phase_empties ... ok
+test reset_assurance::tests::a_backup_seal_swept_with_the_secrets_is_a_reopened_export_window ... ok
+test reset_assurance::tests::reset_projection_stitches_a_torn_epoch_to_the_next_boot ... ok
+test reset_assurance::tests::reset_projection_finishes_only_after_every_ordered_phase ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 664 filtered out; finished in 0.00s

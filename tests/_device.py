@@ -64,8 +64,9 @@ FIDO_USAGE_PAGE_ITEM = b"\x06\xd0\xf1"
 RSK_MARKERS = ("RSK", "RS-Key")
 # The firmware version every applet reports, and the build var that changes it
 # (crates/rsk-sdk/build.rs, docs/build.md).
-FW_VERSION_DEFAULT = "5.7.4"
+FW_VERSION_DEFAULT = "5.8.0"
 ENV_FW_VERSION = "FW_VERSION"
+FW_VERSION_HINT = "(an image built FW_VERSION=X.Y.Z needs the same value in the environment)"
 
 _announced = None  # last announced path: poll loops call find() every 50 ms
 _announced_reader = None  # the reader twin: the warm-reboot helpers poll too
@@ -157,10 +158,10 @@ def find_reader(require_marker=False):
 
 
 def fw_version():
-    """The (major, minor, patch) the flashed image reports — FIDO getInfo 0x0E, OpenPGP
-    INS 0xF1, the OATH/OTP/PIV version fields. Mirrors crates/rsk-sdk/build.rs: 5.7.4
-    unless the image was built `FW_VERSION=X.Y.Z`, in which case run the tests with the
-    same value (docs/build.md)."""
+    """The (major, minor, patch) the flashed image reports — FIDO getInfo 0x0E, the
+    management applet, OpenPGP INS 0xF1, the OATH/OTP/PIV version fields. It mirrors
+    crates/rsk-sdk/build.rs's default as `FW_VERSION_DEFAULT`; an image built with
+    `FW_VERSION=X.Y.Z` needs the same value in the environment (docs/build.md)."""
     raw = os.environ.get(ENV_FW_VERSION) or FW_VERSION_DEFAULT
     parts = raw.split(".")
     if not 1 <= len(parts) <= 3 or not all(p.isdigit() and int(p) <= 255 for p in parts):

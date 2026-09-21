@@ -154,6 +154,9 @@ impl ResetRefinement {
     }
 
     /// Apply one `force_delete` at the phase the production classifier assigns.
+    /// The secret sweep's predicate is `is_fido_fid && !is_fido_gate_fid`, which
+    /// covers the seed fids as well, so it sweeps BOTH classes — that coverage is
+    /// what stops a wipe the seed loop could not finish (0x098B).
     pub fn delete(&mut self, fid: u16) -> bool {
         let phase = match self.progress {
             ResetProgress::Seeds => ResetPhase::Seed,
@@ -161,7 +164,9 @@ impl ResetRefinement {
             ResetProgress::Gates => ResetPhase::Gate,
             ResetProgress::Idle | ResetProgress::Reprovision => return false,
         };
-        if reset_phase(fid) != Some(phase) {
+        let swept_here = reset_phase(fid) == Some(phase)
+            || (phase == ResetPhase::Secret && reset_phase(fid) == Some(ResetPhase::Seed));
+        if !swept_here {
             return false;
         }
         match fid {
@@ -180,13 +185,20 @@ impl ResetRefinement {
     /// meaning of “the phase is empty”, not an assumed scheduling order.
     pub fn advance(&mut self) -> bool {
         match self.progress {
-            ResetProgress::Seeds
-                if !self.persistent.owner_seed && !self.persistent.owner_locked_seed =>
-            {
+            // The seed loop is a fixed two-fid `for` with nothing to enumerate, so
+            // the code falls into the secret sweep whatever the medium answered.
+            ResetProgress::Seeds => {
                 self.progress = ResetProgress::Secrets;
                 true
             }
-            ResetProgress::Secrets if !self.persistent.credential => {
+            // And the secret sweep re-yields a seed it could not remove, so its
+            // range is not clear until both seed records are gone: THAT is where a
+            // refused seed removal stops the wipe, not the boundary above.
+            ResetProgress::Secrets
+                if !self.persistent.credential
+                    && !self.persistent.owner_seed
+                    && !self.persistent.owner_locked_seed =>
+            {
                 self.progress = ResetProgress::Gates;
                 true
             }
@@ -234,10 +246,10 @@ impl ResetRefinement {
         let volatile_retired = matches!(self.progress, ResetProgress::Idle)
             || (!volatile.owner_seed && !volatile.token_active);
         let phase_order = match self.progress {
-            ResetProgress::Idle | ResetProgress::Seeds => true,
-            ResetProgress::Secrets => {
-                !self.persistent.owner_seed && !self.persistent.owner_locked_seed
-            }
+            // The secret sweep RUNS with a seed the medium kept — it is the phase
+            // that then stops the wipe — so its arm cannot ask the seed to be gone
+            // without closing the model over the mechanism it is cited for.
+            ResetProgress::Idle | ResetProgress::Seeds | ResetProgress::Secrets => true,
             ResetProgress::Gates => {
                 !self.persistent.owner_seed
                     && !self.persistent.owner_locked_seed

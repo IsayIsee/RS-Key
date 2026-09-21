@@ -19,6 +19,7 @@ pub mod importdata;
 pub mod info;
 pub mod init;
 pub mod internalaut;
+pub mod kdf;
 pub mod keypairgen;
 pub mod keys;
 pub mod mse;
@@ -45,13 +46,21 @@ pub use pin::Session;
 /// If the UIF DO `fid` (`0xD6/D7/D8`) is present with a non-zero first byte,
 /// require a touch; a non-confirmation maps to `SECURE_MESSAGE_EXEC_ERROR`
 /// (0x6600). With UIF off (or no button) this is a no-op.
+///
+/// A probe the medium could not serve reads as ON. `Fs::read` answers the same
+/// `None` for "no UIF configured" and "I could not look", and the absent arm here
+/// runs the private-key operation with no touch at all — so the collapse waived
+/// exactly the gate the owner set.
 pub(crate) fn check_uif<S: Storage>(
     fs: &mut Fs<S>,
     fid: u16,
     presence: &mut dyn UserPresence,
 ) -> Result<(), Sw> {
     let mut buf = [0u8; 2];
-    let on = matches!(fs.read(fid, &mut buf), Some(n) if n >= 1 && buf[0] > 0);
+    let on = match fs.try_read(fid, &mut buf) {
+        Ok(stored) => matches!(stored, Some(n) if n >= 1 && buf[0] > 0),
+        Err(_) => true,
+    };
     if on {
         // The trusted screen names which key operation the UIF is gating (the
         // OpenPGP UIF DOs: 0xD6 signature, 0xD7 decryption, 0xD8 authentication).
@@ -240,8 +249,9 @@ impl<'a> OpenpgpApplet<'a> {
     }
 
     /// PUT DATA (0xDA): the cardholder cert (7F21), reset code (0xD3), AES key
-    /// (0xD5) and PW status (0xC4) touch the cert / DEK / key / status files and
-    /// route to their own handlers; every other DO is a generic write.
+    /// (0xD5), PW status (0xC4) and the KDF-DO (0xF9) touch the cert / DEK / key /
+    /// status files and the PW verifiers, and route to their own handlers; every
+    /// other DO is a generic write.
     fn handle_put_data<S: Storage>(&mut self, fid: u16, apdu: &Apdu, fs: &mut Fs<S>) -> Sw {
         // The password outranks the body's length as well as its tag: a YubiKey
         // 5.7.4 answers `6982` to a PUT DATA it is not authorised for at every
@@ -300,6 +310,15 @@ impl<'a> OpenpgpApplet<'a> {
             putdata::put_aes_key(&dev, fs, &self.sess, apdu.data)
         } else if fid == consts::EF_PW_STATUS {
             putdata::put_pw_status(fs, &self.sess, apdu.data)
+        } else if fid == consts::EF_KDF {
+            let mkek = read_fused(self.mkek_source);
+            let dev = Device {
+                serial_hash: &self.serial_hash,
+                serial_id: &self.serial_id,
+                otp_key: mkek.as_deref(),
+            };
+            let mut rng = self.rng.borrow_mut();
+            kdf::put_kdf(&dev, fs, &mut self.sess, &mut *rng, apdu.data)
         } else {
             putdata::put_data(fs, &self.sess, fid, apdu.data)
         }

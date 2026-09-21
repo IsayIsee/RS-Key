@@ -1,0 +1,27 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 69 and seed 3020168711928952384 with 2 workers on 18 cores with 3641MB heap and 64MB offheap memory (Mac OS X 27.0 aarch64, Azul Systems, Inc. 1.8.0_492 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Users/maxmur/Code/RS-Key/formal/RSKeySecurityState.tla
+Parsing file /private/var/folders/gg/lgcg496924x384yd58t3b9180000gn/T/Naturals.tla
+Parsing file /private/var/folders/gg/lgcg496924x384yd58t3b9180000gn/T/FiniteSets.tla
+Parsing file /private/var/folders/gg/lgcg496924x384yd58t3b9180000gn/T/TLC.tla
+Parsing file /private/var/folders/gg/lgcg496924x384yd58t3b9180000gn/T/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module RSKeySecurityState
+Starting... (2026-08-31 09:34:49)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-08-31 09:34:49.
+Progress(14) at 2026-08-31 09:34:52: 1,488,271 states generated (1,488,271 s/min), 186,724 distinct states found (186,724 ds/min), 67,109 states left on queue.
+Progress(24) at 2026-08-31 09:35:52: 38,258,599 states generated (36,770,328 s/min), 4,152,743 distinct states found (3,966,019 ds/min), 709,361 states left on queue.
+Progress(28) at 2026-08-31 09:36:52: 74,784,879 states generated (36,526,280 s/min), 7,792,031 distinct states found (3,639,288 ds/min), 767,102 states left on queue.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 5.6E-5
+  based on the actual fingerprints:  val = 1.0E-6
+106956959 states generated, 10765176 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 46.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 24 and the 95th percentile is 3).
+Finished in 02min 57s at (2026-08-31 09:37:46)

@@ -32,7 +32,14 @@ covers the security boundary. This page covers feature and hardware gaps.
   base-blinded and Bellcore-fault-checked like the asm path, and every signature
   and decryption is checked byte-for-byte against OpenSSL vectors in the host
   tests. It is still ours, still single-maintainer, and still unaudited — the
-  advisory is closed, the class of bug it names is not. *Status: accepted;
+  advisory is closed, the class of bug it names is not. The one residual that
+  audit leaves open is the modexp's secret-indexed window lookup on `dP`/`dQ`,
+  reachable over USB on PIV and OpenPGP signing and decryption; it is recorded
+  LOW because reading the window sequence back needs a time-resolved look inside
+  a single operation, which a host timing whole operations does not have, and the
+  hardening that would remove it is deferred with a stated price
+  (`PLAT-CRYPTO-002` and `PLAT-BUILD-005` in
+  [platform assumptions](platform-assumptions.md)). *Status: accepted;
   see the [constant-time audit](ct-audit.md) for what has been looked at.*
 - **RSA-3072/4096 on-card generation is slow.** The prime search dominates the
   cost: *rejecting* hundreds of composite candidates, each one asm-modexp-bound.
@@ -120,6 +127,21 @@ covers the security boundary. This page covers feature and hardware gaps.
   A2. The firmware is A4-compatible and A4 is recommended. *Status: never. These
   are silicon properties, not firmware ones; closing them fully is what a
   dedicated secure element is for.*
+- **The TRNG is not characterised, and there is no vendor number to check it
+  against.** The RP2350's ring-oscillator source runs behind three continuous
+  health checks and RS-Key leaves all of them armed, so a source that *dies*
+  stalls or halts the device rather than handing out predictable keys. What nobody has
+  measured is what the raw source is *worth*. Raspberry Pi's datasheet asserts
+  compliance and publishes a generation rate, states that its software does not
+  configure the ROSC settings Arm's characterisation procedure provides, and
+  gives no min-entropy figure; the part carries no NIST ESV or ENT listing.
+  Qualifying it across temperature, supply and process would need a thermal
+  chamber, a programmable supply and parts from several lots — and even with all
+  of that, a result with nothing published to hold it against. A
+  degraded-but-still-passing source is the one TRNG failure this device cannot
+  notice. *Status: accepted. The desk-conditions measurement that IS reachable is
+  `PLAT-TRNG-002`, and this corner gap is `PLAT-TRNG-003`, both in
+  [platform assumptions](platform-assumptions.md).*
 - **The at-rest seals are not authenticated against a flash writer.** They keep a
   flash *dump* from yielding key material, which is what the OTP burn buys. They
   do not stop someone who can *write* flash over BOOTSEL from planting a record:
@@ -129,6 +151,33 @@ covers the security boundary. This page covers feature and hardware gaps.
   *Status: needs a fuse-rooted latch that closes the migration window once the
   device is provisioned; the analysis is audit run-27 #8, the decision is the
   maintainer's because it makes `lock-page58` load-bearing for boot correctness.*
+- **A PIN-derived record stays on the weaker root until its own reference is
+  presented after the burn.** Every record sealed under the key base alone is
+  moved to the fused root by a boot pass, but re-keying a PIN-derived one needs
+  the secret, so it happens at that reference's next VERIFY. Ordinary use presents
+  PW1; PW3 gates the admin surface only, and an OpenPGP resetting code may never
+  be presented at all. Until one is, a flash dump plus the public chip serial
+  opens the DEK copy behind it — every OpenPGP private key and the AES key with
+  them — and a PW3 still on its published default needs no search at all. PIV's
+  PUK has the same shape, with no DEK behind it. The card cannot retire what it
+  cannot recognise: a verifier is an opaque hash, so a record written before the
+  burn and one written after are indistinguishable. *Status: registered as
+  `PLAT-THREAT-002`. After the burn, verify PW3 once and set the resetting code
+  again — presenting a reference is what moves it. Closing it for good needs the
+  DEK copies under an outer device-rooted seal a boot pass can move, which is a
+  persistent-format decision and the maintainer's.*
+- **A flash read that fails still reads as an absent record in most of the
+  tree.** The store's `read` and `size` return the same "nothing there" for a key
+  that was never written and for one the medium could not serve, and an absent
+  record is how the firmware spells *not provisioned* and *no gate configured*.
+  Every place where that reading would overwrite configured material or open a
+  gate now uses a probe that keeps the two apart and refuses the command instead
+  — 50 guards in 25 functions across PIV, OpenPGP, FIDO and OATH. The rest still
+  collapse them on purpose: their absent arm reports a status field, repeats an
+  idempotent repair, or already fails closed. What is not settled is who can produce such a
+  fault on this hardware. A chip or bus fault does; whether a NOR power cut can is
+  a board measurement nobody has taken. *Status: the dangerous arm is closed; the
+  reachability question is open and belongs with `PLAT-FLASH-001`.*
 - **PIV data objects are access-gated, not sealed.** SP 800-73-4 pt1 Table 3
   gives four of them a read condition of PIN — Cardholder Fingerprints
   (`5FC103`), Facial Image (`5FC108`), Printed Information (`5FC109`) and Iris
@@ -168,12 +217,26 @@ covers the security boundary. This page covers feature and hardware gaps.
 - **No image encryption**: pointless for open-source code (no secrets in
   the image; secrets live sealed in flash), and the RP2350 has no
   transparent XIP decryption anyway. *Status: never.*
+- **The trusted-display build runs the RP2350 above its rated clock.** That
+  flavor sets `clk_sys` to 160 MHz where the part is specified to 150, because
+  the panel's PIO transport spends two instructions per serial bit and takes the
+  wire rate straight from `clk_sys / 2` — 80 MHz, and a 15.36 ms full frame
+  against 16.38 at the stock 150. The panel link is out of spec on its own side
+  too: 80 MHz is past the 62.5 MHz this project had previously recorded as the
+  ST7789's write ceiling, and the transport is write-only, so a frame the panel
+  garbles at that rate is not detectable in software. What that buys is 1 ms per
+  full repaint. What it costs is that XIP timing, TRNG sampling and every
+  constant-time measurement in this repo were taken at 150 MHz and do not cover
+  this flavor, which no other build shares. The standard key without a screen is
+  unaffected — it never sets a clock. *Status: accepted deliberately for the
+  display flavor; the ratio is held by a const assert in `firmware/src/main.rs`
+  so a board file cannot move one half of it alone.*
 
 ## Protocol / compatibility
 
 - **The default USB identity is RS-Key's own** (`0x1209:0x0001` on the
   pid.codes FOSS VID, manufacturer `RS-Key`, product `RS-Key Security Key`,
-  reported firmware 5.7.4), *not* a YubiKey masquerade. We no longer ship
+  reported firmware 5.8.0), *not* a YubiKey masquerade. We no longer ship
   Yubico's identifiers by default. A YubiKey identity (`0x1050:0x0407`,
   reader name `Yubico YubiKey …`) exists only as the opt-in `VIDPID=Yubikey5`
   build flavor ([build.md](build.md)), built for local interop testing and
@@ -225,9 +288,10 @@ covers the security boundary. This page covers feature and hardware gaps.
   enabling the soft-lock) leaves the old record in the log until compaction
   naturally overwrites it, so most at-rest guarantees harden over time rather
   than instantly. *(On a provisioned device the superseded copy is sealed to
-  the fused root.)* The one record that is **not** left to lazy healing is the
-  pre-OTP seed superseded by the OTP-burn migration. It is sealed under the
-  chip-serial-only root, so the first boot after provisioning scrubs it eagerly
-  with a one-shot full-GC-lap compaction.
+  the fused root — unless it is PIN-derived, which the burn cannot re-root.)*
+  What is **not** left to lazy healing is every record the boot passes re-seal
+  off the chip-serial root — the seed, the attestation key and the persistent
+  `pcmr` grant: the first boot after provisioning scrubs their superseded copies
+  eagerly with a one-shot full-GC-lap compaction.
 - **The board is the security boundary**: anyone with the device and your
   PIN is you. Same as every security key.

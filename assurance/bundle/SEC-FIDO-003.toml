@@ -1,0 +1,844 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 RS-Key contributors
+#
+# THE BEST-SUPPORTED ROW OF THE REGISTRY, AS RAW EVIDENCE — and therefore the
+# calibration point for how much of stage 1A п.3's ten-group contract is
+# available WITHOUT a new run. Nothing here was executed for it. Every TLC
+# verdict is copied from the tier `formal/runs.toml` recorded at `b819ee5` on
+# 2026-08-30, whose raw logs are the twelve `[[artifact]]` rows below; every Kani
+# verdict is read out of `assurance/bundle/logs/kani-state-tier.log.gz`, a log
+# SEC-FIDO-001 already committed. The work was READING, and §10 says so: the two
+# non-artifact cost rows are 191 of the 278 attended minutes, against 3193 s of
+# runner time none of which this session spent.
+#
+# `SEC-FIDO-003` `NoTokenAfterInvalidation`: cfgs=44 (45 in the working tree, and
+# the `[result]` group says why the figure is not transcribed) mut=7 co=6 kani=2 fuzz=1
+# rust=3 test=0 — the strongest vector of the fifty-nine after SEC-FIDO-001's,
+# and the first bundle in this programme whose property has BOTH a specification
+# section and a threat clause in `assurance/properties.toml`'s `source`.
+#
+# Four findings are about the tree rather than about the property, and they are
+# what a bundle built on a strong row is for:
+#
+#  * THE INVARIANT HAS THREE CONJUNCTS, NOT TWO HALVES, and all three are
+#    separately falsified — but only ONE of them (the session token) is reached
+#    by either Kani harness, and the third (`~(gate.ppuat /\ gate.ppuatStale)`)
+#    has no reachable falsifying state on the shipped tree at all, because
+#    `ppuatStale` is a model variable with no counterpart in the firmware;
+#  * THE ORDER'S OWNER CARRIES NO TAG. Six `Refines … SEC-FIDO-003` tags stand
+#    over three files, and the function where the revoke-before-write order
+#    actually lives — `write_pin_verifier` — is not one of them. The two tagged
+#    PIN-flow sites hold a redundant outer layer, which `formal/comutants.toml`
+#    measured: deleting `set_pin`'s own `clear_ppuat` leaves all 668 rsk-fido
+#    tests green over three runs;
+#  * THREE CITATIONS ON THIS PROPERTY'S OWN BRIDGE NAME CODE THE PROSE IS NOT
+#    ABOUT, and `scripts/citation_gate.py` is green over all three. One rotted
+#    and was re-locked at the drifted text; one is written in a spelling the
+#    gate's regex cannot match, so it is read by nothing; one was WRONG THE DAY
+#    IT WAS WRITTEN and has never named the function it claims;
+#  * THE THREAT CLAUSE IS TOPICAL AND NOT COVERING. `TM-HOST-GATES` is a
+#    three-line enumeration of defence categories that roots NINETEEN of the
+#    forty P0-family properties; it names no grant lifetime, no revocation and no
+#    ordering. The specification half of the root is real and is the load-bearing
+#    one — and it too covers one conjunct of three.
+
+# ---- 1. Property, subject and owners -----------------------------------------
+
+[property]
+id = "SEC-FIDO-003"
+invariant = "NoTokenAfterInvalidation"
+# `assurance/properties.toml:108`, verbatim.
+statement = "A grant invalidated by a PIN change, PIN set, reset, stopUsingPinUvAuthToken or power cycle never authorizes again."
+# §4.1's subject classes. Three are covered — the same three SEC-FIDO-001 has —
+# and the other four are named because a bundle that lists only what it has is a
+# bundle whose gaps are invisible.
+subjects = ["requirement", "abstract model", "Rust source"]
+subjects_absent = ["FFI", "binary", "hardware", "integration"]
+requirement = [
+  "CTAP 2.3 §6.5.5.7 obtaining and using a pinUvAuthToken — the usage timers, beginUsingPinUvAuthToken/stopUsingPinUvAuthToken, and the post-user-presence triad. The registry names this section and nothing else, and it is the SESSION token's clause",
+  "CTAP 2.3 §6.5.5.5 setPIN — the registry does NOT name it, and `set_pin` is one of the six tagged owners",
+  "CTAP 2.3 §6.5.5.6 changePIN step 15, which calls resetPersistentPinUvAuthToken — the registry does NOT name it either, and it is the clause the write-ORDER conjunct is about",
+  "CTAP 2.3 §6.5.4 resetPersistentPinUvAuthToken — the persistent `pcmr` grant's own clause; `crates/rsk-fido/src/seed.rs:326` cites it and the registry does not",
+  "CTAP 2.3 §6.6 authenticatorReset — the `reset` invalidator the statement names, also unrooted",
+]
+threat_clause = "docs/threat-model.md#TM-HOST-GATES"
+# AND THE CLAUSE IS TOPICAL, NOT COVERING. Read at docs/threat-model.md:27-29,
+# `TM-HOST-GATES` is three lines — "**Protocol gates.** PINs/UV with retry
+# counters and lockout, physical-touch requirements on FIDO operations and
+# OpenPGP UIF, OATH access codes, PIV management-key auth." It is an enumeration
+# of defence CATEGORIES. It states that gates exist; this property is about what
+# happens to a grant AFTER it has passed one. No sentence of it names a
+# revocation, a lifetime, a write order or a power cycle.
+threat_clause_reading = "measured rather than argued: `python3 scripts/threat_gate.py` reports `TM-HOST-GATES  19  SEC-FIDO-001, SEC-FIDO-003, SEC-FIDO-004, …` — nineteen of the forty P0-family rows root on this one three-line bullet, which is the shape of a catch-all anchor and not of a covering clause. For SEC-FIDO-001 it IS the claim: `no protected operation completes without the live authorization its own gate requires` is what `Protocol gates` means. For this property it is the neighbouring subject. What would fix it is a clause naming the grant's lifetime — that an authenticator which retires a grant must leave nothing behind that still opens a door, and that the revoke must land before the new verifier does. TM-HOST-POWER-CUT is the nearest existing clause and is about what an interrupted WRITE leaves behind, which is half of the ordering conjunct and none of the other two"
+# The invariant's own text (formal/RSKeySecurityState.tla:1748-1757). THREE
+# conjuncts, and the bundle is organised on them because they have different
+# owners, different mutants and different coverage.
+clause_ghost = "`\"NoTokenAfterInvalidation\" \\notin viol` — the step half. Written by TokenBypass (:600-605) at five call sites, by SetPinWrite (:846) and ChangePinWrite (:880) when the verifier lands over a standing grant, and by CmBeginViaPpuat (:1193) for a stale persistent record"
+clause_session = "`~(plat.held /\\ plat.revoked /\\ tok.perms # {})` — a retired session token leaves zero permissions. The model cites state.rs:552-553 for it"
+clause_persistent = "`~(gate.ppuat /\\ gate.ppuatStale)` — a revoked persistent grant is DELETED, not merely stopped being honoured"
+# The six `Refines … — SEC-FIDO-003` tags the registry greps for, mapped onto the
+# three conjuncts. Both of the halves the design page claims are covered ARE
+# covered; the finding is the third.
+owners_tagged = [
+  "crates/rsk-fido/src/state.rs:491 FidoState::reset_pin_uv_auth_token — session",
+  "crates/rsk-fido/src/state.rs:551 FidoState::stop_using_token — session, and the site the model cites",
+  "crates/rsk-fido/src/state.rs:600 FidoState::expire_stale_token — session, on the timer arm",
+  "crates/rsk-fido/src/clientpin.rs:175 set_pin — persistent, and the REDUNDANT layer",
+  "crates/rsk-fido/src/clientpin.rs:229 change_pin — persistent, and the REDUNDANT layer",
+  "crates/rsk-fido/src/seed.rs:337 clear_ppuat — persistent, the deletion itself",
+]
+# AND THE ORDER'S OWNER IS NOT AMONG THEM. `write_pin_verifier`
+# (clientpin.rs:836) clears the grant at :845-847 and writes EF_PIN at :857 — it
+# is the one function every EF_PIN verifier write goes through, from
+# `store_new_pin` (:968), the panel's `store_local_pin` (:1256) and the
+# device-PIN path (:1287). It carries no tag of any kind.
+owners_tag_reading = "the tagged pair `set_pin`/`change_pin` hold a SECOND `clear_ppuat` above the one that matters, and `formal/comutants.toml [comutant.BugSetPinKeepsPpuat]` records the measurement: deleting `set_pin`'s leaves all 668 rsk-fido tests green over three runs, while deleting `write_pin_verifier`'s is red at once on `every_ef_pin_verifier_write_revokes_the_persistent_token` and `local_pin_change_revokes_the_persistent_token`. So the tags sit on the layer whose removal nothing notices. The column would not move if this were fixed — `assurance_gate.grep_word` returns FILE names and `clientpin.rs` is already counted — which is exactly why no gate has ever asked for it"
+# The fourth invalidation door, in a crate the `rust` axis DOES scan, with a
+# killed code twin and no tag. Fixing this one WOULD move the column, 3 -> 4.
+owners_untagged = [
+  "crates/rsk-fido/src/clientpin.rs:836 write_pin_verifier — the revoke-before-write order, three callers",
+  "crates/rsk-display/src/gates.rs:149 local_pin_gate's `ends_host_token` — the panel PIN pad as a fourth door (E66); `formal/comutants.toml [comutant.BugLocalPinKeepsToken]` patches it and records `expect = \"killed\"`",
+  "crates/rsk-fido/src/state.rs:426 FidoState::reset — the `reset` invalidator the statement names; tagged for SEC-FIDO-006 and not for this one, though `state_kani.rs`'s OP_AUTHENTICATOR_RESET drives it and asserts A1-A4 after it",
+  "crates/rsk-fido/src/state.rs:371 FidoState::new — the `power cycle` invalidator the statement names, driven as OP_POWER_CYCLE and carrying no tag at all",
+]
+# The six comutants the `co` column counts, and the seventh that is not a patch.
+owners_co_refuted = [
+  "crates/rsk-fido/src/clientpin.rs — BugTokenSurvivesPinChange, BugWrongPinKeepsToken, BugChangePinKeepsPpuat, BugPinWriteBeforeRevoke",
+  "crates/rsk-fido/src/state.rs — BugStopUsingKeepsPerms",
+  "crates/rsk-display/src/gates.rs — BugLocalPinKeepsToken, the only one outside rsk-fido",
+]
+# The citations that carry the bridge, read BY CONTENT rather than by the gate.
+citation_reading = "twenty-three references over this property's owners and switches were opened by hand — the twenty that `citation_gate.citations` itself parses out of formal/README.md:99,204,205,206,207,215,223,225 and formal/RSKeySecurityState.tla:63,65,89,122,823,1752,1755, plus three it cannot see. Sixteen land on their subject. Five occurrences of three distinct citations do not: `RSKeySecurityState.tla:65` cites `state.rs:584-599` for `stopUsingPinUvAuthToken` and that span is `retire_sequences_except` plus the head of `expire_stale_token`'s doc comment (it WAS exactly `stop_using_token` at `250be31`; the function is at `:547-562` today, which the module's own :1751 comment and `formal/README.md:99` both use); `formal/README.md:99` cites `seed.rs:323-324` for `clear_ppuat` and that span is `r.map(|()| tok)` and `}`, the tail of the function ABOVE it — and it was those two lines at `5e3abef`, the commit that introduced the citation, so it has never named `clear_ppuat`; and `clientpin.rs:300-304`, which the module writes bare as `:300-304` three times over (`RSKeySecurityState.tla:89`, `RSKeySecurityState.tla:824`, `RSKeySecurityState.tla:1755`), is four lines short of the `clear_ppuat` call it is cited for, stopping at the first line of the comment above it. Two more, `formal/README.md:204` `clientpin.rs:316` and `formal/README.md:215` `clientpin.rs:786`, each name the line AFTER the line the mutant they describe deletes (:315 and :785)"
+citation_gate_reading = "the gate is GREEN over all three, and each is green for a different reason. `state.rs:584-599` and `seed.rs:323-324` are in `formal/citations.lock` AT THE DRIFTED TEXT (rows 445 and 149), and the rule is `only a locked line found ELSEWHERE is reported` — a re-lock makes the rot the baseline, which the gate's own docstring predicts at :115, `a citation wrong the day it was written locks wrong`. The module's bare form of `clientpin.rs:300-304` is in no lock row at all: `CITE` (scripts/citation_gate.py:618-621) matches a continuation only after a backtick, and the module writes its citations as plain TLA+ comment text, so `, :300-304` is not even parsed. Driven rather than argued: running `citation_gate.citations` over the two pages returns twenty citations across the fifteen lines above and not one of the module's three bare occurrences of `clientpin.rs:300-304`, while README:223's backticked `` `:305-309` `` — the twin of the same claim — comes back as a `file=None` continuation, is locked, and followed the code"
+
+# ---- 2. Commit, build and features -------------------------------------------
+
+[build]
+commit = "31c21a771734c1fc87f093c38125bffbee47c558"
+tree_state = "clean at this commit but for the untracked FORMAL_VERIFICATION_ROADMAP.md, this bundle and its twelve logs, and the uncommitted work of eight sibling bundles being written into the same tree at the same time. That is the one thing about this file a reader should distrust, so it is measured rather than waved at. Of the concurrent edits, four touch a page this bundle reads and NONE changes what it reads: `assurance/properties.toml` gains a `source` entry on SEC-POL-003 and SEC-POL-006 only, so this property's row is byte-identical; `docs/threat-model.md` gains one hunk at line 114, below the `TM-HOST-GATES` anchor, whose three lines at :27-29 are unchanged; `formal/RSKeySecurityState.tla`'s two hunks are both inside comment blocks about `WidePerms`, so no action, guard or invariant moved; and `formal/README.md` moves six lines. What DID move, and matters: `formal/Shipped.cfg` gained three more invariants in its INVARIANTS block, `formal/gen-configs.sh` gained a `PermWideMut_*` family, and two of those configurations are now in the working tree untracked and unrun — one of them, `PermWideMut_BugStopUsingKeepsPerms.cfg`, names this invariant. So the working tree's Shipped.cfg is no longer the file that produced this bundle's tlc-Shipped.log, and the `cfgs` count of the registry line moved twice while this was being written"
+matrix_column = "firmware"
+cargo_features = "the default workspace feature set, with no cargo feature requested — which is what `assurance/configurations.toml`'s `firmware` column IS. The Kani rows are the exception and name theirs in the method table: `--features kani-soft`"
+board_knobs = "BOARD unset and LED_KIND unset, so `firmware/build.rs` resolves its own defaults — the 4 MB layout, ws2812 rgb on GPIO16, BOOTSEL presence"
+host_triple = "aarch64-apple-darwin"
+firmware_triple = "thumbv8m.main-none-eabihf"
+machine = "18 cores, macOS 27.0 aarch64, Azul Systems 1.8.0_492 — the figure the TLC banner records in all twelve logs, so the artifacts and this line cannot disagree; `formal/runs.toml` names the part as Apple M5 Pro"
+# THREE, where both worked examples have two, and the third is derived rather
+# than assumed: `assurance/configurations.toml` gives this property a `covered`
+# cell on `firmware` and `equivalent` cells on three columns, against
+# SEC-FIDO-001's two. `abrobot-4m` is the difference, and the reason it is
+# claimable here and not there is that its knob delta is an LED and a presence
+# SOURCE — and no conjunct of this invariant reads a presence source.
+equivalent_columns = ["firmware-pico", "waveshare-one", "abrobot-4m"]
+tlc_run = "the safety tier of `formal/runs.toml`, recorded at `b819ee5949022b92229e25dfdc2930211e29e013` on 2026-08-30. `git diff b819ee5..HEAD -- formal/*.tla formal/*.cfg formal/*.sh` is EMPTY, so those verdicts describe the model at this bundle's commit. Against the WORKING TREE they do not, in one direction only: build.tree_state records that a sibling slice has added invariants to Shipped.cfg's INVARIANTS block, which widens what that configuration checks and cannot change whether this invariant held over the same state space"
+kani_run = "not run here. Both harness verdicts are read out of `assurance/bundle/logs/kani-state-tier.log.gz`, taken at `f52b720` for SEC-FIDO-001. `git diff f52b720..HEAD` over the two harness files is COMMENT-ONLY — eight changed lines, every one a citation line number inside a `//` or `///` — and `state.rs`, `credmgmt.rs` and `pinproto.rs`, the three production files they drive, are byte-identical"
+
+# ---- 3. Method and scope/bounds ----------------------------------------------
+
+# NINE rows. Four model-check rows for the four GREEN configurations, one for
+# the seven non-degeneracy rows, two bounded proofs, one review and one
+# mutation. There is no `trace` row and no `measurement` row, and neither is an
+# omission: no `TraceSecurity*` configuration checks this invariant (AS-NTAI-4)
+# and nothing here was taken on silicon.
+
+[[method]]
+obligation = "tier B: the whole invariant over the shipped constants, on the arm the image actually builds"
+method = "model-check"
+artifact = "formal/RSKeySecurityState.tla::NoTokenAfterInvalidation + Shipped.cfg::NoTokenAfterInvalidation"
+bound_rps = 2
+stops_rps = "an rpId-binding defect that needs a third relying party; two is what the ghost's binding half is checked over"
+bound_channels = 2
+stops_channels = "a three-channel interleaving of the invalidators — two channels is every concurrency this row searches"
+bound_max_retries = 8
+stops_max_retries = "nothing by shrinking: eight IS the shipped MAX_PIN_RETRIES, so the two mutants that reach this invariant through the retry ladder walk the rungs the image has. The row that costs this property ladder depth is the reduced arm below, not this one"
+bound_mismatch_limit = 3
+stops_mismatch_limit = "nothing by shrinking, for the same reason as the ladder it pairs with — three IS PIN_MISMATCH_LIMIT, so the soft-lock approach is at shipped depth here"
+bound_max_clock = 1
+stops_max_clock = "every question about elapsed time. One Tick is the whole clock, so the TIMER invalidator — `expire_stale_token` against a usage period this model has no wall clock for — is exercised as `some time has passed` and never at a duration"
+bound_reset_window = 0
+stops_reset_window = "the reset invalidator as a legitimate in-window reset. At zero the window is only ever seen closed, so `reset` is reached through ResetStart and ResetConfirmed and never through the power-up window the shipped device opens"
+shipped_relation = "MaxRetries and MismatchLimit ARE the shipped MAX_PIN_RETRIES (8) and PIN_MISMATCH_LIMIT (3) at crates/rsk-fido/src/consts.rs:368,372, and for THIS property that matters in a way it does not for SEC-FIDO-007: `BugWrongPinKeepsToken` and `BugLocalPinKeepsToken` are both reached through the retry ladder, so the ladder is on the path. RPs and Channels are 2 against an unbounded device; MaxClock 1 is the smallest value at which Tick is not dead, which bounds the TIMER arm — `expire_stale_token` is a tagged owner and PUAT_MAX_USAGE_PERIOD_MS (600 000 ms) is a wall clock this model does not have. ResetWindow 0 runs the window closed only, so the `reset` invalidator is exercised through ResetStart/ResetConfirmed and never through a legitimate in-window reset. This is the ONLY one of the four GREEN rows at AlwaysUvShipped = FALSE"
+cfg = "none"
+features = "none"
+
+[[method]]
+obligation = "tier B: the same invariant on the arm of AlwaysUvShipped the default image does not build"
+method = "model-check"
+artifact = "AlwaysUv.cfg::AlwaysUvShipped"
+bound_rps = 2
+stops_rps = "an rpId-binding defect needing a third relying party, on the alwaysUv arm"
+bound_channels = 2
+stops_channels = "a three-channel interleaving, on the alwaysUv arm"
+bound_max_retries = 2
+stops_max_retries = "the two rungs this arm does not have. Both mutants that reach this invariant walk the ladder, so at two rungs against the shipped eight this arm is not where a retry-shaped defect is caught"
+bound_mismatch_limit = 1
+stops_mismatch_limit = "the two mismatches between one and the shipped three, and any approach to the soft lock that needs them — the same shrink the ladder takes, on the counter it pairs with"
+bound_max_clock = 1
+stops_max_clock = "every question about elapsed time, as on the shipped row: one Tick, so the timer invalidator is exercised as `some time has passed` only"
+bound_reset_window = 0
+stops_reset_window = "the in-window reset arm, as on the shipped row — the window is seen closed on this arm too"
+shipped_relation = "the retry ladder is REDUCED here and the shipped one is not — 8:3 becomes 2:1 (formal/AlwaysUv.cfg:6-7) — because the arm buys the alwaysUv reachability question and Shipped.cfg is the row that is about the ladder. What the row buys this property is that a registered standing assumption is run BOTH ways against it. What it costs is stated rather than implied: the two mutants that walk the ladder would have two fewer rungs to walk here, so this arm is not where a retry-shaped defect is caught"
+cfg = "none"
+features = "always-uv (modelled as the compiled default, not built)"
+
+[[method]]
+obligation = "tier B: the permission alphabet's other arm, which is the one this invariant's own term reads"
+method = "model-check"
+artifact = "PermWide.cfg::WidePerms"
+bound_perm_subsets = 16
+stops_perm_subsets = "nothing — sixteen is the whole four-bit domain and this axis is a WIDENING, not a shrink. It is worth more to this invariant than to its neighbours because `tok.perms # {}` is a term of the second conjunct, so the domain the permission set is drawn from is a domain the invariant quantifies over"
+bound_rps = 1
+stops_rps = "the rpId-binding half of the ghost. One relying party is the price this row pays for the wide permission domain, so on this configuration a token has no second relying party to be wrongly bound to"
+bound_channels = 2
+stops_channels = "a three-channel interleaving of the invalidators, on the wide-permission arm"
+bound_max_retries = 2
+stops_max_retries = "the six rungs between two and the shipped eight, so the two ladder-walking mutants are shallower here than on the shipped row"
+bound_mismatch_limit = 1
+stops_mismatch_limit = "the two mismatches between one and the shipped three, on the wide-permission arm"
+shipped_relation = "WidePerms = TRUE draws `ps` from SUBSET Perms — all sixteen subsets of {mc, ga, cm, acfg} instead of the five `PermSets` narrows to (RSKeySecurityState.tla:174-177). This row is worth MORE to this property than to SEC-FIDO-001, and the reason is textual: `tok.perms # {}` is a TERM of the second conjunct, so the domain the token's permission set is drawn from is the domain the invariant quantifies over. The cost is on the other axis and is real — RPs drops to 1, so the rpId-binding half of the ghost has no second relying party to be bound to on this row, and AlwaysUvShipped is TRUE here as well"
+cfg = "none"
+features = "none"
+
+[[method]]
+obligation = "tier B: the forced-PIN-change gate's other arm, a gate that refuses token ISSUANCE after a correct PIN"
+method = "model-check"
+artifact = "ForceChange.cfg::ForceChangeModelled"
+bound_rps = 1
+stops_rps = "the rpId-binding half of the ghost, which this arm drops to one relying party the same way the wide-permission arm does"
+bound_channels = 2
+stops_channels = "a three-channel interleaving, on the forced-change arm"
+bound_max_retries = 2
+stops_max_retries = "the six rungs between two and the shipped eight; a retry-shaped defect is not what this arm is for"
+bound_mismatch_limit = 1
+stops_mismatch_limit = "the two mismatches between one and the shipped three, on the forced-change arm"
+shipped_relation = "ForceChangeModelled = TRUE turns on `gate.forceChange`, EF_MINPINLEN byte 1, which `clientpin.rs` reads at the two get_pin_token doors and `change_pin` clears. It belongs to this property because it is a refusal AFTER the PIN has verified — a grant that must not be minted rather than one that must be retired — and `assurance/platform.toml` PLAT-MODEL-010 is `discharged` on it. What the arm does NOT reach is the built-in-UV door (clientpin.rs:493-495), which has no action in this module at all, and the panel's own clear at clientpin.rs:1269"
+cfg = "none"
+features = "none"
+
+[[method]]
+obligation = "non-degeneracy: the invariant can go red, seven different ways, and each red names it rather than a sibling"
+method = "model-check"
+artifact = "Solo_BugTokenSurvivesPinChange.cfg Solo_BugStopUsingKeepsPerms.cfg Solo_BugWrongPinKeepsToken.cfg Solo_BugLocalPinKeepsToken.cfg Solo_BugChangePinKeepsPpuat.cfg Solo_BugPinWriteBeforeRevoke.cfg Solo_BugSetPinKeepsPpuat.cfg"
+bound_invariants = 2
+stops_invariants = "anything about the invariants a solo row does not check. TypeOK and this name alone is what tells a kill from a neighbouring invariant's, and the price is that a state falsifying two at once is seen here as falsifying one"
+bound_armed_switches = 1
+stops_armed_switches = "any defect needing two switches at once. One armed switch is what attributes the kill to the defect that was injected"
+bound_configurations = 7
+stops_configurations = "an eighth way for this invariant to fail. Seven switches are seven defects somebody wrote, so non-degeneracy covers those seven and no failure mode nobody modelled"
+bound_conjuncts_falsified = 3
+stops_conjuncts_falsified = "nothing — all three conjuncts are separately falsified, which is the strongest single statement in this bundle, because a conjunction whose clauses are never falsified apart is a conjunction with a passenger. What it does not say is that each clause is falsified in every way it could be"
+shipped_relation = "every one of the seven checks TypeOK and this invariant and NOTHING ELSE (formal/gen-configs.sh:181-184 emits the SOLO block — the WORKING-TREE numbers, re-taken by content after a sibling slice grew that file by 69 lines NET — 72 added and 3 removed, 923 lines to 992; the same four lines stood at :173-176 at this bundle's `build.commit`, which stays where it is because `scripts/evidence_gate.py:459-490` dates a bundle by a commit git can resolve and the one carrying this file does not exist yet), with exactly one Bug* TRUE and every other FALSE, which is what tells a kill from a neighbouring invariant's. `mut = 7` IS this set: `assurance_gate.solo_target_counts` counts single-target Solo_* configurations. All three conjuncts are separately falsified — the ghost by BugPinWriteBeforeRevoke, the session term by four, the persistent term by two — and that is the strongest single statement in this bundle, because a conjunction whose clauses are never falsified apart is a conjunction with a passenger"
+cfg = "none"
+features = "none"
+
+[[method]]
+obligation = "tier C: the session token's own state machine, over a symbolic five-operation sequence"
+method = "bounded proof"
+artifact = "crates/rsk-fido/src/state_kani.rs::no_token_after_invalidation"
+bound_sequence = 5
+stops_sequence = "any defect needing a sixth operation. Five from one starting state against a device that dispatches unboundedly, so an invalidation sequence that has to set itself up over six steps is outside this harness"
+bound_opcodes = 8
+stops_opcodes = "any invalidator the alphabet does not name. The four the registry statement names are all in the eight, so what is left out is any OTHER route by which a grant could be retired or kept alive"
+bound_symbolic_permission_bytes = 6
+stops_symbolic_permission_bytes = "nothing — the permission bytes are full symbolic u8, one per step plus the opening grant, so this axis is not a shrink and no permission valuation is excluded"
+bound_clock_values = 2
+stops_clock_values = "a token that expires strictly BETWEEN the two clock values. The timer arm is exercised at T0 and at the end of the usage period and nowhere in between"
+bound_clauses = 4
+stops_clauses = "the persistent grant. Four clauses are the session token's; `pcmr` lives in flash, no clause here names it, and AS-NTAI-3 is the row that owns that hole"
+shipped_relation = "five operations from one starting state against a device that dispatches unboundedly, drawn from eight opcodes — Begin, MarkUsed, ConsumeAfterUp, Stop, ResetToken, AuthenticatorReset, PowerCycle, TimePasses — so the four invalidators the registry statement names are all in the alphabet. The permission sets are FULL symbolic u8, one per step plus the opening grant, which is not a shrink. The clock is two values, T0 and T0 + PUAT_MAX_USAGE_PERIOD_MS, so the timer arm is exercised at its edges and nowhere between. Every clause is an EQUALITY, not an implication, which is what stops an authenticator that retires everything on sight from satisfying it. What is NOT here: the persistent `pcmr` grant, which is in flash — the harness header says so, and AS-NTAI-3 is the row that owns it"
+cfg = "kani"
+features = "kani-soft"
+
+[[method]]
+obligation = "tier C: the credentialManagement gate's own decision, at its call site, with a replayed MAC"
+method = "bounded proof"
+artifact = "crates/rsk-fido/src/credmgmt_kani.rs::no_token_after_invalidation_at_call_site"
+bound_sequence = 4
+stops_sequence = "any replay that needs a fifth step to set up. Four operations is the whole run, so a longer approach to the same call site is outside it"
+bound_opcodes = 3
+stops_opcodes = "any invalidator outside the three this run can issue; the walk harness above is the row that carries the eight-opcode alphabet"
+bound_symbolic_permission_bytes = 1
+stops_symbolic_permission_bytes = "every valuation the other steps could carry. One permission byte is symbolic and the rest are concrete, so a defect that needs two different permission sets inside one run is outside this harness"
+bound_mac_payloads = 1
+stops_mac_payloads = "anything about `pinproto::verify` as a MAC. One concrete payload is driven, so what is shown is that THIS replayed MAC still verifies — never that a forged one would not, which is TCB-2's"
+bound_clauses = 2
+stops_clauses = "the same pair of clauses at the other three token gates. They are inline in functions that need a `Ctx`, and a `Ctx` drags `p256` into the reachable set where Kani 0.67.0 aborts in codegen, so this pair is proved at one door of four"
+shipped_relation = "the real `verify_cm_token` (credmgmt.rs:278-288) is driven, not a predicate standing in for it, and the pinUvAuthParam is a genuine v2 MAC minted while the grant was live and then REPLAYED. C2 is the load-bearing clause and it is the one that makes C1 mean something: the replayed MAC still verifies, so at this call site and at config.rs:243-245 zeroing `permissions` is not defence in depth — it is the only defence. One concrete payload, so this says nothing about `pinproto::verify` as a MAC (TCB-2). Only the `cm` permission and only this one of the four token gates: the other three are inline in functions that need a `Ctx`, and a `Ctx` drags `p256` into the reachable set where Kani 0.67.0 aborts in codegen"
+cfg = "kani"
+features = "kani-soft"
+
+[[method]]
+obligation = "the production side: which sites own each of the three conjuncts, and whether the tagged owners are those sites"
+method = "review"
+artifact = "crates/rsk-fido/src/state.rs::stop_using_token + crates/rsk-fido/src/seed.rs::clear_ppuat + crates/rsk-fido/src/clientpin.rs::write_pin_verifier"
+bound_tagged_owners = 6
+stops_tagged_owners = "any owner outside the six tagged sites. This is a count of SITES and not a shrink of a shipped constant, because a review has no other unit"
+bound_tagged_files = 3
+stops_tagged_files = "anything the derived column can see about a site. `assurance_gate.grep_word` returns FILE names, so a seventh tag inside a counted file moves nothing — which is why the tag missing from the third conjunct has never reddened a row"
+bound_conjuncts = 3
+stops_conjuncts = "the third conjunct's ownership. Session maps onto three tagged sites and persistent onto three; the ORDER the ghost is written for maps onto none, because `write_pin_verifier` is untagged"
+bound_untagged_owner_sites = 4
+stops_untagged_owner_sites = "coverage of the sites the tag set does not reach. Two invalidators the statement names by word, `reset` and `power cycle`, are owned by sites carrying a sibling property's tag or no tag at all"
+bound_citations_read = 23
+stops_citations_read = "any citation the review never opened. Twenty-three OCCURRENCES were read, which is a count of readings and not of sources"
+bound_citations_wrong = 5
+stops_citations_wrong = "how many SOURCES are wrong. The occurrences collapse onto fewer distinct references — one of them is written three times — so the defect count is smaller than the occurrence count and this bound cannot say by how much"
+shipped_relation = "six tags over three files, and the `rust` column is 3 because `assurance_gate.grep_word` returns FILE names — a seventh tag in a counted file moves nothing, which is the reason the missing one has never reddened a row. The mapping is clean on two conjuncts and empty on the third: session gets state.rs:491/:551/:600, persistent gets clientpin.rs:175/:229 and seed.rs:337, and the ORDER — the conjunct SetPinWrite and ChangePinWrite write the ghost for — gets nothing, because `write_pin_verifier` is untagged. Two more invalidators the statement names by word, `reset` and `power cycle`, are owned by state.rs:426 and state.rs:371 and carry SEC-FIDO-006's tag and no tag respectively. The citation bounds are OCCURRENCES, not distinct citations: 23 read and 5 wrong over 3 distinct references, and the distinction matters because one of the three is written three times. This bound is a count of sites and of citations, not a shrink of a shipped constant, because a review has no other unit"
+cfg = "none — every site above is unconditional production code; the two Kani mirrors are not, and are named in the rows above rather than counted here"
+features = "none"
+
+[[method]]
+obligation = "the code twins: the same defects injected into production Rust, and the one that could not be"
+method = "mutation"
+artifact = "formal/comutants.toml::BugStopUsingKeepsPerms + scripts/comutate.py + crates/rsk-display/src/gates.rs::local_pin_gate"
+bound_patched_files = 3
+stops_patched_files = "a defect that has to span files the three do not include. A comutant is a hunk in a file, so a cross-file ordering defect is not something this apparatus can inject"
+bound_patched_crates = 2
+stops_patched_crates = "any invalidation door outside the two crates these patches reach"
+bound_patch_hunks = 9
+stops_patch_hunks = "the CLASS each hunk belongs to. Nine hunks over six switches are the defects somebody wrote; a variant of the same defect that no hunk expresses has no code-level verdict here"
+bound_killed = 6
+stops_killed = "anything about the seventh switch. Six carry a killed patch, so the co-refutation column covers six of the model's seven defects"
+bound_unreachable = 1
+stops_unreachable = "the setPIN arm at code level. No site's removal reproduces `setPIN keeps the grant` alone, because the authoritative revoke is the chokepoint changePIN shares — so that switch has a model verdict and no code twin, which is why `mut` is 7 and `co` is 6"
+shipped_relation = "six of the seven switches carry a patch with `expect = \"killed\"`, which that file's own status vocabulary (:20-22) defines as a RECORDED verdict and not a plan; the hunk count is the `find`/`find2`/`find3` blocks summed over the six. Two crates, because BugLocalPinKeepsToken patches `rsk-display` — the only co-refutation entry for this property outside rsk-fido, and the door the model calls the fourth. The seventh, BugSetPinKeepsPpuat, is `status = \"unreachable\"` and its `evidence` field is a CODE-level measurement, not a model one: there is no site whose removal reproduces `setPIN keeps the grant` alone, because the authoritative revoke is the chokepoint changePIN shares. That asymmetry is why `mut` is 7 and `co` is 6"
+cfg = "none"
+features = "none — the slices are `cargo test -p rsk-fido` and `cargo test -p rsk-display` on the default feature set"
+
+# ---- 4. Tool, version, invocation and environment ----------------------------
+
+# SIX tools, and the prover is here where SEC-FIDO-007's is not: this property
+# has two harnesses, so cargo-kani and CBMC — which carry the only UNHASHED
+# provenance on either path, the version being pinned and the fetched solver
+# bundle not — are back in the trust base.
+
+[[tool]]
+name = "tlaplus"
+version = "1.7.4 (the jar's own banner reads TLC2 Version 2.19 of 08 August 2024, rev 5a47802, in all twelve logs)"
+provenance = "flake.lock; tla2tools.jar sha256 936a262061c91469… — re-derived here with `shasum -a 256 $TLA2TOOLS_JAR`, which is the prefix formal/run-tlc.sh:16 records"
+invocation = "java -XX:+UseParallelGC -Xmx4g -cp $TLA2TOOLS_JAR tlc2.TLC -nowarning -workers 2 -config <cfg> RSKeySecurityState"
+environment = "nix develop; WORKERS=2, HEAP=4g — the safety tier's split. The logs' own banner resolves that to 3641MB heap and 64MB offheap"
+
+[[tool]]
+name = "openjdk"
+version = "1.8.0_492 (Zulu 8.94.0.17-CA-macos-aarch64, build 1.8.0_492-b09)"
+provenance = "flake.lock"
+invocation = "see tlaplus"
+environment = "nix develop"
+
+[[tool]]
+name = "cargo-kani"
+version = "0.67.0"
+provenance = "NOT in flake.lock — not packaged in nixpkgs. Installed with `cargo install --locked kani-verifier --version $KANI_VERSION`, and KANI_VERSION is a workflow variable at .github/workflows/deep-checks.yml:354 and :446. The one tool on either of this property's paths OUTSIDE the hermetic shell — which is not the same as unpinned: the version is pinned there and scripts/kani_gate.py holds it; what nothing records is the fetched solver bundle (PLAT-TOOL-003)"
+invocation = "scripts/kani.sh state, which resolves to `cargo kani -p rsk-fido … --features kani-soft`; FLOOR_state=29 harnesses, TIMEOUT_state=30m"
+environment = 'RUSTFLAGS=--cfg sha2_backend="soft" --cfg poly1305_force_soft --cfg sha1_force_soft (scripts/kani.sh:307)'
+
+[[tool]]
+name = "cbmc"
+version = "6.8.0 (cbmc-6.8.0) 64-bit arm64 macos — the banner it prints; CaDiCaL 2.0.0 is the SAT back end `--sat-solver cadical` selects, read out of the binary itself as `cadical-2.0.0`. Re-measured off ~/.kani/kani-0.67.0/bin/, which also ships kissat 4.0.1 beside it, because the three bundles carrying this row wrote one banner at three different specificities and prose is not a pin (PLAT-TOOL-003)"
+provenance = "a prebuilt binary inside the CBMC/SAT bundle `cargo kani setup` FETCHES, beside kissat 4.0.1; nothing in this tree hashes that bundle, which is the gap PLAT-TOOL-003 names. Not the same as unpinned: the kani-verifier VERSION above is pinned"
+invocation = "driven by cargo kani, not by hand"
+environment = "the harness bounds are the environment here: 442 checks on the state harness and 1310 on the call-site one"
+
+[[tool]]
+name = "rustc"
+version = "1.96.0 (ac68faa20 2026-05-25)"
+provenance = "flake.lock"
+invocation = "cargo test -p rsk-fido and cargo test -p rsk-display, the two co-refutation slices formal/comutants.toml names"
+environment = "nix develop"
+
+[[tool]]
+name = "python"
+version = "3.13.13"
+provenance = "flake.lock"
+invocation = "python3 scripts/assurance_gate.py, citation_gate.py, threat_gate.py, matrix_gate.py, assumption_gate.py — the five derivations the result group transcribes"
+environment = "nix develop"
+
+# ---- 5. Principal result -----------------------------------------------------
+
+[result]
+# TIER B — the four configurations whose recorded verdict is GREEN, which is the
+# `4 of N` the assurance vector prints, where N is a live glob. Every row is
+# `formal/run-tlc.sh <cfg>` at WORKERS=2 HEAP=4g, and the seconds are
+# run-tlc.sh's own timer, which is
+# where it differs by a second or two from TLC's `Finished in` line.
+b_shipped = "Shipped.cfg GREEN — 986 836 197 states, 77 563 872 distinct, depth 58, 1913 s; NoTokenAfterInvalidation among the NINE invariants Shipped.cfg checks — TypeOK and eight others. Not six: six is `ALL_INV`'s size in formal/gen-configs.sh, which is the Mut_* configurations' set and not this one's"
+b_always_uv = "AlwaysUv.cfg GREEN — 273 124 081 states, 23 521 512 distinct, depth 51, 519 s"
+b_perm_wide = "PermWide.cfg GREEN — 344 527 413 states, 21 456 020 distinct, depth 45, 553 s; the sixteen-subset permission domain, which is the domain the second conjunct's own term is drawn from"
+b_force_change = "ForceChange.cfg GREEN — 106 956 959 states, 10 765 176 distinct, depth 46, 177 s"
+b_arms_reading = "THREE OF THE FOUR GREEN ROWS RUN A BUILD THE TREE DOES NOT SHIP. AlwaysUv.cfg, PermWide.cfg and ForceChange.cfg all set AlwaysUvShipped = TRUE; only Shipped.cfg is on the arm the image is built on. So the assumption is run both ways — which most rows do not have — but the FALSE arm, the shipped one, is carried by exactly one configuration, and it is the only one of the four with the shipped retry ladder"
+
+# NON-DEGENERACY — thirteen RED rows name this invariant, and the seven Solo_
+# ones are the evidence. Each is TypeOK plus this invariant and nothing else.
+b_solo_session = "Solo_BugTokenSurvivesPinChange.cfg RED — 148 546 states, 23 052 distinct, depth 10, 2 s. Solo_BugStopUsingKeepsPerms.cfg RED — 6019/1659, depth 7. Solo_BugWrongPinKeepsToken.cfg RED — 5920/1619, depth 7. Solo_BugLocalPinKeepsToken.cfg RED — 5886/1619, depth 7. All four end at `plat.held /\\ plat.revoked /\\ tok.perms = {\"cm\"}`, which is the second conjunct exactly"
+b_solo_persistent = "Solo_BugChangePinKeepsPpuat.cfg RED — 19 655 states, 4472 distinct, depth 8, 1 s, ending at `gate.ppuat /\\ gate.ppuatStale` after ChangePinClearPpuat. Solo_BugSetPinKeepsPpuat.cfg RED — 5 521 139 states, 599 634 distinct, depth 15, 12 s, at the same pair but through a fifteen-step path: PressDown, SetPin, MintPpuat, a reset that reaches ResetSweepGates and then ABORTS, and a second SetPin"
+b_solo_order = "Solo_BugPinWriteBeforeRevoke.cfg RED — 19 942 states, 4549 distinct, depth 8, 2 s, and it is the only one of the seven that falls on the GHOST: the final state carries `viol = {\"NoTokenAfterInvalidation\"}` written by ChangePinWrite, with `gate.ppuat` TRUE and `ppuatStale` FALSE — the new verifier landing over a grant that is still live and still honoured. Neither of the other two conjuncts is violated in that state"
+b_mut_rows = "the six Mut_ twins that report this name run the whole invariant set and agree: Mut_BugChangePinKeepsPpuat 20102/4527 depth 8, Mut_BugLocalPinKeepsToken 5916/1635 depth 7, Mut_BugPinWriteBeforeRevoke 21041/4727 depth 8, Mut_BugStopUsingKeepsPerms 5988/1650 depth 7, Mut_BugTokenSurvivesPinChange 145889/22684 depth 10, Mut_BugWrongPinKeepsToken 6013/1655 depth 7"
+b_attribution = "Mut_BugSetPinKeepsPpuat.cfg is the seventh and reports a SIBLING: RED: NoAccessibleSecretWithoutGate — 1 700 134 states, 203 559 distinct, depth 13, 4 s. AND THE USUAL EXPLANATION IS WRONG HERE. `formal/gen-configs.sh:185-187` puts the TARGET invariant FIRST in a Mut_ row's INVARIANTS block, and Mut_BugSetPinKeepsPpuat.cfg:52 duly lists NoTokenAfterInvalidation ahead of the other five. List order did not decide it: BFS DEPTH did, and the two logs make that exact rather than plausible. The Mut_ counterexample is 13 states and the Solo_ one is 15, and they share their first 13 — `State 13` is `ResetAborts` in both files. The sibling's violation fires on that shared state and this property's two steps later, at the second SetPinClearPpuat, so TLC reaches the neighbour first and stops. A mutant's own configuration can therefore name a neighbour with the target listed first, and only the invariant-named Solo row observes this property failing under that switch"
+
+# TIER C — the two bounded proofs, read out of a log this tree already carries.
+c_state = "state::proofs::no_token_after_invalidation SUCCESSFUL, 101.59 s — 0 of 442 checks failed (2 unreachable), 3 of 3 cover properties satisfied. A1 (user_verified tracks the grant), A2 (the permission set tracks it), A3 (a retired token keeps neither permissions nor its rpId) and A4 (the bytes move exactly when a reroll or a wipe moved them), asserted after EVERY step of the five"
+c_call_site = "credmgmt::proofs::no_token_after_invalidation_at_call_site SUCCESSFUL, 366.41 s — 0 of 1310 checks failed (10 unreachable), 1 of 1 cover satisfied. C1 the gate refuses unless `cm` genuinely survived; C2 the replayed MAC still verifies"
+c_provenance = "NEITHER WAS RUN FOR THIS BUNDLE. Both verdicts are read out of `assurance/bundle/logs/kani-state-tier.log.gz`, which SEC-FIDO-001 committed at `f52b720`. It is quoted rather than re-listed as an artifact here because a second cost row over one run would invent a measurement. What makes it still current is measured in build.kani_run: the harness files differ comment-only and the three production files they drive are byte-identical"
+c_scope = "both harnesses are about the SESSION token. `grep -c keydev\\|EF_PAUTHTOKEN` over either is 0, both headers say the persistent `pcmr` grant is out of reach, and so `kani = 2` covers one of the invariant's three conjuncts"
+
+# THE CODE TWINS, from formal/comutants.toml's own recorded verdicts.
+co_killed = "six of the seven switches carry `status = \"patch\"` and `expect = \"killed\"`: BugTokenSurvivesPinChange, BugStopUsingKeepsPerms, BugWrongPinKeepsToken, BugChangePinKeepsPpuat, BugPinWriteBeforeRevoke (all `cargo test -p rsk-fido`) and BugLocalPinKeepsToken (`cargo test -p rsk-display`). `assurance_gate.co_refuted` credits them by reading `comutate.solo_invariants`, so `co = 6`"
+co_unreachable = "the seventh is the finding. BugSetPinKeepsPpuat is `status = \"unreachable\"`, and its `evidence` is a code measurement rather than a model one: deleting `set_pin`'s own `clear_ppuat` (clientpin.rs:220) leaves all 668 rsk-fido tests green over three runs, because `write_pin_verifier` clears the grant before the EF_PIN write; deleting THAT one is red at once, but it is the site changePIN and the panel share, so it is BugChangePinKeepsPpuat's twin as much as this one's. A shared chokepoint has no per-caller mutant, and the file says so"
+co_two_layer = "BugChangePinKeepsPpuat needed TWO hunks for the same reason, and its note records the first attempt measuring exactly that redundancy: removing only the outer layer left every test green. The property is enforced twice and a single-layer mutant cannot re-create the model's defect"
+
+# THE PRODUCTION SIDE, by review, and the three axes no gate derives.
+r_owners = "6 tagged owners over 3 files, covering the session conjunct at three sites and the persistent conjunct at three; 4 further owner sites carry no tag for this property — write_pin_verifier, gates.rs's ends_host_token, FidoState::reset and FidoState::new"
+r_column = "the `rust` column is not a count of tags: `grep_word` matches the bare invariant name anywhere in a production file and returns file names, so tagging `write_pin_verifier` would move nothing and tagging `crates/rsk-display/src/gates.rs` would move it 3 -> 4"
+r_citations = "23 references read by hand; 16 land on their subject, 3 distinct citations (5 occurrences) do not, and 2 more sit one line past the line the mutant they describe deletes. All are green under citation-gate — two because the lock was regenerated over the drift, one because the module's spelling is unmatched by CITE"
+t_trace = "0 of 0, and it is the honest value rather than a gap: no `TraceSecurity*` configuration checks this invariant, so nothing in this bundle is evidence about a recorded device session. `formal/traces/security-phase4.jsonl` is the recording that exists and it performs no changePIN, no stopUsingPinUvAuthToken and no panel PIN entry"
+f_fuzz = "1, and it is one FILE. `fuzz/fuzz_targets/fido_session.rs:1430-1433` asserts that getPinToken never re-issues the standing token, carrying the invariant's name so the trace is greppable; the axis is a `grep_word` over `fuzz/fuzz_targets/*.rs` and counts no execution"
+
+# The gates, each with the number it derives today. Derived live, not copied.
+gate_ghost = "ghost-gate: ok — 21 action(s) record NoAuthorizationBypass over 24 route(s), consulting 11 guard(s) — unchanged by this bundle and transcribed because the roster demands every gate line. The ghost THIS property is about is a second name in the same mechanism: TokenBypass, SetPinWrite, ChangePinWrite and CmBeginViaPpuat write it, and no gate derives that count at all"
+gate_ledger = "token-refinement-gate: GREEN keys=2 api=11 volatile=11/10 persistent=14/5 outcomes=7/6 walk=4 softlock=12 window=2 testonly=1 — the ledger owns the token axes and this property is a token property, yet none of its six tagged owners is in any of the six axes: the ledger is about who WRITES the token record and this invariant is about what a write must leave behind"
+gate_assumption = "assumption-gate: 5 standing assumption(s) — AlwaysUvShipped, ForceChangeModelled, PowerOnClearsScratch2, RekeyOrderModelled and WidePerms. Three of the five are checked BOTH WAYS against this invariant, which is more than most of the registry has, and the other two are checked on neither arm by any configuration that checks this property. The per-constant TRUE/FALSE arm counts of the same line are deliberately NOT transcribed, for the reason gate_registry gives about `cfgs` and with a measurement behind it: they are a denominator over the whole configuration roster, they moved twice while this bundle was being written as a sibling slice's `PermWideMut_*` family arrived in the working tree, and the same movement has already turned this exact leaf RED on both bundles that were committed before it. Which arms this property's evidence rides on is stated in the method table by CONFIGURATION, which cannot drift with the roster. AND THE PRICE OF THAT CHOICE IS NOW MEASURED: dropping the arm counts leaves this leaf one bare integer, and the bare-integer rule looks for it ANYWHERE in the derived line — so when `RekeyOrderModelled` took the total to five, the `4 standing assumption(s)` that stood here stayed GREEN off `PowerOnClearsScratch2 FALSE=4` while the ten sibling bundles went red, and it was repaired by hand rather than by the gate. A transcription carrying fewer numbers is not a safer transcription, it is a less-checked one"
+gate_matrix = "matrix-gate: ok — 40 P0-family properties × 31 build configurations = 1240 cells (37 covered, 143 equivalent, 0 conditional, 106 out-of-scope, 954 gap) — UNCHANGED by this bundle: a model check and two proofs read no board preset and no flash geometry, so nothing here settles a cell. This property's own row is the widest claim in the family, and it is `equivalent` on three columns and `out-of-scope` on none"
+gate_registry = "assurance-gate: SEC-FIDO-003 NoTokenAfterInvalidation BOUNDED mut=7 co=6 kani=2 fuzz=1 rust=3 test=0 — the `cfgs` figure of the same line is deliberately not transcribed, because it is a live glob over `formal/*.cfg` that a sibling slice's in-flight configurations moved twice while this bundle was written, and because a configuration NAMING an invariant is not one asserting it. Of the six above, the two a reader will over-read are `co` and `rust`. `co=6` against `mut=7` is not a hole: the seventh switch is `unreachable` at the CODE level with the measurement recorded. `rust=3` counts FILES and not tags: there are 6 tags, and the one owner that carries none sits in a file already counted, so the column cannot see it"
+
+# ---- 6. Raw artifact or log --------------------------------------------------
+
+# Twelve logs, and the set is not a selection: it is the four GREEN rows the
+# `4 of N` counts, the seven Solo_ rows the `mut = 7` counts, and the one Mut_
+# row that reports a sibling. Copied byte-identically from the recorded tier's
+# `formal/out/`, which the next `run-tlc.sh` overwrites.
+
+[[artifact]]
+run = "formal/run-tlc.sh Shipped.cfg — the invariant over the shipped constants, and the only one of the four GREEN rows on the arm the image is built on"
+path = "assurance/bundle/logs/SEC-FIDO-003/tlc-Shipped.log"
+bytes = 7163
+sha256 = "317703de77238fd60a9cb2fc9391ba387c3d2c352529a98e21be7f970f3d1452"
+
+[[artifact]]
+run = "formal/run-tlc.sh AlwaysUv.cfg — AS-AUTH-2's other arm, the whole invariant set with alwaysUv as the compiled default"
+path = "assurance/bundle/logs/SEC-FIDO-003/tlc-AlwaysUv.log"
+bytes = 3135
+sha256 = "4fd7becdee7d1cada4b68b905ba11966f97ae9b59b83fc0bc19f6ceeaaac49cd"
+
+[[artifact]]
+run = "formal/run-tlc.sh PermWide.cfg — AS-AUTH-5's other arm, the sixteen-subset permission domain the second conjunct's own term is drawn from"
+path = "assurance/bundle/logs/SEC-FIDO-003/tlc-PermWide.log"
+bytes = 3307
+sha256 = "1b2a8dfe9b4da6d863e334cc6efbb3cdf34eeb3b448d30e4bb51672897990cdc"
+
+[[artifact]]
+run = "formal/run-tlc.sh ForceChange.cfg — AS-NTAI-6's other arm, the forced-PIN-change gate that refuses issuance after a correct PIN"
+path = "assurance/bundle/logs/SEC-FIDO-003/tlc-ForceChange.log"
+bytes = 2112
+sha256 = "25b7a355205d89defaf052ce50648efe85e6f17c0743bb3555068dbe75e19833"
+
+[[artifact]]
+run = "formal/run-tlc.sh Solo_BugTokenSurvivesPinChange.cfg — changePIN keeping the session token, §6.5.5.6 step 15 skipped; the log IS the ten-state counterexample"
+path = "assurance/bundle/logs/SEC-FIDO-003/tlc-Solo_BugTokenSurvivesPinChange.log"
+bytes = 11241
+sha256 = "a16664928987ed1355e55612c3927a1ce026b4d050b378b4936f4ee6a75c6ee8"
+
+[[artifact]]
+run = "formal/run-tlc.sh Solo_BugStopUsingKeepsPerms.cfg — stopUsingPinUvAuthToken keeping the permission bits, the defect the Kani C1/C2 pair exists for"
+path = "assurance/bundle/logs/SEC-FIDO-003/tlc-Solo_BugStopUsingKeepsPerms.log"
+bytes = 7289
+sha256 = "8ae9efc2dca681e89b7dc92a973db55e3dbfcde131fc2bdd5c4cc9d9ea5ebcc5"
+
+[[artifact]]
+run = "formal/run-tlc.sh Solo_BugWrongPinKeepsToken.cfg — the pre-E38 tree, where a PIN mismatch leaves the outstanding token alive"
+path = "assurance/bundle/logs/SEC-FIDO-003/tlc-Solo_BugWrongPinKeepsToken.log"
+bytes = 7282
+sha256 = "f9bad6e4e75c63645278257f0a9dac443869b1a3025fc91570b5881cdc66d94e"
+
+[[artifact]]
+run = "formal/run-tlc.sh Solo_BugLocalPinKeepsToken.cfg — E66, the trusted-display PIN pad as a fourth door; the only switch of the seven whose code twin is outside rsk-fido"
+path = "assurance/bundle/logs/SEC-FIDO-003/tlc-Solo_BugLocalPinKeepsToken.log"
+bytes = 7287
+sha256 = "9167675c19656aad8161f42fec967f9cbd3d43d42a6460d00b3f626d8c84494b"
+
+[[artifact]]
+run = "formal/run-tlc.sh Solo_BugChangePinKeepsPpuat.cfg — the persistent grant marked stale instead of deleted, which is the third conjunct's own defect"
+path = "assurance/bundle/logs/SEC-FIDO-003/tlc-Solo_BugChangePinKeepsPpuat.log"
+bytes = 9264
+sha256 = "6b2b39ac7d1535e914cbbc3dd99c675218eb8bef7105234a43eb529c2149d4f9"
+
+[[artifact]]
+run = "formal/run-tlc.sh Solo_BugPinWriteBeforeRevoke.cfg — the write ORDER at both PIN flows, and the only row of the seven that falls on the ghost conjunct"
+path = "assurance/bundle/logs/SEC-FIDO-003/tlc-Solo_BugPinWriteBeforeRevoke.log"
+bytes = 9284
+sha256 = "17e526802cd6d00c237369f4d8197128138a40f004ab7c236a5efe35e9ae31b0"
+
+[[artifact]]
+run = "formal/run-tlc.sh Solo_BugSetPinKeepsPpuat.cfg — the switch with no code twin; fifteen states through a torn reset, and the deepest counterexample of the seven"
+path = "assurance/bundle/logs/SEC-FIDO-003/tlc-Solo_BugSetPinKeepsPpuat.log"
+bytes = 16366
+sha256 = "83ecd65d09a9f7af42605848d58502b634d9b376f9e6e7bb602597045f2c7a32"
+
+[[artifact]]
+run = "formal/run-tlc.sh Mut_BugSetPinKeepsPpuat.cfg — the same switch against the whole invariant set, which reports a SIBLING's name at a shallower depth although this property's name is listed first"
+path = "assurance/bundle/logs/SEC-FIDO-003/tlc-Mut_BugSetPinKeepsPpuat.log"
+bytes = 14390
+sha256 = "beedae517d84c4e8900a89f584a439ca0e09bc71d81810e6a52857c9f79fee30"
+
+# ---- 7. Assumptions and TCB / trust dependencies -----------------------------
+
+# TWELVE rows: seven written here and five reusing an id an earlier bundle
+# already stood a registry entry up for. The reuse is deliberate and follows
+# SEC-FIDO-007's precedent with AS-AUTH-2 — a fresh id for the same standing
+# assumption creates a candidate no entry claims and reddens platform-gate.
+#
+# `registered` is machine-checked: scripts/platform_gate.py:1890-1918 compares
+# `registered.startswith("yes")` against whether some assurance/platform.toml
+# entry's `covers` names `slice:<id>`. The seven new ids are RED there until the
+# integrator merges the six new entries and one extension proposed alongside
+# this bundle; that is stated rather than hidden, because a `yes` on an
+# unregistered id is the overstating direction of exactly that rule.
+
+[[assumption]]
+id = "AS-NTAI-1"
+statement = "`gate.ppuatStale` has no counterpart in the firmware: `clear_ppuat` is a `force_delete` of EF_PAUTHTOKEN, so the code has present-and-live or absent and nothing between. The third conjunct's forbidden state is one only a mutant can build."
+kind = "model abstraction"
+discharger = "reading the four call sites of crates/rsk-fido/src/seed.rs:337 and asking what could leave a record standing but unhonoured. Nothing can today — which is the point: `~(gate.ppuat /\\ gate.ppuatStale)` is UNFALSIFIABLE on the shipped tree by construction, the same shape SEC-FIDO-007's AS-RAM-5 records for RamNeverOutlivesFlashSeed. A second EF_PAUTHTOKEN writer, or a `force_delete` error a caller drops, would make it bite"
+expressible = "no — the alternative needs a second model VARIABLE, not a boolean constant a configuration could assign"
+registered = "yes — assurance/platform.toml PLAT-MODEL-012, pending"
+
+[[assumption]]
+id = "AS-NTAI-2"
+statement = "The revoke-before-write ORDER the ghost conjunct is about is owned by one function, `write_pin_verifier` (crates/rsk-fido/src/clientpin.rs:836), which clears the grant at :845-847 and writes EF_PIN at :857 — and that function carries no `Refines` tag."
+kind = "model fidelity"
+discharger = "a tag on write_pin_verifier, and the review of its other two callers that a tag forces. The measurement that says the tagged sites are the wrong ones is already in the tree: formal/comutants.toml's BugSetPinKeepsPpuat entry records that deleting `set_pin`'s own `clear_ppuat` leaves all 668 rsk-fido tests green over three runs, and that deleting write_pin_verifier's is red at once on two named tests. No gate will ask for this — clientpin.rs is already one of the three files the `rust` axis counts"
+expressible = "no — a fact about which source site owns a clause, not a constant"
+registered = "yes — assurance/platform.toml PLAT-SOURCE-001, pending"
+
+[[assumption]]
+id = "AS-NTAI-3"
+statement = "Both Kani harnesses cover the SESSION token only. The persistent `pcmr` grant lives in EF_PAUTHTOKEN, needs a `Ctx` with flash behind it, and both harness headers say so."
+kind = "model fidelity"
+discharger = "a harness over clear_ppuat and write_pin_verifier with a Ctx — which is the `p256`-in-the-reachable-set problem credmgmt_kani.rs's own header records, where Kani 0.67.0 aborts in codegen on crypto-bigint 0.7.5. Until then the persistent half is held by the model and by host tests (crates/rsk-fido/src/clientpin_tests.rs:2319 and its neighbours), not by a proof — so `kani = 2` is two harnesses over one of three conjuncts, and BOUNDED keys on a harness NAME"
+expressible = "no — a scope statement about two existing proofs"
+registered = "yes — assurance/platform.toml PLAT-MODEL-013, pending"
+
+[[assumption]]
+id = "AS-NTAI-4"
+statement = "No recorded session reaches this property: not one of the configurations naming the invariant is a `TraceSecurity*` row, so the trace axis reads 0 of 0."
+kind = "tool fidelity"
+discharger = "a TraceSecurity configuration checking this invariant over a recording that performs a changePIN, a stopUsingPinUvAuthToken and a panel PIN entry. formal/traces/security-phase4.jsonl is the recording that exists and performs none of the three. Recorded as an assumption rather than as a gap because the axis is DIRECT by design — a property does not inherit a session from a refinement property that replays one"
+expressible = "no — a fact about which configurations exist"
+registered = "yes — assurance/platform.toml PLAT-TRACE-002, pending"
+
+[[assumption]]
+id = "AS-NTAI-5"
+statement = "The `fuzz = 1` column is one FILE naming the invariant, not a fuzzing result: fuzz/fuzz_targets/fido_session.rs asserts one clause and the axis is a grep over the target directory."
+kind = "tool fidelity"
+discharger = "a recorded `cargo fuzz run fido_session` with its execution count and corpus size. The weekly deep-checks matrix runs the target and no verdict for it is recorded anywhere in this tree, which is why the column is transcribed here with its meaning attached rather than as a number"
+expressible = "no — a fact about how a derived column is computed"
+registered = "yes — assurance/platform.toml PLAT-TOOL-006, pending; proposed as PLAT-TOOL-005 and renumbered on merge, where the SEC-FIDO-002 bundle's tool-tcb row took that number beside PLAT-TOOL-003 and PLAT-TOOL-004"
+
+[[assumption]]
+id = "AS-NTAI-6"
+statement = "EF_MINPINLEN's floor (byte 0) and its RP-id disclosure list (bytes 2..) are outside RSKeySecurityState because neither can admit an operation; byte 1, forceChangePin, is inside it and is a gate on token ISSUANCE."
+kind = "model abstraction"
+discharger = "already argued and already registered — this row is the SLICE spelling of an entry that exists. assurance/platform.toml PLAT-MODEL-009 states it, names SEC-FIDO-003 in its `supports`, and carries NO `covers` at all: the near miss, the same shape PLAT-MEM-001 was for SEC-FIDO-007. Its own discharge route is a source audit of the EF_MINPINLEN read sites, re-run when one is added"
+expressible = "no for the floor and the list; YES for byte 1, which is the ForceChangeModelled constant PLAT-MODEL-010 discharges and ForceChange.cfg assigns TRUE"
+registered = "yes — assurance/platform.toml PLAT-MODEL-009, pending, whose `covers` gained `slice:AS-NTAI-6` on merge; the entry already supported this property and had no `covers` at all"
+
+[[assumption]]
+id = "AS-NTAI-7"
+statement = "Three of the citations carrying this property's model-to-code bridge name code the surrounding prose is not about, and scripts/citation_gate.py is green over all three."
+kind = "model fidelity"
+discharger = "re-point the three and re-lock, with the git evidence that makes each checkable: `state.rs:584-599` WAS exactly `stop_using_token` at `250be31` and the function is at `:547-562` now; the bare `clientpin.rs:300-304` WAS the §6.5.5.6-step-15 comment through `clear_ppuat(ctx.fs)` at `c9bdc5b` and that block is at `:305-309` now, which is what formal/README.md already writes for the same claim; and `seed.rs:323-324` was `r.map(|()| tok)` and `}` at `5e3abef`, the commit that introduced it, so it has never named clear_ppuat. The gate cannot be blamed for the third: it says in as many words that whether a citation still MEANS what the prose claims is a review question"
+expressible = "no — a fact about prose in two pages"
+registered = "yes — assurance/platform.toml PLAT-SOURCE-002, pending"
+
+[[assumption]]
+id = "AS-AUTH-2"
+statement = "The shipped image is built without --features always-uv, so gate.alwaysUv is a free state variable rather than the compiled default every reset restores."
+kind = "build configuration"
+discharger = "firmware/Cargo.toml's default feature set, and the firmware-always-uv matrix column. The arm arithmetic here is the opposite of SEC-FIDO-007's and worth stating: three of this property's four GREEN configurations set AlwaysUvShipped = TRUE, so the arm the image actually ships is carried by Shipped.cfg alone — and it is also the only one of the four with the shipped retry ladder"
+expressible = "yes"
+registered = "yes — assurance/assumptions.toml AlwaysUvShipped, and assurance/platform.toml PLAT-BUILD-001, which covers slice:AS-AUTH-2 and model:AlwaysUvShipped. The id is deliberately the one the two earlier bundles use: a fresh id for the same standing assumption is a candidate no entry claims"
+
+[[assumption]]
+id = "AS-AUTH-5"
+statement = "PermSets, five of the sixteen subsets, is the set a host can actually obtain."
+kind = "model fidelity"
+discharger = "PermWide.cfg runs the other arm — WidePerms = TRUE draws `ps` from SUBSET Perms and this invariant is among those checked, GREEN. It is load-bearing here in a way it is not for SEC-FIDO-001: `tok.perms # {}` is a TERM of the second conjunct, so the widening is over the invariant's own domain rather than beside it. The half no widening can reach is the same: `be`, `lbw` and `pcmr` are not elements of Perms at all, and that half is the 512-case sweep in crates/rsk-fido/src/clientpin_perms_tests.rs"
+expressible = "yes — WidePerms is a boolean constant assigned both ways, which is why this row can point at a run rather than at an argument"
+registered = "yes — assurance/platform.toml PLAT-MODEL-001, pending, which covers slice:AS-AUTH-5 and model:WidePerms. Its `supports` names SEC-FIDO-001 only, and this bundle proposes widening it"
+
+[[assumption]]
+id = "AS-AUTH-7"
+statement = "Kani/CBMC is sound for the harnesses' arithmetic and the pinned solver is the one that ran."
+kind = "tool TCB"
+discharger = "a pinned toolchain and a recorded tool hash. The first exists — cargo-kani 0.67.0 is pinned by three KANI_VERSION literals that scripts/kani_gate.py holds — and the second does not: the two verdicts this bundle quotes were produced by an install nothing in the tree hashes, from a solver bundle `cargo kani setup` fetched. The 442 and 1310 check counts are the shape of what CBMC was asked, and nothing here re-checks them"
+expressible = "no — a fact about a tool, not about the model"
+registered = "yes — assurance/platform.toml PLAT-TOOL-003, pending. Its `supports` does not yet name this property, which has two harnesses; the widening is proposed alongside this bundle"
+
+[[assumption]]
+id = "AS-RAM-7"
+statement = "TLC is sound for this model and the recorded run is the one that ran; seventeen of this property's eighteen mechanised verdicts are TLC's."
+kind = "tool TCB"
+discharger = "a pinned checker and a recorded artifact. tlaplus 1.7.4 IS pinned by flake.lock and the jar hash was re-derived here rather than transcribed, which is the half cargo-kani does not have. The residual is the one this bundle cannot close from inside: the twelve logs are copies of `formal/out/`, which the next run-tlc.sh overwrites, so the digests below are what makes them the run's own output rather than a retelling of it"
+expressible = "no — a fact about a tool, not about the model"
+registered = "yes — assurance/platform.toml PLAT-TOOL-004, pending. The id is SEC-FIDO-007's, deliberately: it is one premise and a second entry would be two answers about it"
+
+[[assumption]]
+id = "TCB-2"
+statement = "The HMAC-SHA-256 under pinproto is correct; the call-site harness replays one concrete MAC and says nothing about it as a MAC."
+kind = "crypto primitive"
+discharger = "rsk-crypto's own vectors, and the soft backends the RUSTFLAGS above force. It is load-bearing here in a way it is not for SEC-FIDO-001's walk rows: C2 asserts that the REPLAYED param still verifies, and that assertion is what turns C1's equality into a statement about `permissions` rather than about the MAC. If the MAC stopped verifying for a reason unrelated to the grant, C1 would pass while proving less than it claims — which is exactly what C2's own message says"
+expressible = "no — a fact about a primitive, not about the model"
+registered = "yes — assurance/platform.toml PLAT-CRYPTO-001, pending on rsk-crypto's own vectors"
+
+# ---- 8. Mutation verdicts ----------------------------------------------------
+
+# TEN rows and no `inverse` one, and that is a limit of this bundle rather than a
+# property of the tree: every verdict here is READ from a recorded run, and an
+# inverse kill is something you find by re-driving a mutant the other way, which
+# would have been a new run. What the direction column carries instead is the
+# reading of which conjunct fell and in which direction, taken from each log's
+# own final state.
+
+[[mutation]]
+level = "B"
+mutant = "BugTokenSurvivesPinChange — changePIN keeps the session token; §6.5.5.6 step 15 skipped, armed ALONE"
+invocation = "formal/run-tlc.sh Solo_BugTokenSurvivesPinChange.cfg"
+expected = "RED: NoTokenAfterInvalidation"
+verdict = "RED: NoTokenAfterInvalidation, 148 546 states, 23 052 distinct, depth 10, 2 s"
+fell = "the second conjunct, `~(plat.held /\\ plat.revoked /\\ tok.perms # {})`, at a state reached through SetPin, GetPinToken, ChangePin and ChangePinRotateToken"
+direction = "modelled"
+reading = "the final state is `plat.held /\\ plat.revoked /\\ tok.live /\\ tok.perms = {\"cm\"}`: the platform still holds a token the device has retired, and it still carries a permission. The inverse — a changePIN that retires MORE than it should — cannot fail this conjunct at all, because it can only shrink `tok.perms`, and the conjunct is a negation over a NON-EMPTY set."
+
+[[mutation]]
+level = "B"
+mutant = "BugStopUsingKeepsPerms — stopUsingPinUvAuthToken drops `in_use` and keeps the permission bits"
+invocation = "formal/run-tlc.sh Solo_BugStopUsingKeepsPerms.cfg"
+expected = "RED: NoTokenAfterInvalidation"
+verdict = "RED: NoTokenAfterInvalidation, 6019 states, 1659 distinct, depth 7, 1 s"
+fell = "the second conjunct, at the shallowest depth of the seven — five actions from the initial state"
+direction = "modelled"
+reading = "this is the defect the two Kani clauses were written for, and the log says why they had to be a pair: the final state has `tok.live = FALSE` and `tok.perms = {\"cm\"}`, so a guard that also tested `the token is in use` would have caught it and the two bare-shaped call sites do not have that conjunct. The kill is the permission bits surviving, not the token bytes moving — A4 is the clause that separates those and it is not the one that falls here."
+
+[[mutation]]
+level = "B"
+mutant = "BugWrongPinKeepsToken — the pre-E38 tree, where a PIN mismatch leaves the outstanding token alive"
+invocation = "formal/run-tlc.sh Solo_BugWrongPinKeepsToken.cfg"
+expected = "RED: NoTokenAfterInvalidation"
+verdict = "RED: NoTokenAfterInvalidation, 5920 states, 1619 distinct, depth 7, 1 s"
+fell = "the second conjunct, at a state reached by WrongPin rather than by a PIN write"
+direction = "modelled"
+reading = "the invalidator here is a FAILED authentication, which the registry statement does not list among its five and the model does. The direction is that a guess against the PIN leaves the previous holder's grant standing; the inverse, a mismatch that retires a token it should have left alone, is a conformance question and not this invariant's — it would show up as a refusal, and nothing in this conjunct quantifies over refusals."
+
+[[mutation]]
+level = "B"
+mutant = "BugLocalPinKeepsToken — E66, the trusted-display PIN pad no longer ends the host token"
+invocation = "formal/run-tlc.sh Solo_BugLocalPinKeepsToken.cfg"
+expected = "RED: NoTokenAfterInvalidation"
+verdict = "RED: NoTokenAfterInvalidation, 5886 states, 1619 distinct, depth 7, 1 s"
+fell = "the second conjunct, at a state reached by LocalPinWrong — the panel's own wrong-PIN arm"
+direction = "modelled"
+reading = "the fourth door, and the only one of the seven whose production owner is in another crate: crates/rsk-display/src/gates.rs:149 decides `ends_host_token` and its code twin patches it to `false`. The state count is one below BugWrongPinKeepsToken's on the same depth, which is what says the panel arm and the wire arm are two paths and not one — a single shared owner would have produced identical spaces."
+
+[[mutation]]
+level = "B"
+mutant = "BugChangePinKeepsPpuat — changePIN marks the persistent grant stale instead of deleting it"
+invocation = "formal/run-tlc.sh Solo_BugChangePinKeepsPpuat.cfg"
+expected = "RED: NoTokenAfterInvalidation"
+verdict = "RED: NoTokenAfterInvalidation, 19 655 states, 4472 distinct, depth 8, 1 s"
+fell = "the THIRD conjunct, `~(gate.ppuat /\\ gate.ppuatStale)`, at ChangePinClearPpuat"
+direction = "modelled"
+reading = "the whole content is that this is a different conjunct from the four above: `tok` is empty in the final state and `plat.held` is FALSE, so the second conjunct is satisfied and the kill is entirely the flash record. That is what makes `gate.ppuatStale` a term worth having even though no code path can set it — the mutant is the only thing that ever does, and AS-NTAI-1 is the row that says so."
+
+[[mutation]]
+level = "B"
+mutant = "BugPinWriteBeforeRevoke — the new verifier lands BEFORE the persistent grant is revoked, at both PIN flows"
+invocation = "formal/run-tlc.sh Solo_BugPinWriteBeforeRevoke.cfg"
+expected = "RED: NoTokenAfterInvalidation"
+verdict = "RED: NoTokenAfterInvalidation, 19 942 states, 4549 distinct, depth 8, 2 s"
+fell = "the FIRST conjunct — the ghost. `viol = {\"NoTokenAfterInvalidation\"}` in the final state, written by ChangePinWrite through `PinVerifierLandsPolicy == ~gate.ppuat`"
+direction = "modelled"
+reading = "the only row of the seven that falls on the step half, and the direction is visible in the state it stops at: `gate.ppuat` TRUE and `gate.ppuatStale` FALSE — a grant that is still live and still honoured while a PIN it does not belong to lands. Neither of the other two conjuncts is violated there, which is what says the ghost is not a duplicate of them. The inverse — revoking too early — leaves no bad state and writes no ghost, because the policy is a guard on the WRITE and not on the revoke."
+
+[[mutation]]
+level = "B"
+mutant = "BugSetPinKeepsPpuat — setPIN marks the grant stale instead of deleting it, armed ALONE"
+invocation = "formal/run-tlc.sh Solo_BugSetPinKeepsPpuat.cfg"
+expected = "RED: NoTokenAfterInvalidation"
+verdict = "RED: NoTokenAfterInvalidation, 5 521 139 states, 599 634 distinct, depth 15, 12 s"
+fell = "the third conjunct, at SetPinClearPpuat — and only after a fifteen-state path"
+direction = "modelled"
+reading = "the depth is the reading. Reaching it needs a PIN to be set, a grant minted, a reset started, confirmed, swept through ResetSweepSecrets twice and ResetSweepGates, then ABORTED, and only then a second setPIN — because on a tree where the sweep completes there is no PIN to set over. So the state this switch reaches is the torn-reset leftover the production comment at clientpin.rs:217-219 names, and its 599 634 distinct states are two orders above every other row here."
+
+[[mutation]]
+level = "B"
+mutant = "the same switch against the whole invariant set, with this property's name listed FIRST"
+invocation = "formal/run-tlc.sh Mut_BugSetPinKeepsPpuat.cfg"
+expected = "RED, and on this property's name — the INVARIANTS block puts it first"
+verdict = "RED: NoAccessibleSecretWithoutGate, 1 700 134 states, 203 559 distinct, depth 13, 4 s"
+fell = "a SIBLING's name, at depth 13 against this property's depth 15 in the Solo row"
+direction = "modelled"
+reading = "and the received explanation does not hold here. formal/gen-configs.sh:185-187 puts the target invariant first and Mut_BugSetPinKeepsPpuat.cfg:52 duly lists NoTokenAfterInvalidation ahead of the other five, so list order is NOT what decided this — BFS depth is. The two counterexamples share their first 13 states (`State 13` is `ResetAborts` in both logs) and the sibling's fires there while this one needs two more steps, so TLC stops at the neighbour. A credit rule keyed on the mutant's own configuration therefore misses this property under its own switch, whatever the ordering, and only the invariant-named Solo row observes it."
+
+[[mutation]]
+level = "code"
+mutant = "the six code twins: the same defects patched into production Rust across two crates"
+invocation = "python3 scripts/comutate.py run <bug>, for BugTokenSurvivesPinChange, BugStopUsingKeepsPerms, BugWrongPinKeepsToken, BugChangePinKeepsPpuat, BugPinWriteBeforeRevoke and BugLocalPinKeepsToken"
+expected = "killed by the tree's own suite — `cargo test -p rsk-fido` for five, `cargo test -p rsk-display` for the sixth"
+verdict = "six of six recorded `expect = \"killed\"` in formal/comutants.toml, whose status vocabulary (:20-22) defines that field as the MEASURED verdict and a killed-becoming-gap as a regression"
+fell = "not re-driven here, and the field this bundle can honestly fill is the file's own record rather than a test name — SEC-FIDO-007 took the test name by applying its single patch by hand, and six patches over two crates was a cost this bundle did not spend"
+direction = "modelled"
+reading = "BugChangePinKeepsPpuat is the one worth reading, because its note records a measurement made in the wrong direction first: the initial patch removed only change_pin's outer `clear_ppuat` and every test stayed green, because the inner revoke in write_pin_verifier held. Two layers had to go before the code reproduced what the model calls one defect — so a single-layer mutant here is a mutant that measures a redundancy rather than a defence."
+
+[[mutation]]
+level = "code"
+mutant = "BugSetPinKeepsPpuat as a CODE twin — the seventh switch, and the one that could not be made"
+invocation = "formal/comutants.toml [comutant.BugSetPinKeepsPpuat], `status = \"unreachable\"`"
+expected = "a patch reproducing `setPIN keeps the grant` and nothing else"
+verdict = "no such patch exists, measured: deleting set_pin's own `clear_ppuat` (clientpin.rs:220) leaves all 668 rsk-fido tests green over three runs, and deleting write_pin_verifier's is red at once on `every_ef_pin_verifier_write_revokes_the_persistent_token` and `local_pin_change_revokes_the_persistent_token`"
+fell = "nothing, on the redundant site — which IS the result. The green suite over a deleted `clear_ppuat` is the measurement, and the red one over the chokepoint is what says the property is enforced there instead"
+direction = "modelled"
+reading = "this row is why `mut = 7` and `co = 6`, and it is a finding about the CODE rather than a hole in the evidence: the site changePIN and the panel share has no per-caller mutant, so a defect scoped to setPIN alone cannot be built. The entry's own history is the warning it carries — it was written as a MODEL measurement first, after its sibling BugBackupSealedNotAGate was caught carrying a model result in a code field, and the code half turned out to be a different answer."
+
+# ---- 9. Timestamp, freshness and revalidation inputs -------------------------
+
+[freshness]
+measured = "2026-08-30, Europe/Moscow"
+expires_on_prover_bump = "tlaplus 1.7.4 or its jar hash — seventeen of the eighteen mechanised verdicts here are TLC's; and cargo-kani 0.67.0, whose version is pinned but whose solver bundle is unhashed, for the other two"
+expires_on_toolchain_bump = "rustc/cargo 1.96.0 — the two co-refutation slices and, through MIR, both Kani verdicts"
+expires_on_stepping = "nothing here is a hardware result and `property.subjects_absent` says so; no method row is a `measurement`, so this bundle declares no board and records no revision"
+expires_on_owner_change = "any file in property.owners_tagged, property.owners_untagged or property.owners_co_refuted — and clientpin.rs:836 write_pin_verifier in particular, which is the untagged chokepoint AS-NTAI-2 is about"
+expires_on_model_change = "RSKeySecurityState's TokenBypass, SetPinClearPpuat, SetPinWrite, ChangePinClearPpuat, ChangePinWrite, StopUsingToken, WrongPin, LocalPinWrong or CmBeginViaPpuat — the nine actions that write the three conjuncts"
+expires_on_feature_change = "the default feature set of firmware/Cargo.toml, or the `kani-soft` feature the two harnesses are built with"
+expires_on_schema_change = "assurance/properties.toml's field set, formal/comutants.toml's status vocabulary, or formal/gen-configs.sh's SOLO block — the last because the whole non-degeneracy argument rests on a Solo_ configuration checking one invariant"
+# AND IT IS ALREADY STALE BY ONE, measured rather than waited for.
+recorded_stale = "`scripts/evidence_gate.py` reads 52 inputs for this property and reports `31c21a7 stale (1 input(s) newer)`. The one input is `formal/PermWideMut_BugStopUsingKeepsPerms.cfg`, a sibling slice's configuration that is UNTRACKED in the working tree — and `freshness` puts a never-committed input in `behind` outright, because no commit can be its ancestor. So this bundle is stale against a file that no history contains, which is the axis behaving correctly and reading strangely; it settles the moment that configuration is committed or removed. Recorded here because a bundle whose own freshness verdict is a surprise is a bundle that should say why"
+
+# ---- 10. Measured costs ------------------------------------------------------
+
+# THE HONEST SHAPE OF A BUNDLE WITH NO NEW RUNS. `runner_seconds` is real in
+# every artifact row — run-tlc.sh's own timer, transcribed from
+# `formal/runs.toml`'s matrix. `peak_memory_mb` is NOT a measurement anywhere in
+# this file: run-tlc.sh records no RSS, this bundle ran no TLC, and the one
+# figure available is a sibling bundle's `/usr/bin/time -l` peak over the same
+# configuration under the same invocation. It is presented as a bound, and it
+# says so in every row.
+
+# THE HUMAN COLUMN IS A RECONSTRUCTION, AND ITS AGGREGATE DOES NOT FIT THE
+# WINDOW IT IS DATED IN. The fourteen rows below total 278 human_minutes, and
+# the six bundles this one arrived with total 1709 — 28.5 hours, every one of
+# them stamped `freshness.measured = 2026-08-30` inside a window that runs from
+# `31c21a7` (2026-08-30 22:03:52 +0300) to `b185fc3` (2026-08-31 01:24:37),
+# which is 3 h 21 min. NO TIMER PRODUCED ANY OF THEM: they are attended time
+# reconstructed after the fact, and every `basis` below says so in its own row
+# rather than leaving a reader to find this paragraph. They are kept because
+# they are the only cost signal the programme has, not because they are
+# measurements.
+#
+# AND THE SHIPPED BOUND IS NOT THE ONE `SEC-FIDO-002` CARRIES over a
+# byte-identical artifact — `317703de…`, the same log in six directories. 2940
+# MiB is a `/usr/bin/time -l` SAMPLE of a DIFFERENT run — the log at
+# `assurance/bundle/logs/SEC-FIDO-007/tlc-Shipped.log` has its own sha256, its
+# own seed and its own closing line, so the figure bounds THAT process and is
+# carried across to this one. `SEC-FIDO-002` bounds the same log with 3705
+# instead — the JVM ceiling the banner states, derived from the artifact rather
+# than transferred to it, and the larger of the two. Neither is this run's RSS.
+# The unit is MiB, which is checkable: the sibling writes the same sample as
+# 3083 at `assurance/bundle/SEC-FIDO-007.toml:572`, and that is 2940 MiB in
+# decimal MB.
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-003/tlc-Shipped.log"
+human_minutes = 5
+runner_seconds = 1913
+peak_memory_mb = 2940
+basis = "runner is run-tlc.sh's own timer as `formal/runs.toml` recorded it; TLC's own line reads 31min 52s, which is the difference JVM startup makes. peak is NOT measured here — it is the figure assurance/bundle/SEC-FIDO-007.toml:523 took with /usr/bin/time -l over this same configuration and invocation — 2940 MiB, which is 3 082 813 440 B — and it BOUNDS every process in this bundle because Shipped.cfg is the largest of the twelve state spaces and all twelve ran under one -Xmx4g cap. human is attended time — RECONSTRUCTED after the fact, not measured — reading the log against the invariant list"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-003/tlc-AlwaysUv.log"
+human_minutes = 3
+runner_seconds = 519
+peak_memory_mb = 2940
+basis = "runner from run-tlc.sh's timer. peak is the Shipped bound in MiB above and not a measurement of this run; the true figure for this row is smaller and unrecorded. human is attended time — RECONSTRUCTED after the fact, not measured — over the reduced-ladder question"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-003/tlc-PermWide.log"
+human_minutes = 8
+runner_seconds = 553
+peak_memory_mb = 2940
+basis = "runner from run-tlc.sh's timer; peak is the Shipped bound in MiB. human is RECONSTRUCTED attended time, never measured, and is the largest of the four GREEN rows because it carries the argument that this row is worth more to this property than to SEC-FIDO-001 — reading `tok.perms # {}` against PermSets and against the RPs = 1 cost that comes with it"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-003/tlc-ForceChange.log"
+human_minutes = 4
+runner_seconds = 177
+peak_memory_mb = 2940
+basis = "runner from run-tlc.sh's timer; peak is the Shipped bound in MiB. human is attended time — RECONSTRUCTED after the fact, not measured — over PLAT-MODEL-009 and PLAT-MODEL-010, which is where AS-NTAI-6 came from"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-003/tlc-Solo_BugTokenSurvivesPinChange.log"
+human_minutes = 6
+runner_seconds = 2
+peak_memory_mb = 2940
+basis = "runner from run-tlc.sh's timer; peak is the Shipped bound in MiB, which is generous here by three orders and is still the only figure this bundle has. human is attended time — RECONSTRUCTED after the fact, not measured — reading the ten-state trace and mapping its final state onto the second conjunct"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-003/tlc-Solo_BugStopUsingKeepsPerms.log"
+human_minutes = 9
+runner_seconds = 1
+peak_memory_mb = 2940
+basis = "runner from run-tlc.sh's timer; peak is the Shipped bound in MiB. human is attended time — RECONSTRUCTED after the fact, not measured — tying this counterexample to the two Kani clauses A2/A3 and to credmgmt_kani.rs's C1/C2, which is the one place in this bundle where the model kill and the proof are about the same line of Rust"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-003/tlc-Solo_BugWrongPinKeepsToken.log"
+human_minutes = 3
+runner_seconds = 1
+peak_memory_mb = 2940
+basis = "runner from run-tlc.sh's timer; peak is the Shipped bound in MiB. human is attended time, RECONSTRUCTED and not measured, and the row's own finding — that its invalidator is not among the five the registry statement lists — came out of it"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-003/tlc-Solo_BugLocalPinKeepsToken.log"
+human_minutes = 10
+runner_seconds = 1
+peak_memory_mb = 2940
+basis = "runner from run-tlc.sh's timer; peak is the Shipped bound in MiB. human is attended time — RECONSTRUCTED after the fact, not measured — over crates/rsk-display/src/gates.rs — the fourth door, the only co-refutation site outside rsk-fido, and the one untagged owner whose tagging would actually move the derived column"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-003/tlc-Solo_BugChangePinKeepsPpuat.log"
+human_minutes = 5
+runner_seconds = 1
+peak_memory_mb = 2940
+basis = "runner from run-tlc.sh's timer; peak is the Shipped bound in MiB. human is attended time — RECONSTRUCTED after the fact, not measured — establishing that this row falls on the third conjunct with the second satisfied, which is what AS-NTAI-1 rests on"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-003/tlc-Solo_BugPinWriteBeforeRevoke.log"
+human_minutes = 13
+runner_seconds = 2
+peak_memory_mb = 2940
+basis = "runner from run-tlc.sh's timer; peak is the Shipped bound in MiB. human is RECONSTRUCTED attended time, never measured, and is the largest per-artifact figure here: this is the row that falls on the ghost, and following the ghost back to its production owner is what found the untagged write_pin_verifier and, from its citation, two of the three rotted references"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-003/tlc-Solo_BugSetPinKeepsPpuat.log"
+human_minutes = 12
+runner_seconds = 12
+peak_memory_mb = 2940
+basis = "runner from run-tlc.sh's timer; TLC's own line reads 11s. peak is the Shipped bound in MiB. human is attended time — RECONSTRUCTED after the fact, not measured — over the fifteen-state path and over the comutants entry that explains why this switch has no code twin"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-003/tlc-Mut_BugSetPinKeepsPpuat.log"
+human_minutes = 9
+runner_seconds = 4
+peak_memory_mb = 2940
+basis = "runner from run-tlc.sh's timer; peak is the Shipped bound in MiB. human is attended time — RECONSTRUCTED after the fact, not measured — on the attribution question, and it was spent twice: the first reading repeated SEC-FIDO-007's explanation, and opening the generated INVARIANTS block refuted it"
+
+[[cost]]
+artifact = "the analytical half — groups 1, 3 and 7, plus reading the two Kani harnesses, the requirement clause and the threat clause, which produced no run of their own"
+human_minutes = 165
+runner_seconds = 0
+peak_memory_mb = 0
+basis = "the human figure is attended time over this session rather than an earlier one, and it is RECONSTRUCTED rather than measured: the three conjuncts and their owners, the six tags against the four untagged sites, the eighteen citations opened by hand with `git show` behind the three that are wrong, and the twelve assumption rows. It is the largest single figure in this bundle, which is the calibration answer the brief asked for — on the best-supported row of the registry, the reading is still most of the cost. The zeros are honest: no process ran"
+
+[[cost]]
+artifact = "deriving the five gate lines live, validating this file against bundle_gate, and writing the platform-registry proposal the seven new assumption ids need"
+human_minutes = 26
+runner_seconds = 7
+peak_memory_mb = 2940
+basis = "runner is one timed pass of assurance_gate, citation_gate, threat_gate, matrix_gate and assumption_gate together, and it is a LOWER BOUND on the session's total — the individual invocations were not timed and that is not recoverable. peak is the Shipped bound in MiB again, for the same reason it is everywhere else in this file. human is attended time — RECONSTRUCTED after the fact, not measured — over the six new platform.toml entries and the one `covers` extension, none of which this bundle is allowed to merge"

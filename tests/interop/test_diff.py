@@ -8,6 +8,8 @@ Exercises the allow-list classification (`divergences`), the snapshot compare
 
     nix develop -c python -m pytest tests/interop/test_diff.py -q
 """
+import pytest
+
 import divergences as dv
 import diff
 import normalize as nz
@@ -73,9 +75,29 @@ def test_extensions_superset_ok_when_rsk_richer():
     assert r["bucket"] == dv.ALLOWED
 
 
-def test_transports_usb_only_is_allowed():
-    r = dv.classify("fido.getinfo.transports", ["nfc", "usb"], ["usb"])
+def test_only_the_radio_separates_the_transport_lists():
+    r = dv.classify(
+        "fido.getinfo.transports",
+        ["nfc", "usb", "smart-card"],
+        ["usb", "smart-card"],
+    )
     assert r["bucket"] == dv.ALLOWED
+
+
+def test_dropping_smart_card_from_the_transports_violates_the_rule():
+    """The rule has to notice the list it is about: `usb` alone was ALLOWED under
+    the old pin, and it is what getInfo said while the FIDO AID answered on CCID."""
+    r = dv.classify("fido.getinfo.transports", ["nfc", "usb", "smart-card"], ["usb"])
+    assert r["bucket"] == dv.RULE_VIOLATION
+
+
+def test_vendor_prototype_ids_are_allowed_only_as_an_empty_list():
+    """Issue #111: a 64-bit id in getInfo fails Yubico's Android SDK outright, so the
+    pin has to refuse the seven ids RS-Key used to list, not just any difference."""
+    key = "fido.getinfo.vendorPrototypeConfigCommands"
+    assert dv.classify(key, None, [])["bucket"] == dv.ALLOWED
+    listed = [0x03E43F56B34285E2, 0x1831A40F04A25ED9]
+    assert dv.classify(key, None, listed)["bucket"] == dv.RULE_VIOLATION
 
 
 def test_certifications_absent_on_rsk_is_allowed():
@@ -85,10 +107,60 @@ def test_certifications_absent_on_rsk_is_allowed():
     assert top["bucket"] == dv.ALLOWED
 
 
+# The labels the capture's tools print, ykman 5.9.1's (`ykman/piv.py`, `_cli/oath.py`,
+# `openpgp.py`) and gpg-card 2.5's `Card firmware`, turned into paths by `kv_lines`: the
+# rules are held to the paths the capture really produces.
+TOOL_VERSION_LINES = [("piv", "PIV version: {}"), ("oath", "OATH version: {}"),
+                      ("openpgp", "Application version: {}"),
+                      ("openpgp.gpg", "Card firmware ....: {}")]
+
+
+@pytest.mark.parametrize("ns, line", TOOL_VERSION_LINES)
+def test_a_firmware_version_skew_on_a_tool_surface_is_allowed(ns, line):
+    """RS-Key reports FW_VERSION there; a reference on other firmware, or a
+    `FW_VERSION=X.Y.Z` build, differs without being a fidelity gap."""
+    [(path, real)] = nz.kv_lines(line.format("5.8.0"), ns).items()
+    [(_, rsk)] = nz.kv_lines(line.format("5.8.1"), ns).items()
+    assert dv.classify(path, real, rsk)["bucket"] == dv.ALLOWED
+
+
+@pytest.mark.parametrize("path, real, rsk", [
+    ("mgmt.version", "5.8.0", "5.8.1"),
+    ("fido.getinfo.firmwareVersion", 0x050800, 0x050801),
+])
+def test_a_firmware_version_skew_on_a_raw_surface_is_allowed(path, real, rsk):
+    assert dv.classify(path, real, rsk)["bucket"] == dv.ALLOWED
+
+
+# Every surface RS-Key reports FW_VERSION on, with a well-formed reference value.
+VERSION_SURFACES = [
+    ("fido.getinfo.firmwareVersion", 0x050800),
+    ("mgmt.version", "5.8.0"),
+    ("piv.piv_version", "5.8.0"),
+    ("oath.oath_version", "5.8.0"),
+    ("openpgp.application_version", "5.8.0"),
+    ("openpgp.gpg.card_firmware", "5.8.0"),
+]
+
+
+@pytest.mark.parametrize("path, real", VERSION_SURFACES)
+def test_a_firmware_version_missing_on_one_side_violates_the_rule(path, real):
+    """The value may skew, the field may not vanish: a surface that stops reporting a
+    version has regressed, and a `Tolerance` would have filed that as ALLOWED."""
+    assert dv.classify(path, real, dv.MISSING)["bucket"] == dv.RULE_VIOLATION
+
+
+@pytest.mark.parametrize("path, real", VERSION_SURFACES)
+def test_a_value_that_is_not_a_version_violates_the_rule(path, real):
+    """The shape is the whole pin, so its anchors matter: pico-openpgp's two-part `4.6`,
+    which the old rule wanted on the RS-Key side, is not a firmware version."""
+    assert dv.classify(path, real, "4.6")["bucket"] == dv.RULE_VIOLATION
+
+
 # ── diff.compare over synthetic snapshots ────────────────────────────────────
 
 def _snap(label, parsed):
-    return {"meta": {"label": label, "ykman_serial": label, "fw": "5.7.4"},
+    return {"meta": {"label": label, "ykman_serial": label, "fw": "5.8.0"},
             "cells": {"c": {"parsed": parsed}}}
 
 
@@ -139,7 +211,7 @@ def test_fido_getinfo_cbor_normalizes_key_fields():
         0x04: {"rk": True, "alwaysUv": True, "clientPin": True},
         0x05: 7609,
         0x0A: [{"alg": -7, "type": "public-key"}, {"alg": -8, "type": "public-key"}],
-        0x0E: 0x050704,
+        0x0E: 0x050800,
     }
     out = nz.fido_getinfo(cbor)
     assert out["fido.getinfo.aaguid"] == "2479c7bf-6b30-5683-9ec8-0e8171a918b7"
@@ -150,16 +222,16 @@ def test_fido_getinfo_cbor_normalizes_key_fields():
 
 
 def test_mgmt_deviceinfo_tlv():
-    # total-len byte, then TLVs: usbSupported=0x023b, serial=12345678, formFactor=1, version=5.7.4
+    # total-len byte, then TLVs: usbSupported=0x023b, serial=12345678, formFactor=1, version=5.8.0
     serial = (12345678).to_bytes(4, "big")
     body = (bytes([0x01, 0x02, 0x02, 0x3B]) + bytes([0x02, 0x04]) + serial
-            + bytes([0x04, 0x01, 0x01]) + bytes([0x05, 0x03, 5, 7, 4]))
+            + bytes([0x04, 0x01, 0x01]) + bytes([0x05, 0x03, 5, 8, 0]))
     blob = bytes([len(body)]) + body
     out = nz.mgmt_deviceinfo(blob)
     assert out["mgmt.usbSupported"] == 0x023B
     assert out["mgmt.serial"] == 12345678
     assert out["mgmt.formFactor"] == 1
-    assert out["mgmt.version"] == "5.7.4"
+    assert out["mgmt.version"] == "5.8.0"
 
 
 def test_kv_lines_scrapes_prose():

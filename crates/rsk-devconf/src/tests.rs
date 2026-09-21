@@ -544,3 +544,106 @@ fn the_widest_record_the_validator_accepts_is_stored_and_echoed_whole() {
         i += 2 + len;
     }
 }
+
+/// `read_enabled_caps` IS the applet gate: every bit it returns makes the matching
+/// applet selectable. Its unreadable arm resolved to `SUPPORTED_CAPS` — the
+/// all-enabled mask — so one faulted probe re-enabled every application the owner
+/// had disabled, for as long as the cached mask lived. That is the exact harm the
+/// note under the match says the walk is deliberately ungated to prevent.
+#[test]
+fn a_faulted_dev_conf_probe_does_not_re_enable_disabled_applets() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    // The owner's config: FIDO2 only — U2F, OTP, OpenPGP, PIV and OATH off.
+    persist_dev_conf(&mut fs, &[TAG_USB_ENABLED, 2, 0x02, 0x00]).unwrap();
+    assert_eq!(read_enabled_caps(&mut fs), CAP_FIDO2);
+
+    medium.stick_once(EF_DEV_CONF);
+    let got = read_enabled_caps(&mut fs);
+    assert_eq!(
+        got & !CAP_FIDO2,
+        0,
+        "a faulted probe re-enabled {:#06x}",
+        got & !CAP_FIDO2
+    );
+    assert_eq!(
+        got, NO_CAPS,
+        "a mask it could not read must gate everything off"
+    );
+    // …everything the mask gates. The always-available applets are the way back.
+    assert!(
+        cap_enabled(got, 0),
+        "management/vendor/rescue stay selectable"
+    );
+}
+
+/// A DeviceConfig write is a DELTA — `ykman` sends the one field it is changing —
+/// so the writer merges onto the stored record. The merge's own probe collapsed a
+/// failed read into "nothing stored", which turns that delta into a REPLACEMENT
+/// and discards every other field the owner had written.
+#[test]
+fn a_faulted_dev_conf_probe_does_not_replace_the_owners_record() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    persist_dev_conf(
+        &mut fs,
+        &[
+            TAG_USB_ENABLED,
+            2,
+            0x02,
+            0x00,
+            TAG_AUTO_EJECT_TIMEOUT,
+            2,
+            0x00,
+            0x1E,
+            TAG_CHALRESP_TIMEOUT,
+            1,
+            0x0F,
+        ],
+    )
+    .unwrap();
+    let before = medium.value(EF_DEV_CONF).expect("record written");
+    assert_eq!(before.len(), 11);
+
+    // `ykman config usb --enable OATH`: the one tag it changes, nothing else.
+    medium.stick_once(EF_DEV_CONF);
+    let r = persist_dev_conf(&mut fs, &[TAG_USB_ENABLED, 2, 0x02, 0x20]);
+    assert_eq!(
+        medium.value(EF_DEV_CONF).as_deref(),
+        Some(&before[..]),
+        "a faulted probe replaced the owner's record instead of merging onto it"
+    );
+    assert_eq!(
+        r,
+        Err(DevConfError::Store),
+        "a write that could not read the record it merges onto must refuse"
+    );
+}
+
+/// READ CONFIG must never report a capability set the dispatcher is not enforcing:
+/// that divergence is what run-34 #25 was. The synthesised arm takes its
+/// `USB_ENABLED` from `read_enabled_caps`, so the two move together — including
+/// under a persistent read fault, where both are `NO_CAPS`.
+#[test]
+fn a_faulted_probe_reports_the_mask_it_enforces() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    persist_dev_conf(&mut fs, &[TAG_USB_ENABLED, 2, 0x02, 0x00]).unwrap();
+
+    medium.stick(Some(EF_DEV_CONF));
+    let mut body = [0u8; MIN_CONFIG_RES_CAP];
+    let mut res = ResBuf::new(&mut body);
+    assert_eq!(config_tlv(&[0; 4], &mut fs, &mut res), Sw::OK);
+    let reported = tlv_get(&res.as_slice()[1..], TAG_USB_ENABLED).expect("USB_ENABLED");
+    let enforced = read_enabled_caps(&mut fs);
+    medium.stick(None);
+    assert_eq!(
+        u16::from_be_bytes([reported[0], reported[1]]),
+        enforced,
+        "READ CONFIG reported a capability set the dispatcher does not enforce"
+    );
+    assert_eq!(enforced, NO_CAPS);
+}

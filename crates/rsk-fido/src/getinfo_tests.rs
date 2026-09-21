@@ -79,11 +79,6 @@ fn algorithms_advertisement_policy() {
 #[test]
 #[cfg(not(feature = "largeblob-ext"))]
 fn get_info_fields() {
-    use crate::consts::{
-        CONFIG_AUT_DISABLE, CONFIG_AUT_ENABLE, CONFIG_EA_RPIDS, CONFIG_PHY_LED_BRIGHTNESS,
-        CONFIG_PHY_LED_GPIO, CONFIG_PHY_OPTIONS, CONFIG_PHY_VIDPID,
-    };
-
     let mut buf = [0u8; 1024];
     let n = get_info(
         true, 4, false, false, false, false, 200, None, None, &mut buf,
@@ -169,10 +164,11 @@ fn get_info_fields() {
     assert_eq!(d.u8().unwrap(), 0x08);
     assert_eq!(d.u64().unwrap(), MAX_CRED_ID_LENGTH);
 
-    // 0x09 transports ["usb"]
+    // 0x09 transports ["usb", "smart-card"] — the FIDO AID is routed onto CCID too
     assert_eq!(d.u8().unwrap(), 0x09);
-    assert_eq!(d.array().unwrap().unwrap(), 1);
+    assert_eq!(d.array().unwrap().unwrap(), 2);
     assert_eq!(d.str().unwrap(), "usb");
+    assert_eq!(d.str().unwrap(), "smart-card");
 
     // 0x0A algorithms: [{alg, type:"public-key"} …] — the NIST ECDSA curves,
     // then EdDSA (-8) unless `fido-conformance` suppresses it; `advertise-pqc`
@@ -230,24 +226,10 @@ fn get_info_fields() {
     assert_eq!(d.u8().unwrap(), 0x14);
     assert_eq!(d.u16().unwrap(), 200);
 
-    // 0x15 vendorPrototypeConfigCommands — the ids `config.rs` dispatches. §6.11.3
-    // ties this member to the 0xFF entry in 0x1F below: neither may appear alone.
+    // 0x15 vendorPrototypeConfigCommands — present and empty. §6.11.3 ties this
+    // member to the 0xFF entry in 0x1F below: neither may appear alone.
     assert_eq!(d.u8().unwrap(), 0x15);
-    assert_eq!(d.array().unwrap().unwrap(), 7);
-    assert_eq!(
-        (0..7)
-            .map(|_| d.u64().unwrap())
-            .collect::<std::vec::Vec<_>>(),
-        std::vec![
-            CONFIG_AUT_ENABLE,
-            CONFIG_AUT_DISABLE,
-            CONFIG_PHY_VIDPID,
-            CONFIG_PHY_LED_BRIGHTNESS,
-            CONFIG_PHY_LED_GPIO,
-            CONFIG_PHY_OPTIONS,
-            CONFIG_EA_RPIDS,
-        ]
-    );
+    assert_eq!(d.array().unwrap().unwrap(), 0);
 
     // 0x16 attestationFormats: only ["packed"] — every credential carries basic
     // attestation with the device x5c.
@@ -262,8 +244,9 @@ fn get_info_fields() {
     // 0x1A transportsForReset — a 2-byte key (26 > 23), so it sorts after every
     // 1-byte key and before 0x1D.
     assert_eq!(d.u8().unwrap(), 0x1A);
-    assert_eq!(d.array().unwrap().unwrap(), 1);
+    assert_eq!(d.array().unwrap().unwrap(), 2);
     assert_eq!(d.str().unwrap(), "usb");
+    assert_eq!(d.str().unwrap(), "smart-card");
 
     // 0x1B pinComplexityPolicy — false unless a build refuses a trivial PIN. Read
     // from the features rather than from the const the encoder uses, so the two
@@ -314,13 +297,17 @@ fn str_member(key: u32) -> std::vec::Vec<std::string::String> {
 /// const feeds it and `transports` (0x09): the literal below pins the value, the
 /// equality catches the two drifting apart. The spec's "no duplicates, not empty"
 /// needs no assertion of its own — either would change the list the literal pins.
+///
+/// `smart-card` is in it because the FIDO AID IS routed onto CCID: the same
+/// `process_cbor` serves both transports, so a reset driven over PC/SC is accepted
+/// and a platform trusting a usb-only list would never offer it.
 #[test]
 fn transports_for_reset_matches_transports() {
     let reset = str_member(0x1A);
     assert_eq!(
         reset,
-        std::vec!["usb"],
-        "USB-HID is the only FIDO transport"
+        std::vec!["usb", "smart-card"],
+        "the FIDO applet answers on USB-HID and on the device's own PC/SC interface"
     );
     assert_eq!(
         reset,
@@ -706,4 +693,71 @@ fn enc_cred_store_state_is_conditional_and_sorts_between_its_neighbours() {
         0x1F,
         "0x1E sorts before authenticatorConfigCommands"
     );
+}
+
+/// Issue #111: Yubico's Android SDK decodes getInfo with a CBOR subset — heads up to
+/// four bytes and below 2³¹, no tags, simple values 20..=23 — and one member outside
+/// it fails the whole response. Walked structurally, with every optional member on.
+#[test]
+fn getinfo_stays_inside_the_cbor_subset_yubikit_decodes() {
+    fn walk(b: &[u8], at: &mut usize, path: &str) {
+        let (major, info) = (b[*at] >> 5, b[*at] & 0x1F);
+        *at += 1;
+        assert_ne!(major, 6, "{path}: a tag");
+        if major == 7 {
+            assert!((20..=23).contains(&info), "{path}: simple value {info}");
+            return;
+        }
+        let width = match info {
+            0..=23 => 0,
+            24 => 1,
+            25 => 2,
+            26 => 4,
+            _ => panic!("{path}: additional info {info}, an 8-byte or indefinite head"),
+        };
+        let arg = b[*at..*at + width]
+            .iter()
+            .fold(u64::from(if width == 0 { info } else { 0 }), |v, &x| {
+                v << 8 | u64::from(x)
+            });
+        *at += width;
+        assert!(arg < 1 << 31, "{path}: {arg:#x} needs more than 31 bits");
+        match major {
+            2 | 3 => *at += arg as usize,
+            4 => (0..arg).for_each(|i| walk(b, at, &std::format!("{path}[{i}]"))),
+            5 => {
+                for i in 0..arg {
+                    let key = match b[*at] {
+                        k @ 0..=0x17 => std::format!("{path}.{k:#04x}"),
+                        0x18 => std::format!("{path}.{:#04x}", b[*at + 1]),
+                        _ => std::format!("{path}.{{{i}}}"),
+                    };
+                    walk(b, at, &std::format!("{key} key"));
+                    walk(b, at, &key);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let blob = [0x5Au8; ENC_GETINFO_MEMBER_LEN];
+    for (pin_set, always_uv, builtin_uv) in [(false, false, false), (true, true, true)] {
+        let mut buf = [0u8; 1024];
+        let n = get_info(
+            pin_set,
+            63,
+            true,
+            true,
+            always_uv,
+            builtin_uv,
+            u16::MAX,
+            Some(&blob),
+            Some(&blob),
+            &mut buf,
+        )
+        .unwrap();
+        let mut at = 0;
+        walk(&buf[..n], &mut at, "getInfo");
+        assert_eq!(at, n, "trailing bytes after the map");
+    }
 }

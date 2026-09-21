@@ -188,6 +188,52 @@ def read_by_an_action(name: str, tla: Path) -> bool:
     return False
 
 
+#: `IF <constant> THEN <a> ELSE <b>`, the form a SCOPE constant is read in. The
+#: rule below is only about this shape and says so: a constant read as a plain
+#: value (`gate.alwaysUv = AlwaysUvShipped`) has no branches to compare, and
+#: pretending otherwise would redden a correct row.
+BRANCHED = "IF %s"
+#: Where a definition stops: the next one, or a blank line. Enough for the shape
+#: this rule is about and no more — see [`identical_arms`].
+DEF_END = re.compile(r"\n\s*\n|\n[A-Za-z_]\w*\s*==")
+
+
+def identical_arms(name: str, tla: Path) -> bool:
+    """Whether the constant heads an `IF` whose two branches are the same text.
+
+    The defect this is for shipped in this tree once and had to be deleted by
+    hand: `fc7491a` — "the tear arm was its sibling character for character, so
+    it modelled nothing new". `read_by_an_action` above answers "is it read",
+    which an inert arm satisfies; this answers "does reading it change
+    anything".
+
+    Read off the module TEXT with comments stripped, not off `definitions()`:
+    that map holds the names a definition references, not its body, and the
+    first version of this rule searched a body it never had. It was green over
+    its own mutation until that was driven.
+
+    What it does NOT catch, measured the same way: the two branches SWAPPED. The
+    arms are then different text and every gate stays green, so an inverted
+    scope constant is caught by nothing but a reader of the wall clock.
+    """
+    lines, depth = [], 0
+    for line in tla.read_text(encoding="utf-8").splitlines():
+        stripped, depth = strip_comments(line, depth)
+        lines.append(stripped)
+    text = "\n".join(lines)
+    head = BRANCHED % name
+    start = text.find(head)
+    while start != -1:
+        stop = DEF_END.search(text, start)
+        chunk = text[start : stop.start() if stop else len(text)]
+        if "THEN" in chunk and "ELSE" in chunk:
+            branches = chunk.split("THEN", 1)[1].split("ELSE", 1)
+            if len(branches) == 2 and branches[0].split() == branches[1].split():
+                return True
+        start = text.find(head, start + 1)
+    return False
+
+
 def audit() -> list[str]:
     assigned = assignments()
     modules = {tla: constants_of(tla) for tla in sorted(FORMAL.glob("*.tla"))}
@@ -226,6 +272,11 @@ def audit() -> list[str]:
                     f"{name}: {tla.name} declares it, but nothing a configuration "
                     "runs or checks reaches a definition that reads it — so both "
                     "arms produce identical runs")
+            elif identical_arms(name, tla):
+                problems.append(
+                    f"{name}: {tla.name} reads it, and the two branches of that "
+                    "`IF` are the same text — an arm that models nothing new is "
+                    "the defect fc7491a shipped and deleted by hand")
     return problems, booleans, entries
 
 

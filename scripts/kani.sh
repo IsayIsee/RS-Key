@@ -8,7 +8,7 @@
 # harness in `rsk-phy` costs half an hour or more and nothing that expensive
 # belongs on a pull request. But that put every proof a day away from the change that broke
 # it, and the split is cheap once the cost is measured rather than assumed: the
-# whole fast tier discharges in ~212 s of solving (docs/testing.md carries the
+# whole fast tier discharges in 229 s of solving (docs/testing.md carries the
 # table), while four crates hold everything slow.
 #
 # So: `pr` on every pull request that touches the crates, `state` additionally
@@ -32,31 +32,39 @@ cd "$(dirname "$0")/.."
 # --- the tiers ---------------------------------------------------------------
 #
 # FAST: every crate whose whole harness set discharges in under a minute a
-# harness. Measured 2026-08-13 on kani 0.67.0 under load — 49 harnesses, 200 s of
-# solving all told, the slowest three being `rsk-piv::set_protected…` at 45 s,
-# `rsk-led::every_block_length…` at 44 s and `indices_in_range` at 29 s. The
-# `rsk-device` six (the presence arbitration) cost 3 s together, and the four
-# `rsk-fs::powercut` rules 0.5 s.
+# harness. Measured 2026-08-26 on kani 0.67.0, idle 18-core Apple M5 Pro — 63
+# harnesses, 229 s of solving all told, the slowest three being
+# `rsk-usb::no_buffer_overrun_after_any_single_frame` at 39 s,
+# `rsk-piv::set_protected…` at 37 s and `rsk-led::every_block_length…` at 34 s.
+# The `rsk-device` seven (the presence arbitration) cost 2 s together, and the
+# four `rsk-fs::powercut` rules 0.4 s.
 # `--harness-timeout 5m` below is the tripwire on that claim: a harness that
 # grows past it fails the PR row rather than quietly making every pull request
 # wait, and the answer is to move its crate to SLOW, not to raise the cap.
 FAST="rsk-sdk rsk-fs rsk-crypto rsk-openpgp rsk-otp rsk-piv rsk-oath rsk-usb rsk-ui rsk-led rsk-slip39 rsk-bip39 rsk-device"
 
 # SLOW: the arithmetic and the state sequences. `rsk-phy` carries
-# `serialize_parse_roundtrip` (27m42s measured 2026-08-13; ~80 min was recorded
-# once), `rsk-rsa` the functional division spec and the sieve, `rsk-mldsa` the
-# rounding round-trips, `rsk-fido` the three sequence proofs (~12 min together,
-# and one of them peaks at 9.3 GiB).
-# Both dated `rsk-phy` figures — this one and HEAVY's below — were taken while
-# that harness lived in `rsk-rescue`; `189f24c` moved the file byte-identical, so
-# they are inherited under the new crate name, not re-run.
+# `serialize_parse_roundtrip` (18m35s measured 2026-08-26; 27m42s in 2026-08-13's
+# reading and ~80 min on a hosted runner once), `rsk-rsa` the functional division
+# spec and the sieve — and the sieve is the expensive half by an order of
+# magnitude, `sieve_step_keeps_residues` alone at 1058 s against
+# `mod_small_matches_value`'s 87 s — `rsk-mldsa` the rounding round-trips,
+# `rsk-fido` the three sequence proofs (519 s together in the `state` tier, and
+# one of them peaks at 9.3 GiB).
+# The `rsk-phy` figures are no longer inherited: they were first taken while that
+# harness lived in `rsk-rescue` and `189f24c` moved the file byte-identical, but
+# both this one and HEAVY's below are re-measured under the current crate name.
 SLOW="rsk-phy rsk-rsa rsk-mldsa rsk-fido"
 
 # HEAVY: the crates that get a job of their own, because their peak
-# solver memory is near what a hosted runner has left over. Measured 2026-08-14:
-# `rsk-phy`'s round-trip peaks at 11.1 GB and the runner dies under it
-# ("received a shutdown signal" at 50-58 min, twice, against a 6 h job cap and
-# with the run's other jobs still going, so neither a timeout nor a cancel);
+# solver memory is near what a hosted runner has left over. `rsk-phy`'s
+# round-trip peaked at 11.1 GB when this split was drawn and the runner died
+# under it ("received a shutdown signal" at 50-58 min, twice, against a 6 h job
+# cap and with the run's other jobs still going, so neither a timeout nor a
+# cancel); re-measured 2026-08-26 the tier peaks at 19.9 GiB, so the number the
+# split was drawn by was low — and not like for like, since 11.1 was the harness
+# and 19.9 GiB is the tier's peak RSS — in the direction that argues for the
+# split.
 # `rsk-fido`'s 9.3 GiB fits, which the `state` row demonstrates on every run. The
 # ceiling therefore sits between the two, and the split is drawn by that number
 # rather than by how long a crate takes. The LIGHT shards below are the rest of
@@ -69,10 +77,14 @@ HEAVY="rsk-phy"
 # shard's instead, and a shard that dies costs its own crates only — the reasoning
 # that drew HEAVY, applied to time rather than to memory.
 #
-# Balanced by cost, not by crate count: the three expensive crates left after
-# HEAVY (`rsk-fido`'s sequence proofs ~12 min, `rsk-rsa`'s division spec and
-# sieve, `rsk-mldsa`'s rounding round-trips) go one per shard, and the fast crates
-# fill in around them.
+# Balanced by cost, not by crate count: the expensive crates left after HEAVY go
+# one per shard and the fast ones fill in around them. Two of the three carry
+# their shard — `rsk-fido`'s sequence proofs 469 s of LIGHT1's 528, `rsk-rsa`'s
+# sieve 1058 s of LIGHT2's 1289 — and the third does not: all four of
+# `rsk-mldsa`'s rounding round-trips discharge in 3.7 s, so LIGHT3 is 162 s
+# against LIGHT2's 1289 s (measured 2026-08-26). Re-balancing
+# moves harnesses between shards and every FLOOR_light* with them, so it is a
+# deliberate change and not one to make while reading the clock.
 LIGHT1="rsk-fido rsk-ui rsk-piv rsk-oath"
 LIGHT2="rsk-rsa rsk-device rsk-fs rsk-crypto rsk-bip39"
 LIGHT3="rsk-mldsa rsk-led rsk-sdk rsk-openpgp rsk-usb rsk-otp rsk-slip39"
@@ -119,15 +131,15 @@ STATEFUL="rsk-fido rsk-fs"
 # they are a consistency check against the tree, not a ratchet against history:
 # deleting a harness and pasting the new number is self-consistent, and only
 # the diff shows it.
-FLOOR_pr=61
-FLOOR_state=24
-FLOOR_all=87
+FLOOR_pr=65
+FLOOR_state=29
+FLOOR_all=94
 # The four weekly rows partition `all`, so these sum to FLOOR_all and the guard
 # checks each against the tree the same way. A harness that moves between shards
 # has to move a number with it.
 FLOOR_heavy=5
-FLOOR_light1=27
-FLOOR_light2=27
+FLOOR_light1=32
+FLOOR_light2=29
 FLOOR_light3=28
 
 # Source-level `kani::cover!`s each tier must report on. Kani 0.67.0 has no
@@ -137,12 +149,12 @@ FLOOR_light3=28
 # is caught on its own (the row fails when the per-check listing is absent); the
 # floor is for the partial case, a cover that stopped being reported while the
 # rest still are. Counted from source by the same guard as the floors above.
-COVERS_pr=31
-COVERS_state=26
-COVERS_all=51
+COVERS_pr=41
+COVERS_state=36
+COVERS_all=67
 COVERS_heavy=1
-COVERS_light1=23
-COVERS_light2=8
+COVERS_light1=35
+COVERS_light2=12
 COVERS_light3=19
 
 # `kani::cover!` properties CBMC may report unsatisfied while their source-level
@@ -159,7 +171,15 @@ DEAD_COVER_COPIES_MAX=1
 # non-convergent proof rather than the tier — but the run then exits 1, `pipefail`
 # ends this script at the `tee`, and none of the checks below is reached (measured).
 TIMEOUT_pr=5m
-TIMEOUT_state=30m
+# 30m until 2026-09-08, when it fired for the first time and cost the row its
+# floors exactly as the `all` note below predicts. What tripped it is not a slow
+# proof but a hosted runner: `credmgmt::no_authorization_bypass_rps_begin_at_call_site`
+# verifies in 262 s on an M5 Pro and did not converge in 30m there, so the factor
+# is past 7x where the phy round-trip's is 4.3x. 60m keeps the cap BELOW the job's
+# 90m so a non-convergent proof is still named rather than the job being cut
+# blind mid-harness, which is how this one was found. What it costs on the runner
+# is still unmeasured; the next run is what measures it.
+TIMEOUT_state=60m
 # The runner's own ceiling, deliberately, because on this tier a cap that fires is
 # worse than no cap: the run exits 1, `pipefail` ends the script at the `tee`, and
 # `FLOOR_all` and `COVERS_all` go unread — the row reports nothing rather than
@@ -296,7 +316,10 @@ echo "== kani ($tier): $(echo "$crates" | xargs | tr ' ' ',') =="
 # (set above) keeps cargo-kani's own failure the pipeline's, so a real property
 # violation ends the run here and never reaches the floor check below.
 # shellcheck disable=SC2086 # $packages is our own list, word-splitting intended
-cargo kani $packages -Z unstable-options --harness-timeout "$timeout" "$@" 2>&1 | tee "$log"
+# `-Z stubbing` for `credmgmt_kani.rs`'s HMAC stand-in, which is what keeps the
+# two call-site harnesses inside a hosted runner's memory; the harness that
+# proves the MAC itself does not carry the stub.
+cargo kani $packages -Z unstable-options -Z stubbing --harness-timeout "$timeout" "$@" 2>&1 | tee "$log"
 
 # Kani's own count, off its summary line: "Complete - N successfully verified
 # harnesses, 0 failures, N total."

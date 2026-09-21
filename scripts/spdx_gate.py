@@ -107,6 +107,12 @@ UNCHECKED = {
     ".png": "binary",
     ".jpg": "binary",
     ".gif": "binary",
+    # An evidence bundle's raw artifacts. A header cannot go in one: the log is
+    # the unedited output of a run and `scripts/bundle_gate.py` holds its byte
+    # count AND its sha256, so writing into it would falsify the artifact this
+    # extension exists to preserve.
+    ".log": "data (raw run output, held byte-exact by bundle_gate.py)",
+    ".gz": "binary (a gzipped raw log, same reason)",
 }
 
 #: Where a file is under someone else's terms, with the reason. Checked below:

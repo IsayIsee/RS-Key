@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 RS-Key contributors
 
-//! The Yubico-OTP use-counter rule, in one place. Both writers of the
-//! non-volatile counter — the per-press bump in [`crate::ticket::build`] and the
-//! boot-time bump in [`crate::power_up_bump`] — take their step from here, so
-//! the 15-bit ceiling cannot be enforced two different ways.
+//! The Yubico-OTP use-counter rule, in one place, so the 15-bit ceiling is not
+//! enforced two different ways. Only some writers of the counter step through
+//! here; `assurance/otp_counter_writers.toml` is the derived roster of which.
 
 use crate::USE_COUNTER_MAX;
 

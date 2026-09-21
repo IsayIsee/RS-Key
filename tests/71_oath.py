@@ -23,9 +23,10 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _device import find_reader  # noqa: E402
+from _device import FW_VERSION_HINT, find_reader, fw_version  # noqa: E402
 
 OATH_AID = [0xA0, 0x00, 0x00, 0x05, 0x27, 0x21, 0x01]
+WANT_VERSION = list(fw_version())
 
 INS_PUT, INS_DELETE, INS_SET_CODE, INS_RESET, INS_RENAME = 0x01, 0x02, 0x03, 0x04, 0x05
 INS_LIST, INS_CALCULATE, INS_VALIDATE, INS_CALC_ALL = 0xA1, 0xA2, 0xA3, 0xA4
@@ -136,8 +137,8 @@ def main():
     ver = tlv_get(body, TAG_T_VERSION)
     name8 = tlv_get(body, TAG_NAME)
     print(f"SELECT -> version {list(ver)}, id {name8!r}")
-    if list(ver) != [5, 7, 4]:
-        fail(f"version TLV {list(ver)} != [5, 7, 4]")
+    if list(ver) != WANT_VERSION:
+        fail(f"version TLV {list(ver)} != {WANT_VERSION} {FW_VERSION_HINT}")
     if len(name8) != 8:
         fail("device-id TLV not 8 bytes")
     oath.apdu(INS_RESET, 0xDE, 0xAD)

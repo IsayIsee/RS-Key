@@ -185,7 +185,10 @@ const SETTINGS_PERSIST_QUIET_MS: u64 = 1_500;
 /// [`Hooks::host_request_pending`] and yield the instant a host command
 /// arrives, so this bound can be generous (a comfortable browse) without making the
 /// host wait for it.
-const MENU_INACTIVITY_MS: u64 = 60_000;
+/// Public for the same reason [`UI_YIELD_FLOOR_MS`] is: `tools/emu`'s panel bench
+/// separates "yielded" from "timed out" with a bound between the two, and a bound
+/// that cannot see this end of the pair is prose.
+pub const MENU_INACTIVITY_MS: u64 = 60_000;
 
 /// Minimum time an on-device modal that yields to the host stays open before a queued
 /// host command may close it. `REQ` latches until the worker drains it, and the worker
@@ -417,7 +420,18 @@ where
     /// The shared DRBG — the same `RefCell` the worker uses. Borrowed only to draw the
     /// randomness an on-device SLIP-39 split needs (the share identifier + Shamir random
     /// shares); the worker is parked while this thread-executor task runs, so no race.
+    ///
+    /// ⚠️ That parking is true of the DEVICE's own screens and false of a host ceremony:
+    /// `Ctx` holds this very cell borrowed for the whole CBOR/APDU dispatch and calls the
+    /// panel through `UserPresence`. Anything reachable from `collect_pin` or `request`
+    /// must not touch it — see [`Ui::shuffle_entropy`].
     rng: &'a RefCell<R>,
+    /// Seed for [`Ui::shuffle_entropy`], drawn once at construction where the shared DRBG
+    /// is provably free. The scrambled PIN pad is raised from host ceremonies too, and
+    /// borrowing `rng` there is a BorrowMutError — a panic, which on `panic-halt` is a
+    /// dead board (issue #107).
+    shuffle_seed: [u8; 32],
+    shuffle_ctr: u32,
     /// Four-bit scratch for the flicker-free PIN-title marquee blit ([`BandCoverage`]).
     marquee_coverage: [u8; MARQUEE_COVERAGE_BYTES],
     /// Cached Home status-card facts (device-PIN-set + resident passkey count), refreshed
@@ -478,6 +492,11 @@ where
         // `EF_DISPLAY`, so it's a one-time first-run offer). Mutually exclusive with `locked`.
         let onboarding = !locked && !dcfg.pin_declined;
 
+        // Drawn here and nowhere else: construction is boot, the one moment the shared
+        // DRBG is provably unborrowed. Every later draw is a host ceremony away.
+        let mut shuffle_seed = [0u8; 32];
+        rng.borrow_mut().fill(&mut shuffle_seed);
+
         Ui {
             panel,
             touch,
@@ -494,6 +513,8 @@ where
             fs,
             keys,
             rng,
+            shuffle_seed,
+            shuffle_ctr: 0,
             marquee_coverage: [0; MARQUEE_COVERAGE_BYTES],
             // Seeded from the cheap PIN bit (== `locked`); the count is filled by the first
             // `refresh_home_stats` before Home is ever painted.

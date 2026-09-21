@@ -211,3 +211,48 @@ fn the_scramble_row_toggles_in_place_and_persists() {
     ));
     assert!(!ui.scramble_pin);
 }
+
+/// The touch-timeout save carried its own copy of the phy read-modify-write — a
+/// `load(..).unwrap_or_default()` — so a probe the flash could not answer read as
+/// "no record was ever written" and the exit path saved a DEFAULT record with the
+/// new timeout on top, taking the USB identity and LED wiring with it. The
+/// non-faulted half of this is `persisting_the_touch_timeout_keeps_the_rest_of_the_phy_record`.
+#[test]
+fn a_faulted_phy_probe_does_not_wipe_the_record_the_timeout_shares() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let env = crate::tests::Env::over(backend);
+    let mut ui = env.ui(Pad::idle());
+    {
+        let mut fs = env.fs.borrow_mut();
+        let phy = rsk_phy::PhyData {
+            vid_pid: Some((0x1234, 0x5678)),
+            usb_product: rsk_phy::Product::new(b"RSK Custom"),
+            led_gpio: Some(21),
+            led_num: Some(4),
+            ..Default::default()
+        };
+        rsk_phy::save(&mut fs, &phy).expect("EF_PHY");
+    }
+    let before = medium.value(rsk_phy::EF_PHY).expect("record written");
+
+    ui.hooks.presence_ms = 20_000;
+    medium.stick_once(rsk_phy::EF_PHY);
+    ui.persist_settings(false, true);
+
+    let after = medium.value(rsk_phy::EF_PHY).expect("record present");
+    let kept = rsk_phy::PhyData::parse(&after);
+    assert_eq!(
+        (kept.vid_pid, kept.usb_product, kept.led_gpio, kept.led_num),
+        (
+            Some((0x1234, 0x5678)),
+            rsk_phy::Product::new(b"RSK Custom"),
+            Some(21),
+            Some(4)
+        ),
+        "a faulted probe wiped the fields the timeout save does not carry \
+         ({} bytes stored, was {})",
+        after.len(),
+        before.len()
+    );
+    assert_eq!(after, before, "a refused save must leave the record alone");
+}

@@ -66,6 +66,11 @@ class OpenPGP_Card(object):
         self.__kdf_salt_admin = None
         self.is_gnuk = False
         self.is_yubikey = False
+        # Whether PUT DATA F9 makes the DO's 87/88 hashes the PW1/PW3 references
+        # by itself, so the host must NOT follow it with CHANGE REFERENCE DATA.
+        # `is_yubikey` says this too but is never assigned, so its carve-out is
+        # unreachable; a real YubiKey fails these tests exactly as RS-Key does.
+        self.kdf_moves_references = False
         self.kdf_required = False
 
         self.initialize_kdf()
@@ -102,7 +107,7 @@ class OpenPGP_Card(object):
             self.__kdf_salt_reset = salt_reset
             self.__kdf_salt_admin = salt_admin
 
-        if not self.is_gnuk and not self.is_yubikey:
+        if not self.is_gnuk and not self.is_yubikey and not self.kdf_moves_references:
             def kdf_value(pin, who, iterations, salt_user, salt_admin):
                 if not iterations:
                     return pin

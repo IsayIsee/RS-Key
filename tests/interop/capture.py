@@ -449,7 +449,7 @@ def capture(label, serial):
 
 def _fw_from(cells):
     p = cells.get("ykman_info", {}).get("parsed", {})
-    return p.get("mgmt.firmware_version") or cells.get("mgmt_tlv", {}).get("parsed", {}).get("mgmt.version")
+    return p.get("ykman.info.firmware_version") or cells.get("mgmt_tlv", {}).get("parsed", {}).get("mgmt.version")
 
 
 def _tool_versions():

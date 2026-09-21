@@ -730,23 +730,32 @@ pub(crate) fn slot_map<S: Storage>(fs: &mut Fs<S>, base: u16, out: &mut [bool]) 
 /// whenever the discoverable-credential set does. An absent record reads as zero —
 /// the state of a store nothing has written to, which a fresh device and a
 /// just-reset one both are.
-pub(crate) fn cred_store_state<S: Storage>(fs: &mut Fs<S>) -> [u8; CRED_STATE_LEN] {
+///
+/// Fallible, because that zero is a value and not a neutral one: it is the tag a
+/// fresh device publishes, so a platform can be holding it. Collapsing a failed
+/// read into it replays a prefix of the sequence — see the two callers.
+pub(crate) fn cred_store_state<S: Storage>(fs: &mut Fs<S>) -> Result<[u8; CRED_STATE_LEN]> {
     let mut tag = [0u8; CRED_STATE_LEN];
-    match fs.read(EF_CRED_STATE, &mut tag) {
+    Ok(match fs.try_read(EF_CRED_STATE, &mut tag)? {
         Some(CRED_STATE_LEN) => tag,
         // A short or absent record is the zero state rather than a partial one: the
         // value is compared for equality by the platform and never interpreted, so
         // half of an old one would be a tag that means nothing and collides freely.
         _ => [0u8; CRED_STATE_LEN],
-    }
+    })
 }
 
 /// Advance that tag. Called **before** the write it describes, so a power cut
 /// between the two leaves a state that over-reports: the platform re-enumerates
 /// once, which costs a walk. The other order leaves a changed store under an
 /// unchanged tag — a stale cache with nothing to correct it.
+///
+/// A read it cannot make is that other order by a different road: the tag would
+/// restart at 1 over the live value, so the next change hands the platform a tag it
+/// already holds. Refused instead, and refusing here aborts the store change with
+/// it — which is the point of running before the write rather than after.
 pub(crate) fn bump_cred_store_state<S: Storage>(fs: &mut Fs<S>) -> Result<()> {
-    let next = u128::from_le_bytes(cred_store_state(fs)).wrapping_add(1);
+    let next = u128::from_le_bytes(cred_store_state(fs)?).wrapping_add(1);
     fs.put(EF_CRED_STATE, &next.to_le_bytes())
 }
 
@@ -830,13 +839,16 @@ pub fn credential_store<S: Storage>(
         .ok_or(Error::NoMemory)?;
 
     // Order so that any truncation of this non-transactional sequence leaves an RP
-    // entry without a credential — invisible but harmless, and reclaimed by the next
-    // `decrement_rp` — never a credential without an RP entry. The latter is a live
-    // discoverable passkey that `enumerateRPs` and the trusted-display Passkeys view
-    // both walk EF_RP to find, so neither can list or delete it, while `getAssertion`
-    // (which scans EF_CRED) authenticates with it happily. The dedup below sets
-    // `new_record = false` on any later registration of the same (rp, user), so that
-    // state never self-heals (audit run-35).
+    // entry without a credential — never a credential without an RP entry. The
+    // latter is a live discoverable passkey that `enumerateRPs` and the
+    // trusted-display Passkeys view both walk EF_RP to find, so neither can list or
+    // delete it, while `getAssertion` (which scans EF_CRED) authenticates with it
+    // happily. The dedup below sets `new_record = false` on any later registration
+    // of the same (rp, user), so that state never self-heals (audit run-35).
+    //
+    // Each fallible step after the bump rolls it back BEST-EFFORT. Best-effort is
+    // the honest word: the rollback is itself a flash write, so a medium that
+    // refuses the tombstone leaves the entry standing.
     if new_record {
         bump_rp(fs, seed, rp_id_hash, rp_id)?;
     }
@@ -846,8 +858,11 @@ pub fn credential_store<S: Storage>(
     // already stops it being SERVED to the new credential, but leaving it behind
     // costs a flash record per reuse.
     crate::largeblobext::discard(fs, slot);
-    bump_cred_store_state(fs)?;
-    if let Err(e) = fs.put(EF_CRED + slot, &rec[..total]) {
+    // Roll back here too, not only on the EF_CRED put: `decrement_rp` drops the
+    // record at count 0 alone, so an entry left over a credential that never landed
+    // floors at 1 and its slot never returns. Best-effort, and that is a real
+    // limit — a medium that refuses the tombstone leaves the phantom anyway.
+    if let Err(e) = bump_cred_store_state(fs) {
         if new_record {
             let _ = crate::credmgmt::decrement_rp(fs, rp_id_hash);
         }
@@ -858,7 +873,24 @@ pub fn credential_store<S: Storage>(
     // signature counter: makeCredential reported signCount 0, so the next
     // operation reports 1. This also clears any stale entry a prior occupant of a
     // reused slot may have left in the packed EF_CRED_CTR file.
-    crate::seed::set_cred_sign_counter(fs, slot, 1)?;
+    //
+    // BEFORE the credential and not after: it was the one fallible step with no
+    // rollback under it, and it fails on the same no-fault route the write above
+    // does, so a failure there answered KEY_STORE_FULL over a credential that
+    // was already live. A counter written for a slot the next line then fails to
+    // fill is inert — the slot's next occupant overwrites it.
+    if let Err(e) = crate::seed::set_cred_sign_counter(fs, slot, 1) {
+        if new_record {
+            let _ = crate::credmgmt::decrement_rp(fs, rp_id_hash);
+        }
+        return Err(e);
+    }
+    if let Err(e) = fs.put(EF_CRED + slot, &rec[..total]) {
+        if new_record {
+            let _ = crate::credmgmt::decrement_rp(fs, rp_id_hash);
+        }
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -874,6 +906,7 @@ fn bump_rp<S: Storage>(
 ) -> Result<()> {
     let mut rec = [0u8; RP_REC_MAX];
     let mut free: Option<u16> = None;
+    let mut unread = false;
     let mut occupied = [false; MAX_RESIDENT_CREDENTIALS as usize];
     slot_map(fs, EF_RP, &mut occupied);
     for i in 0..MAX_RESIDENT_CREDENTIALS {
@@ -884,7 +917,20 @@ fn bump_rp<S: Storage>(
             continue;
         }
         let fid = EF_RP + i;
-        if let Some(n) = fs.read(fid, &mut rec)
+        // Fallible: `read`'s `None` covers "a different rp" and "the flash could not
+        // serve this slot" alike, and the second falls through to the free-slot path
+        // — a SECOND record for an rpIdHash that `decrement_rp` never merges back.
+        // Carried, not returned here: a slot holding some OTHER rp cannot hide this
+        // one, and refusing on it would deny every resident registration on the
+        // device, for every rp, until that one record reads again.
+        let found = match fs.try_read(fid, &mut rec) {
+            Ok(found) => found,
+            Err(_) => {
+                unread = true;
+                continue;
+            }
+        };
+        if let Some(n) = found
             && n >= RP_PREFIX
             && rec[1..RP_PREFIX] == *rp_id_hash
         {
@@ -899,6 +945,11 @@ fn bump_rp<S: Storage>(
             rec[0] = bumped;
             return fs.put(fid, &rec[..n]);
         }
+    }
+    // Only here does an unread slot matter: it could have held this rpIdHash, and
+    // the record about to be filed would be its duplicate.
+    if unread {
+        return Err(Error::MemoryFatal);
     }
     let slot = free.ok_or(Error::NoMemory)?;
     rec[0] = 1;
@@ -1070,6 +1121,16 @@ pub fn migrate_rp_seal<S: Storage>(dev: &Device, fs: &mut Fs<S>) {
             continue;
         }
         let fid = EF_RP + i;
+        // The collapsing probe stands: this arm writes nothing, latches nothing and
+        // defaults nothing, and the boot pass reruns unconditionally — so a
+        // TRANSIENT fault costs one more boot of a domain that is already in
+        // cleartext. A permanent one leaves that rpId in cleartext for good, and on
+        // the provisioning boot it also spends the one-shot `EF_HARDENED` compact
+        // lap that runs after this pass.
+        //
+        // A `try_read` twin would be inert either way: this pass cannot re-box a
+        // record it cannot read, and returning on the error strands every rp behind
+        // it too.
         let Some(n) = fs.read(fid, &mut buf) else {
             continue;
         };
@@ -1089,7 +1150,12 @@ pub fn migrate_rp_seal<S: Storage>(dev: &Device, fs: &mut Fs<S>) {
         }
         out[0] = buf[0];
         out[1..RP_PREFIX].copy_from_slice(&rp_id_hash);
-        if let Ok(blen) = seal_rp_id(&seed, domain, &rp_id_hash, &mut out[RP_PREFIX..]) {
+        // Ahead of the write and gating it, per `rsk_fs::request_rescrub`: the copy
+        // it supersedes is the cleartext domain, and this pass is skipped whole
+        // whenever the seed is PIN-wrapped or locked — boots that latched already.
+        if let Ok(blen) = seal_rp_id(&seed, domain, &rp_id_hash, &mut out[RP_PREFIX..])
+            && (dev.otp_key.is_none() || rsk_fs::request_rescrub(fs).is_ok())
+        {
             let _ = fs.put(fid, &out[..RP_PREFIX + blen]);
         }
     }

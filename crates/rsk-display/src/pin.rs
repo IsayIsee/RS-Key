@@ -272,6 +272,16 @@ where
         (n, total.min(u16::MAX as usize) as u16)
     }
 
+    /// Pad-shuffle entropy that never touches the shared DRBG: HMAC over a seed drawn
+    /// once at boot, stepped per pad. The layout only has to be unpredictable to someone
+    /// watching the screen, and the cell this would otherwise borrow is held by the CTAP
+    /// dispatch that raised the pad (issue #107).
+    fn shuffle_entropy(&mut self) -> [u8; rsk_ui::PIN_SHUFFLE_ENTROPY] {
+        let out = rsk_crypto::hmac_sha256(&self.shuffle_seed, &self.shuffle_ctr.to_le_bytes());
+        self.shuffle_ctr = self.shuffle_ctr.wrapping_add(1);
+        out
+    }
+
     /// Collect a PIN on the on-screen pad (the trusted built-in-UV input). Renders the
     /// masked keypad, block-polls the CST328 accumulating ASCII digits into `out`, and
     /// honours the same up-pending / cancel / timeout contract as the confirm
@@ -320,8 +330,7 @@ where
         // and nothing on screen would look wrong. Off unless the owner asked for it in
         // Settings -> Security; each entry (and so each of "New" / "Confirm") gets its own.
         let layout = if self.scramble_pin {
-            let mut entropy = [0u8; rsk_ui::PIN_SHUFFLE_ENTROPY];
-            self.rng.borrow_mut().fill(&mut entropy);
+            let mut entropy = self.shuffle_entropy();
             let laid = rsk_ui::PinLayout::shuffled(&entropy);
             entropy.zeroize();
             laid

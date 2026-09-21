@@ -1,0 +1,721 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 RS-Key contributors
+#
+# THE OWNER-TAG COUNTERPART. Stage 1A п.3's ten-group contract over a
+# MODELLED-ONLY row whose derived `rust` column reads 2 and whose two tags are
+# both DOWNSTREAM of the record the invariant's live clause is about.
+#
+# `SEC-FIDO-004` `NoAccessibleSecretWithoutGate`: cfgs=39 mut=2 co=2 kani=0
+# fuzz=0 rust=2 test=0. It sits between the two bundles already in the roster —
+# more configurations than either, and no bounded proof at all — and it was asked
+# for because `SEC-FIDO-007` found a tag on the wrong half of an implication and
+# this property was the strongest candidate for the same shape.
+#
+# THE MEASUREMENT CONFIRMED IT, AND FOUND THREE MORE THINGS BESIDE IT:
+#
+#  * the invariant is a THREE-clause conjunction and all five of its recorded RED
+#    rows fall on the same clause — four of them on the same 13-state behaviour,
+#    three of those byte-identical. `mut = 2` and five REDs are one defect
+#    observed five times, not a spread;
+#  * the first clause, the ghost, is DEAD BY CONSTRUCTION in every configuration
+#    that could carry it BUT ONE, and in that one the search reports the third
+#    clause first. `viol = {}` in every recorded counterexample;
+#  * `Historical_E77.cfg` is the only configuration in the tree that takes the
+#    consumer fix out, and its counterexample is byte-identical to the one from a
+#    configuration that leaves the fix in. The arm exists and decides nothing.
+#
+# None of the four is fixed here. `assurance/bundle/SEC-FIDO-007.toml` is the
+# worked precedent for a bundle recording a defect it does not repair, and the
+# repair for the first one moves locked citation spans, which is its own change.
+
+# ---- 1. Property, subject and owners -----------------------------------------
+
+[property]
+id = "SEC-FIDO-004"
+invariant = "NoAccessibleSecretWithoutGate"
+# `assurance/properties.toml:115`, verbatim.
+statement = "No live secret is reachable while the gate record that protects it is gone."
+# §4.1's subject classes. TWO are covered. `requirement` is absent for the reason
+# the next two fields give: the registered root states that gates EXIST, and the
+# clause this property's every recorded failure falls on is about a record that
+# root never names.
+subjects = ["abstract model", "Rust source"]
+subjects_absent = ["requirement", "FFI", "binary", "hardware", "integration"]
+requirement = [
+  "docs/threat-model.md:27-29 `TM-HOST-GATES` — the registered root, and it is three lines naming WHICH gates exist: PINs/UV with retry counters and lockout, touch on FIDO operations and OpenPGP UIF, OATH access codes, PIV management-key auth",
+  "docs/threat-model.md:40-47 `TM-HOST-POWER-CUT` — the clause that actually states this property's rule: `no gate comes up softer on the next boot than it went down`, with a torn authenticatorReset dropping the PIN or alwaysUv record while leaving a credential usable as its worked example. It is NOT the registered root, and it names EF_PIN, EF_ALWAYS_UV and a credential — never the persistent grant",
+  "CTAP 2.2 §6.5.5.7.2 step 12 / .3 step 11 — the producer's requirement, cited by the tree at crates/rsk-fido/src/clientpin.rs:413-416 and crates/rsk-fido/src/seed.rs:306-307 and by the model at formal/RSKeySecurityState.tla:723-725, and named in the property registry by nothing",
+  "CTAP 2.2 §6.8.2 step 4 — the consumer's, cited at crates/rsk-fido/src/credmgmt.rs:249 and formal/RSKeySecurityState.tla:1166",
+]
+threat_clause = "docs/threat-model.md#TM-HOST-GATES"
+# IT LINKS, IT DOES NOT COVER, and the direction of the gap is measurable.
+# `TM-HOST-GATES` is a defence entry: it asserts that gates exist and lists five
+# families of them. This property is a COEXISTENCE rule — a secret may not be
+# reachable while the record that gates it is gone — and the clause states no
+# such rule, no ordering, and no record. The sentence that does state it is a
+# different clause of the same page, `TM-HOST-POWER-CUT`, which is registered as
+# nobody's root here; and even that one names EF_PIN, EF_ALWAYS_UV and a
+# credential, which is clause 2. The clause every one of this property's five
+# recorded failures falls on is about EF_PAUTHTOKEN, which no clause of the
+# threat model mentions at all.
+threat_clause_reading = "the anchor is topical and one layer too general: TM-HOST-GATES says gates exist, this property says a secret may not outlive one. What would fix it is either a re-source onto TM-HOST-POWER-CUT — whose `no gate comes up softer` sentence IS clause 2 — or a threat-model sentence naming the persistent pcmr grant and the rule crates/rsk-fido/src/reset.rs:221-226 already states in prose: the grant's ABSENCE is the restrictive state, so it goes with the secrets and a torn prefix can only ever revoke it early. The registry names one clause and no specification section (assurance/properties.toml:116), which is what SEC-FIDO-006 does not do for the same reset — it names CTAP 2.3 §6.6 beside the clause"
+# THE INVARIANT IS THREE CLAUSES, and naming them apart is what the rest of this
+# bundle is about. formal/RSKeySecurityState.tla:1777-1788.
+clause_ghost = "RSKeySecurityState.tla:1778 — `\"NoAccessibleSecretWithoutGate\" \\notin viol`. One writer: CmBeginViaPpuat at :1195"
+clause_credential = "RSKeySecurityState.tla:1779 — `Idle => ((store.cred # {} /\\ SeedReachable /\\ pin.everSet) => pin.set)`. A usable credential on a key that has ever had a PIN implies the PIN record"
+clause_structural = "RSKeySecurityState.tla:1788 — `Idle => (gate.ppuat => pin.set)`. The clause the model's own comment at :1780-1787 says it could not carry until eab4b5c: no stranded grant record may EXIST, not merely be refused"
+# The files carrying the `Refines … — SEC-FIDO-004` tag the registry greps for.
+# Both landed in one commit, 324636e0, on 2026-08-15.
+owners_tagged = [
+  "crates/rsk-fido/src/credmgmt.rs:253 authorized_by_ppuat",
+  "crates/rsk-fido/src/reset.rs:227 is_fido_gate_fid",
+]
+# AND ONE OF THE TWO IS ON THE CONSEQUENT. `authorized_by_ppuat` writes nothing:
+# its whole structural act is `if !ctx.fs.has_data(EF_PIN) { return false }`
+# (credmgmt.rs:263-265), a TEST OF `pin.set` — the consequent of clause 3 — after
+# which it refuses. It can make neither side of `gate.ppuat => pin.set` true or
+# false. In the model it is `FixPpuatRequiresPin`, and RSKeySecurityState.tla
+# :1780-1787 says in as many words that the structural clause is `a strictly
+# stronger claim than the fix under consideration` — that fix `refuses the record
+# and leaves it stranded`. The tag names the clause the function is explicitly
+# NOT the owner of. What it does own is clause 1, the ghost, whose only writer
+# CmBeginViaPpuat is guarded by exactly this function's model twin.
+owners_tag_reading = "the second tag survives the same reading and the first does not. reset.rs:227 `is_fido_gate_fid` owns the DESTRUCTION order — EF_PAUTHTOKEN's absence from the phase-2 set is what stops the grant outliving EF_PIN across a cut — and both of this property's co-refutation patches are against that file, so it is a real owner of clause 3's second falsification route. credmgmt.rs:253 is a consequent test tagged onto a clause the module says it cannot carry, and it is the legitimate owner of a DIFFERENT clause of the same invariant. Neither is the producer"
+# THE PRODUCER IS UNTAGGED, and it is the sole way to make the antecedent true.
+owners_untagged_producer = "crates/rsk-fido/src/seed.rs:319 — `put_sealed32(dev, fs, EF_PAUTHTOKEN, &tok)` inside `ensure_ppuat` (seed.rs:309-324). `git grep -n EF_PAUTHTOKEN` over crates/ firmware/ tools/ returns one put_sealed32 and it is this one; the only other writer-shaped site is `clear_ppuat`'s force_delete at seed.rs:338, which removes the record. 0x09D9 adds a third: `crates/rsk-fido/src/seed.rs:508` hands EF_PAUTHTOKEN to `migrate_slot`, which re-seals the record under the current kbase arm without minting one"
+owners_producer_reading = "the model names it and the code does not. MintPpuat (RSKeySecurityState.tla:726-731) is the ONLY action assigning `gate.ppuat = TRUE`, and its own comment cites `clientpin.rs:414-419, seed.rs:302-313` — so the module points at the two Rust sites, and neither carries a Refines tag of any kind. The sharpest form of it is six lines long: `clear_ppuat`, the function immediately below `ensure_ppuat` in the same file, DOES carry a tag (seed.rs:336, `Refines RSKeySecurityState!NoTokenAfterInvalidation — SEC-FIDO-003`). The producer is untagged next to a tagged destroyer. `git log -S` over seed.rs shows this property's tag was never there"
+# What the `rust` column measures, MEASURED rather than argued — see the two
+# mutation rows that drove it.
+rust_column_reading = "`assurance_gate.grep_word` matches the bare invariant name anywhere in a production file and returns FILE NAMES (scripts/assurance_gate.py:220-222), so `rust = 2` counts files that MENTION the invariant. Driven both ways: a SECOND tag inserted into reset.rs leaves the column at 2, and the tag added to seed.rs takes it to 3. So the missing producer tag costs the column exactly one, and the column is the only derivation in the tree where its absence could ever have shown — and it shows as a number one lower, never as a finding"
+# The files the co-refutation patches touch, which the derived column cannot see.
+owners_co_refuted = ["crates/rsk-fido/src/reset.rs"]
+# The tests that kill the code twin, recorded here because they count in NO
+# derived column: the `rust` axis drops filenames containing `tests`, and the
+# `test` axis reads only `tests/**/*.py`.
+owner_of_the_kill = [
+  "crates/rsk-fido/src/reset_tests.rs:626 the_gate_set_defers_every_record_whose_absence_is_permissive",
+]
+# It used to be these three. The two torn-wipe tests stopped owning this kill when
+# provisioning began minting the grant (bcdDevice 0x09CB): `ensure_seed` runs at the
+# end of `reset`, so the record the mutant defers is deleted and re-minted anyway and
+# the state those tests watch for — the ISSUED value standing over a deleted PIN —
+# is no longer reachable through them. Measured, not argued: under the patch the one
+# tear point that loses the PIN reports `grant_is_issued=false`, and the suite falls
+# from three tests to one. The survivor is the structural test that reads the gate
+# set itself, which is what the patch actually changes.
+retired_owners_of_the_kill = [
+  "crates/rsk-fido/src/reset_tests.rs:1163 a_torn_reset_never_leaves_a_grant_without_its_pin",
+  "crates/rsk-fido/src/reset_tests.rs:1184 a_torn_device_wide_wipe_never_leaves_a_grant_without_its_pin",
+]
+# AND THE SECOND FINDING. Five configurations report this invariant RED. Every
+# one of them falls on clause 3.
+clause_attribution = "read out of the five recorded counterexamples, not inferred: Historical_E77, Mut_BugPpuatIsAGate and Solo_BugPpuatIsAGate end in a state whose trace body is BYTE-IDENTICAL — 404 lines, one md5 — and Mut_BugSetPinKeepsPpuat differs from them in two lines, `gate.ppuatStale` at states 4 and 5. All four end at `ResetAborts` with `store.cred = {}`, `viol = {}`, `pin.set = FALSE` and `gate.ppuat = TRUE`, which falsifies clause 3 and leaves clauses 1 and 2 with their antecedents false. Solo_NoAccessibleSecretWithoutGate reaches the same falsifying shape two states earlier. So no recorded run in this tree observes clause 1 or clause 2 failing, and `formal/README.md`'s own `The clause nobody owned` section describes exactly this for ResetNeverWeakensSurvivingState and answered it with SoloClause_*.cfg — a machine this invariant has never been put through"
+
+# ---- 2. Commit, build and features -------------------------------------------
+
+[build]
+commit = "31c21a771734c1fc87f093c38125bffbee47c558"
+tree_state = "the recorded TLC rows were taken at b819ee5 and `git diff b819ee5..31c21a7 -- formal/*.tla formal/*.cfg formal/*.sh` is EMPTY, so they describe the model at this commit. The working tree was NOT clean while this was written: sibling bundle work was landing uncommitted edits across CHANGELOG.md, assurance/, docs/, scripts/ and formal/ throughout, and the untracked FORMAL_VERIFICATION_ROADMAP.md was present. Two of those touch this bundle's inputs and both were checked rather than assumed. `formal/RSKeySecurityState.tla`'s uncommitted diff is COMMENT-ONLY — two hunks at :45 and :169-170, one and two lines each side, both net-zero and both above line 200 — so nothing in that file shifted, every line number cited here was re-verified against the working tree, and the invariant still begins at :1777. New `PermWideMut_*` configurations arrived in formal/ mid-session and moved the assumption gate's arm counts; none of them names this invariant, so `cfgs` did not move. `formal/gen-configs.sh` gained 69 lines in the same window, and EVERY `gen-configs.sh:<line>` in this file is the WORKING-TREE number — the tree this bundle is committed in — rather than 31c21a7's: `formal/gen-configs.sh:75` and `:106` sit above the first insertion and did not move, while the four past line 200 — `:296-300`, `:305-307`, `:305-306` and `:305` — stood at lines 227-231, 236-238, 236-237 and 236 at that commit, 69 lines earlier in the file, and were re-taken by content. `build.commit` above stays at 31c21a7 all the same, and has to: `scripts/evidence_gate.py:459-490` dates a bundle by a commit git can resolve, and the commit that will carry this file does not exist while it is being written — so the field names the commit the TLC rows and the code twin were taken at, and the citations name the file a reader will open. The visible consequence is intended: once these formal/ inputs land in a commit that is not an ancestor of 31c21a7, the freshness axis reports this bundle behind them, which is that axis working and not a citation rotting. The code twin was driven in a worktree checked out at 31c21a7, not against the working tree. Every line number here was verified by CONTENT first; `scripts/citation_gate.py:368-374` now derives the evidence bundles into its corpus off the directory, so the ones it can resolve — `.rs`, `.sh` and `.txt` — are held by a gate as well"
+matrix_column = "firmware"
+cargo_features = "the default workspace feature set, with no feature flag added or removed — the code twin's slice is `cargo test -p rsk-fido` on that default, and no configuration here selects a build"
+board_knobs = "BOARD unset, LED_KIND unset, the default 4 MB layout — and nothing here reads any of the three, which is why the equivalence below is over the whole column set"
+host_triple = "aarch64-apple-darwin"
+firmware_triple = "thumbv8m.main-none-eabihf"
+machine = "18 cores, macOS 27.0 aarch64 — the figure TLC's own banner records in every artifact below, so this line and the logs cannot disagree"
+# A model check plus a host-test slice read no board preset and no flash
+# geometry, so the two feature-identical columns carry the same evidence.
+equivalent_columns = ["firmware-pico", "waveshare-one"]
+
+# ---- 3. Method and scope/bounds ----------------------------------------------
+
+# SEVEN ways and no prover. `kani = 0` is CORRECT rather than unfilled and
+# AS-F004-5 is the row that says why: the C-tier reset bridge has no field for
+# the record clause 3 is about, so a harness written over it could not state the
+# property. No harness invented below, and no TLC run performed for this bundle —
+# every model verdict is a row of `formal/runs.toml` recorded at b819ee5, whose
+# raw log is the artifact beside it.
+
+[[method]]
+obligation = "the invariant over the whole reachable space at the SHIPPED constants"
+method = "model-check"
+artifact = "formal/RSKeySecurityState.tla::NoAccessibleSecretWithoutGate + Shipped.cfg::NoAccessibleSecretWithoutGate"
+bound_rps = 2
+stops_rps = "a falsifying state that first arises over a third relying party. The clause names two booleans and no relying party, so what two costs is reach and not a term"
+bound_channels = 2
+stops_channels = "a falsifying state that first arises over a third concurrent channel — reach again, for the same reason"
+bound_max_retries = 8
+stops_max_retries = "nothing by shrinking: eight IS the shipped ladder, and this is the ONE of the four green configurations that runs it. The ladder is off this property's path and is what makes the PIN doors reachable at all"
+bound_mismatch_limit = 3
+stops_mismatch_limit = "nothing by shrinking, for the same reason as the ladder it pairs with — three IS the shipped mismatch limit"
+bound_max_clock = 1
+stops_max_clock = "any falsifying state that needs a second unit of elapsed time. One Tick is the whole clock here"
+bound_reset_window = 0
+stops_reset_window = "the in-window arm. At zero a reset may start only at clock 0, so a gate record dropped during a legitimate power-up-window reset is a prefix no run on this row produces"
+shipped_relation = "MaxRetries and MismatchLimit ARE the shipped MAX_PIN_RETRIES (8) and PIN_MISMATCH_LIMIT (3) at crates/rsk-fido/src/consts.rs:368,372; RPs and Channels are 2 against an unbounded device; MaxClock 1 is the smallest value at which Tick is not dead; ResetWindow 0 runs the window closed only. THE RETRY LADDER IS NOT ON THIS PROPERTY'S PATH — `gate.ppuat => pin.set` names two booleans and no constant — but the ladder is what makes the PIN doors reachable, so what the six buy is the state set a falsifying state would have to appear in. And this is the ONE row of the four GREEN configurations that runs the shipped ladder at all: the other three set MaxRetries 2 and MismatchLimit 1, and two of those run one RP"
+cfg = "none"
+features = "none"
+
+[[method]]
+obligation = "the same invariant on the other arm of the three standing assumptions that have one"
+method = "model-check"
+artifact = "AlwaysUv.cfg::NoAccessibleSecretWithoutGate + PermWide.cfg + ForceChange.cfg"
+bound_rps = 2
+stops_rps = "a falsifying state that first arises over a third relying party, on all three arms — and on two of the three the count is 1, so those rows have no second relying party at all"
+bound_channels = 2
+stops_channels = "a falsifying state that first arises over a third concurrent channel, on all three arms"
+bound_max_retries = 2
+stops_max_retries = "the six rungs between two and the shipped eight. All three arms run the reduced ladder, so the shipped constants are Shipped.cfg's alone"
+bound_mismatch_limit = 1
+stops_mismatch_limit = "the two mismatches between one and the shipped three, on all three arms"
+bound_configurations = 3
+stops_configurations = "any arm of a standing assumption that no configuration takes. Three arms are three rows, and of the four configurations asserting this invariant three are the alwaysUv arm the default image does not build"
+shipped_relation = "three arms and one caveat that is the honest half. AlwaysUvShipped is TRUE here and FALSE on Shipped.cfg, so BOTH arms of that assumption check this invariant; of the four configurations that ASSERT it, PermWide.cfg is the only one on WidePerms' TRUE arm and ForceChange.cfg the only one on ForceChangeModelled's — the roster's other configurations taking either arm are mutants, which name this invariant in order to fall past it rather than to assert it. The caveat: all three run a REDUCED ladder (2:1 against the shipped 8:3, formal/AlwaysUv.cfg:6-7) and PermWide.cfg and ForceChange.cfg run ONE relying party. So of the four configurations that assert this invariant GREEN, three are the alwaysUv arm the default image does not build, and the shipped constants are Shipped.cfg alone"
+cfg = "none"
+features = "always-uv is modelled as the compiled default on the AlwaysUv arm, not built — no image was produced for any row here"
+
+[[method]]
+obligation = "non-degeneracy: the invariant CAN go red, and the red names it rather than a sibling"
+method = "model-check"
+artifact = "Solo_NoAccessibleSecretWithoutGate.cfg::BugResetGatesFirst + Solo_BugPpuatIsAGate.cfg"
+bound_invariants = 2
+stops_invariants = "anything about the rest of the invariant set. Each configuration checks TypeOK and this name and nothing else — which is what tells this kill from a neighbour's, and it is needed here because on a multi-invariant configuration TLC reports the first violated name and it need not be this one"
+bound_armed_switches = 1
+stops_armed_switches = "any defect needing two switches at once. One armed switch is what attributes the red to the defect that was injected"
+bound_counterexample_states = 11
+stops_counterexample_states = "nothing — eleven is a MEASURED trace length and not a bound the configuration imposes. It is the shorter of the two rows; the same clause needs thirteen on the other"
+bound_depth = 11
+stops_depth = "nothing, for the same reason: the depth is what the search found and not a cap it was given, so it cannot say that a longer trace would find nothing else"
+shipped_relation = "the two bounds above are Solo_NoAccessibleSecretWithoutGate.cfg's, the SHORTER of the two rows; Solo_BugPpuatIsAGate.cfg needs 13 states and depth 13 for the same clause. Each configuration checks TypeOK and this invariant and NOTHING ELSE — formal/Solo_NoAccessibleSecretWithoutGate.cfg:50-52 and formal/Solo_BugPpuatIsAGate.cfg:50-52 — and arms exactly one Bug* switch with every other FALSE, which is what tells this kill from a neighbouring invariant's. It is needed in a way it is not on Shipped.cfg: formal/gen-configs.sh:106 puts this invariant in ALL_INV, so on a multi-invariant configuration TLC reports the first violated name and it need not be this one — measured, Solo_BugSetPinKeepsPpuat.cfg reports NoTokenAfterInvalidation under the same switch whose Mut_ twin reports this invariant"
+cfg = "none"
+features = "none"
+
+[[method]]
+obligation = "which of the three clauses the recorded verdicts are actually about"
+method = "exhaustive sweep"
+artifact = "formal/runs.toml + assurance/bundle/logs/SEC-FIDO-004/tlc-Historical_E77.log + assurance/bundle/logs/SEC-FIDO-004/tlc-Solo_NoAccessibleSecretWithoutGate.log"
+bound_clauses = 3
+stops_clauses = "two clauses of three. Only one is observed to fail anywhere in this tree, so for the other two there is no evidence that a red is even reachable"
+bound_red_rows = 5
+stops_red_rows = "nothing by sampling — five is every row of `formal/runs.toml` whose verdict names this invariant, and every one of the five has its raw log in the backed-up tier. What exactness does not buy is discrimination: the apparatus reports all five the same way"
+bound_distinct_counterexamples = 2
+stops_distinct_counterexamples = "any failure mode outside the two traces. Both end at the same action with the same two fields set, so the five red rows are two observations and not five"
+bound_clauses_observed = 1
+stops_clauses_observed = "non-degeneracy for the two clauses nothing falsifies. One of three is observed to fail; the other two are asserted by every configuration and refuted by none, which is the state a passenger conjunct would also be in"
+shipped_relation = "the sweep is EXACT and not sampled: every row of formal/runs.toml whose verdict names this invariant is five, every one of the five has its raw log in the backed-up tier, and every one of the five final states was read. Two distinct counterexamples: a 13-state one shared by four rows (three of them byte-identical over the 404-line trace body, the fourth differing in the two lines that carry gate.ppuatStale) and an 11-state one. Both end at ResetAborts with gate.ppuat TRUE and pin.set FALSE. The bound that matters is the last: ONE of three clauses is observed to fail anywhere in this tree, and the apparatus reports all five as `RED: NoAccessibleSecretWithoutGate` without distinguishing them"
+cfg = "none"
+features = "none"
+
+[[method]]
+obligation = "the production side: which sites own each half of clause 3, and whether the tagged owners are among them"
+method = "review"
+artifact = "crates/rsk-fido/src/seed.rs::ensure_ppuat + crates/rsk-fido/src/credmgmt.rs::authorized_by_ppuat + crates/rsk-fido/src/reset.rs::is_fido_gate_fid"
+bound_tagged_owners = 2
+stops_tagged_owners = "any owner outside the two tagged sites. This is a count of SITES and not a shrink of a shipped constant, because a review has no other unit"
+# 0x09D9 SUPPLIED THIS ROW'S OWN FALSIFIER, which is the bound working rather than
+# rotting: the boot pass now re-seals EF_PAUTHTOKEN (seed.rs:508), a second
+# writer-shaped site. It rewrites the record under the current arm and produces no
+# grant, so clause 3's argument is unchanged — but the write side this bundle read
+# is no longer the whole of it. The count is what was reviewed, and it stands.
+bound_producer_sites = 1
+stops_producer_sites = "a second producer. One `put_sealed32` of the record is the whole write side that was read, so the argument is as complete as that grep is"
+bound_consumer_sites = 3
+stops_consumer_sites = "a reader the three do not include, and any claim about ORDER: the count says which sites read the record, never that a reader runs after the producer it depends on"
+bound_sweep_sites = 2
+stops_sweep_sites = "any phase of the wipe outside the two sweep predicates. One puts the record in the SECRETS phase and one keeps it out of the GATES phase, and a third classification site would be outside the review"
+bound_files_in_argument = 5
+stops_files_in_argument = "anything in a sixth file. Five files carry the argument, two of them only through cfg-gated projections that reach no image"
+bound_crates = 2
+stops_crates = "a site in a third crate. The argument spans two, so a consumer of this record outside them is not covered"
+shipped_relation = "one producer (seed.rs:319, the sole put_sealed32 that MINTS the record; 0x09D9's boot re-seal at seed.rs:508 writes it again and mints nothing); three consumers (seed.rs:302 load_ppuat, credmgmt.rs:266 through it, and clientpin.rs:418 which is also the producer's call site); two sweep sites (reset.rs:275 is_fido_fid, which puts the record in the SECRETS phase, and reset.rs:248 is_fido_gate_record, which keeps it out of the GATES phase). Five files — seed.rs, credmgmt.rs, clientpin.rs, reset.rs and crates/rsk-device/src/ctap.rs:201,236, the two cfg-gated projections — across rsk-fido and rsk-device. This bound is a count of sites and not a shrink of a shipped constant, because a review has no other unit; the honest reading of that is in the counterpart bundle and it applies here too"
+cfg = "the two projection sites at rsk-device/src/ctap.rs are cfg-gated and reach no image; every other site above is unconditional production code"
+features = "none"
+
+[[method]]
+obligation = "the code twin: the same defect injected into production Rust, driven against the tree's own suite"
+method = "mutation"
+artifact = "formal/comutants.toml::BugPpuatIsAGate + crates/rsk-fido/src/reset.rs::is_fido_gate_record + crates/rsk-fido/src/reset_tests.rs::a_torn_reset_never_leaves_a_grant_without_its_pin"
+bound_patch_hunks = 1
+stops_patch_hunks = "any defect the single hunk cannot express. The patch reverts one commit in the shipped file, so what is driven is that defect and not the class it belongs to"
+bound_patched_files = 1
+stops_patched_files = "a defect that has to span two files"
+bound_tests_fallen = 1
+stops_tests_fallen = "which assertion is load-bearing. One test falls now and the count says the mutant died, not that the test was written for this property — it reads the gate set, which is what the patch edits. It was three before provisioning began minting the grant; see retired_owners_of_the_kill for why the two torn-wipe tests no longer reach the state"
+bound_slice_crates = 1
+stops_slice_crates = "any test outside the one crate the slice runs. A kill by a test in another crate would not be observed by this row"
+shipped_relation = "the patch puts `|| fid == EF_PAUTHTOKEN.get()` back on is_fido_gate_record (formal/comutants.toml:395-414) — eab4b5c reverted, in the shipped file, not a model edit — and it is the ONE co-refutation in this tree whose patch site is a function this property's own tag sits on. Driven here rather than transcribed: a throwaway worktree at 31c21a7, the anchor asserted to resolve exactly once, `cargo test -p rsk-fido --target aarch64-apple-darwin` against the main build cache. `expect = \"killed\"` in that file is a RECORDED verdict per its own status vocabulary (:19-21), and this run is the second observation of it"
+cfg = "none"
+features = "none — the slice is `cargo test -p rsk-fido` on the default feature set"
+
+[[method]]
+obligation = "what the tag gate can and cannot see about which site owns this property"
+method = "exhaustive sweep"
+artifact = "scripts/assurance_gate.py over crates/rsk-fido/src/credmgmt.rs::authorized_by_ppuat and crates/rsk-fido/src/reset.rs::is_fido_gate_fid"
+bound_variants = 4
+stops_variants = "nothing by omission — four is every subset of the two tags and the sweep is exhaustive over them. What exhaustiveness cannot reach is a THIRD tag: a site that starts owning this property arrives outside the sweep"
+bound_tags = 2
+stops_tags = "which side of the implication a tag is on. The rule counts to one and the sweep measures that either tag alone clears it, so a tree whose only tag sits on a half that cannot falsify the invariant is still green"
+bound_owner_configurations = 9
+stops_owner_configurations = "any configuration outside the nine the rule reads. A tag is owed only for the invariants those nine check, so an invariant checked nowhere among them owes none"
+shipped_relation = "the sweep is over EVERY subset of the two tags — none, each alone, both — driven through `check_tags`, the gate's own entry point, with `production_rust` pointed at copies rather than at the tree, so nothing was edited. The rule it exercises is scripts/assurance_gate.py:1053-1062: for each of the nine OWNER_CFGS, every invariant that configuration checks must carry a Refines tag SOMEWHERE in production Rust. It is a count-to-one rule and the sweep is what makes that a measurement instead of a reading: either tag alone clears it, and the rule knows nothing about which side of the implication a tag is on"
+cfg = "none"
+features = "none"
+
+# ---- 4. Tool, version, invocation and environment ----------------------------
+
+# FIVE tools and no prover. cargo-kani and CBMC, which carry the strong row's one
+# UNHASHED provenance (the version is pinned; the fetched solver bundle is not),
+# are absent here rather than unfilled — AS-F004-5 is the row that says why.
+
+[[tool]]
+name = "tlaplus"
+version = "1.7.4"
+provenance = "flake.lock; the jar this shell resolves is /nix/store/9kbz995wqfncy2vnqypdj23ihl6d0agb-tlaplus-1.7.4/share/java/tla2tools.jar, and formal/run-tlc.sh:16 records the sha256 prefix 936a2620 that floors.txt was measured against"
+invocation = "java -XX:+UseParallelGC -Xmx4g -cp $TLA2TOOLS_JAR tlc2.TLC -nowarning -workers 2 -config <cfg> RSKeySecurityState (formal/run-tlc.sh:245-247, less the later `-metadir`, which only moves TLC's scratch)"
+environment = "nix develop; WORKERS=2, HEAP=4g — the safety tier's settings, not the liveness tier's 12g, because no configuration here declares a temporal property"
+
+[[tool]]
+name = "openjdk"
+version = "1.8.0_492 (Zulu 8.94.0.17-CA-macos-aarch64)"
+provenance = "flake.lock"
+invocation = "see tlaplus; the banner line of every artifact below names this JVM"
+environment = "nix develop"
+
+[[tool]]
+name = "rustc"
+version = "1.96.0 (ac68faa20 2026-05-25)"
+provenance = "flake.lock"
+invocation = "cargo test -p rsk-fido --target aarch64-apple-darwin, over a worktree carrying the BugPpuatIsAGate patch"
+environment = "nix develop; CARGO_TARGET_DIR pointed at the main build cache and RUSTFLAGS carrying the three soft-backend cfgs scripts/comutate.py:910-914 sets"
+
+[[tool]]
+name = "cargo"
+version = "1.96.0 (30a34c682 2026-05-25)"
+provenance = "flake.lock"
+invocation = "see rustc; `cargo test -p rsk-fido` is exactly the slice formal/comutants.toml:412 names for this comutant"
+environment = "nix develop"
+
+[[tool]]
+name = "python"
+version = "3.13.13"
+provenance = "flake.lock"
+invocation = "python3 scripts/assurance_gate.py for the vector and the tag sweep; the four other gate lines the result group transcribes are their own scripts' audit() over this tree"
+environment = "nix develop"
+
+# ---- 5. Principal result -----------------------------------------------------
+
+[result]
+# TIER B — the invariant over the shipped constants, and the other arm of every
+# standing assumption that has one. There is no tier A: no requirement gate
+# exists for a property whose registered root states that gates exist. There is
+# no tier C: AS-F004-5.
+b_shipped = "Shipped.cfg GREEN — 986 836 197 states, 77 563 872 distinct, depth 58, 1913 s; NoAccessibleSecretWithoutGate among the NINE invariants Shipped.cfg checks — TypeOK and eight others. Not six: six is `ALL_INV`'s size in formal/gen-configs.sh, which is the Mut_* configurations' set and not this one's"
+b_always_uv = "AlwaysUv.cfg GREEN — 273 124 081 states, 23 521 512 distinct, depth 51, 519 s; the same invariant with alwaysUv as the compiled default"
+b_perm_wide = "PermWide.cfg GREEN — 344 527 413 states, 21 456 020 distinct, depth 45, 553 s; WidePerms TRUE, and it is the only configuration that both takes that arm and asserts this invariant"
+b_force_change = "ForceChange.cfg GREEN — 106 956 959 states, 10 765 176 distinct, depth 46, 177 s; ForceChangeModelled TRUE, and likewise the only one on that arm that asserts this invariant — the other two configurations taking it are mutants of BugForceChangeIgnored, which check this name in order to fall past it"
+b_arms_reading = "four GREEN rows and one of them at the shipped constants. Three set AlwaysUvShipped TRUE, which is the arm the default image does not build; two of those three also drop to one relying party and to a 2:1 retry ladder. So `asserted 4 of 39` is four configurations and one constant vector"
+# NON-DEGENERACY, and the only two places in the tree where this property is
+# named by a RED whose configuration isolates it.
+b_solo_invariant_named = "Solo_NoAccessibleSecretWithoutGate.cfg RED: NoAccessibleSecretWithoutGate — 425 619 states, 58 661 distinct, depth 11, 2 s; TypeOK and this invariant are the whole INVARIANTS block and BugResetGatesFirst is the only switch armed"
+b_solo_bug_named = "Solo_BugPpuatIsAGate.cfg RED: NoAccessibleSecretWithoutGate — 1 649 404 states, 194 256 distinct, depth 13, 4 s; the one switch formal/gen-configs.sh:75 names this invariant as the target of"
+b_mut_whole_set = "Mut_BugPpuatIsAGate.cfg RED: NoAccessibleSecretWithoutGate — 1 789 255 states, 208 160 distinct, depth 13, 5 s, and Mut_BugSetPinKeepsPpuat.cfg RED on the same name — 1 700 134 states, 203 559 distinct, depth 13, 4 s. Both check the whole invariant set and both report this one first"
+# THE CLAUSE CENSUS, read out of the five raw logs rather than out of the verdict
+# column. This is the finding the verdict column cannot carry.
+b_clause_census = "five RED rows, three clauses, ONE clause observed. Every one of the five counterexamples ends at ResetAborts in a state with gate.ppuat TRUE and pin.set FALSE, which falsifies clause 3 at RSKeySecurityState.tla:1788 and leaves clause 2's antecedent false (store.cred is empty in all five) and clause 1's ghost unwritten (viol is empty in all five)"
+b_three_identical = "Historical_E77, Mut_BugPpuatIsAGate and Solo_BugPpuatIsAGate produce the SAME counterexample: 404 lines of trace body, one md5, 13 states through PressDown / SetPinStart / SetPinClearPpuat / SetPinWrite / MintPpuat / ResetStart / TouchConfirm / ResetConfirmed / two ResetSweepSecrets / ResetSweepGates / ResetAborts. Mut_BugSetPinKeepsPpuat differs from them in exactly two lines, gate.ppuatStale at states 4 and 5. Four rows, one behaviour"
+b_ghost_dead = "clause 1 cannot fire in any configuration but one, by construction and not by measurement: PpuatGuard is `gate.ppuat /\\ pin.set` whenever FixPpuatRequiresPin is TRUE (RSKeySecurityState.tla:1170), CmBeginViaPpuat is the ghost's only writer, and its write is `IF pin.set THEN {} ELSE {...}` at :1195. `grep -l 'FixPpuatRequiresPin = FALSE' formal/*.cfg` is Historical_E77.cfg and nothing else"
+b_historical_e77 = "and in that one it still does not fire. Historical_E77.cfg exists to reproduce E77's counterexample with BOTH ends of the fix taken out (formal/gen-configs.sh:296-300), and its RED is the producer's: the diff against Mut_BugPpuatIsAGate.log — same switch, consumer fix ON — is the fingerprint line, two timestamps and the state totals. The trace bodies are byte-identical. The consumer arm changes the reachable set and no verdict"
+b_setpin_pair = "Solo_BugSetPinKeepsPpuat.cfg RED: NoTokenAfterInvalidation — 5 521 139 states, 599 634 distinct, depth 15, 12 s. A SIBLING's name, from the switch's own solo configuration, while the Mut_ twin of the same switch reports THIS invariant. It is the inverse of the attribution shape SEC-FIDO-007 records, and it is why `mut = 2` counts Solo_BugPpuatIsAGate.cfg and Solo_NoAccessibleSecretWithoutGate.cfg and not this one"
+# THE CODE TWIN, driven for this bundle rather than transcribed.
+c_twin = "the BugPpuatIsAGate patch over crates/rsk-fido/src/reset.rs, applied in a worktree at 31c21a7 and run as `cargo test -p rsk-fido --target aarch64-apple-darwin`: killed in 10.52 s — 666 passed; 3 failed; 1 ignored"
+c_twin_direction = "all three failures say the grant SURVIVED: `authenticatorReset: tear at 10 left a credMgmt grant standing over a deleted PIN`, `factory_wipe: tear at 9 left a credMgmt grant standing over a deleted PIN`, and `0x1091 is a secret or a grant, not a gate`. That is `gate.ppuat /\\ ~pin.set` in Rust — the same direction as the model kill, and not its inverse, which would have been a grant revoked too early and could not fail these assertions at all because it makes the antecedent false"
+# THE PRODUCTION SIDE, by review and by two driven sweeps of the derivations.
+r_owners = "1 producer, 3 consumers and 2 sweep sites — 6 sites across 4 files of rsk-fido — plus 2 cfg-gated projections in rsk-device that reach no image and are counted apart: 8 sites, 5 files, 2 crates"
+r_tag = "2 tagged owners. One is a test of the CONSEQUENT tagged onto a clause the module says it is strictly weaker than; the other owns the destruction order and is the file both co-refutation patches touch"
+r_producer = "0 tags on the producer. The sole put_sealed32 of EF_PAUTHTOKEN carries no Refines tag of any kind, and the next function in the same file carries one for a different property"
+r_tag_gate = "the tag rule is count-to-one, driven four ways through check_tags: baseline green, credmgmt.rs stripped green, reset.rs stripped green, BOTH stripped RED with `NoAccessibleSecretWithoutGate: checked by Shipped.cfg but has no Refines tag in production Rust`. Narrow OWNER_CFGS by that one name and even the both-stripped arm goes green"
+r_rust_column = "the `rust` column is a file count: a second tag inside reset.rs leaves it at 2, the tag added to seed.rs takes it to 3"
+# THE GHOST LEDGER does not reach this property, and that is a result.
+g_ghost_ledger = "assurance/ghost_actions.toml lists CmBeginViaPpuat — with the why `a persistent grant record whose PIN is gone still opening the management surface -- E77` — but under NoAuthorizationBypass's ghost, because scripts/ghost_gate.py:64 holds one invariant name and says so. The route that writes THIS property's ghost, RSKeySecurityState.tla:1195, is owned by no ledger and held by no gate"
+# WHAT HAS NO MACHINE-CHECKED SOURCE EVIDENCE AT ALL, said plainly.
+k_absent = "no bounded proof, no fuzz target and no tests/*.py exercises this invariant, and the obligation with nothing behind it is clause 3's PRODUCER half: that EF_PAUTHTOKEN cannot reach flash without EF_PIN already there. The tree states the reason itself — crates/rsk-fido/src/state_kani.rs:117-118, `a persistent pcmr grant is out of scope entirely — it lives in flash (EF_PAUTHTOKEN), not here`. What would close it is named and small: crates/rsk-fido/src/reset_assurance.rs:11 imports six FIDs and EF_PAUTHTOKEN is not one, and the delete projection at :173-178 has no arm for it, so ResetPersistentView cannot even represent the antecedent; the typed pair already exists on the other bridge as TokenPersistentView { pin_set, persistent_grant } over TOKEN_PERSISTENT_FIDS (crates/rsk-fido/src/state_assurance.rs:12-22), and no proof asserts the implication over that either"
+
+# The gates this bundle derives, each transcribed from the gate that emits it.
+gate_ghost = "ghost-gate: ok — 21 action(s) record NoAuthorizationBypass over 24 route(s), consulting 11 guard(s) — unchanged by this bundle, and transcribed because the roster rule demands every gate line whether or not this property moved it. It is also the line that does NOT cover this property, for the reason `g_ghost_ledger` gives"
+gate_ledger = "token-refinement-gate: GREEN keys=2 api=11 volatile=11/10 persistent=14/5 outcomes=7/6 walk=4 softlock=12 window=2 testonly=1 — the ledger owns the session token's axes, and the persistent grant is not one of them, so none of the production sites this bundle enumerates appears in it"
+gate_assumption = "assumption-gate: 5 standing assumption(s) AlwaysUvShipped TRUE=5 FALSE=91 ForceChangeModelled TRUE=3 FALSE=93 PowerOnClearsScratch2 TRUE=11 FALSE=4 RekeyOrderModelled TRUE=2 FALSE=13 WidePerms TRUE=3 FALSE=93 — three of the five have an arm that asserts this invariant, which is more than most MODELLED-ONLY rows have; PowerOnClearsScratch2 and RekeyOrderModelled both live in RSKeyBootHardening and the overlap with the configurations checking this one is empty for each"
+gate_matrix = "matrix-gate: ok — 40 P0-family properties × 31 build configurations = 1240 cells (37 covered, 143 equivalent, 0 conditional, 106 out-of-scope, 954 gap) — UNCHANGED by this bundle: a model check, a review and a host-test slice read no board preset and no flash geometry, so nothing here settles a cell"
+gate_registry = "assurance-gate: SEC-FIDO-004 NoAccessibleSecretWithoutGate MODELLED-ONLY cfgs=39 mut=2 co=2 kani=0 fuzz=0 rust=2 test=0 — and every one of those numbers has a reading in this file. `rust` counts files that mention the name, not owners; `mut` counts the two invariant-isolating configurations, both of which fall on the same clause; `co` counts two code twins that patch one file between them; `kani` is correct rather than unfilled"
+
+# ---- 6. Raw artifact or log --------------------------------------------------
+
+[[artifact]]
+run = "formal/run-tlc.sh Shipped.cfg — the invariant over the shipped constants, and the only GREEN row here that runs the shipped retry ladder"
+path = "assurance/bundle/logs/SEC-FIDO-004/tlc-Shipped.log"
+bytes = 7163
+sha256 = "317703de77238fd60a9cb2fc9391ba387c3d2c352529a98e21be7f970f3d1452"
+
+[[artifact]]
+run = "formal/run-tlc.sh AlwaysUv.cfg — AS-AUTH-2's other arm, the same invariant with alwaysUv as the compiled default"
+path = "assurance/bundle/logs/SEC-FIDO-004/tlc-AlwaysUv.log"
+bytes = 3135
+sha256 = "4fd7becdee7d1cada4b68b905ba11966f97ae9b59b83fc0bc19f6ceeaaac49cd"
+
+[[artifact]]
+run = "formal/run-tlc.sh PermWide.cfg — WidePerms' only TRUE assignment in the roster, and one of the four rows that assert this invariant"
+path = "assurance/bundle/logs/SEC-FIDO-004/tlc-PermWide.log"
+bytes = 3307
+sha256 = "1b2a8dfe9b4da6d863e334cc6efbb3cdf34eeb3b448d30e4bb51672897990cdc"
+
+[[artifact]]
+run = "formal/run-tlc.sh ForceChange.cfg — ForceChangeModelled's only TRUE assignment, and the fourth asserting row"
+path = "assurance/bundle/logs/SEC-FIDO-004/tlc-ForceChange.log"
+bytes = 2112
+sha256 = "25b7a355205d89defaf052ce50648efe85e6f17c0743bb3555068dbe75e19833"
+
+[[artifact]]
+run = "formal/run-tlc.sh Solo_NoAccessibleSecretWithoutGate.cfg — the invariant-named non-degeneracy row, RED. The log IS the eleven-state counterexample, and reading it is what showed the configuration falls on clause 3 rather than on the clause BugResetGatesFirst was armed for"
+path = "assurance/bundle/logs/SEC-FIDO-004/tlc-Solo_NoAccessibleSecretWithoutGate.log"
+bytes = 12225
+sha256 = "10b0c19d44c309171fa2123f7e7db4ddc7e815b9ac927762595427a7f77f41ea"
+
+[[artifact]]
+run = "formal/run-tlc.sh Solo_BugPpuatIsAGate.cfg — the one switch that names this invariant as its target, armed alone against this invariant alone, RED"
+path = "assurance/bundle/logs/SEC-FIDO-004/tlc-Solo_BugPpuatIsAGate.log"
+bytes = 14393
+sha256 = "d871853747933480e7d8b90185ff5d51be5347976dc1f2a58cc60802c0a21201"
+
+[[artifact]]
+run = "formal/run-tlc.sh Mut_BugPpuatIsAGate.cfg — the same switch against the whole invariant set, RED on this name. Half of the byte-identical pair"
+path = "assurance/bundle/logs/SEC-FIDO-004/tlc-Mut_BugPpuatIsAGate.log"
+bytes = 14393
+sha256 = "b732d6da39247f531c378c92ec36c1d0b7dc40fe09baeed392c6435bf0b23b30"
+
+[[artifact]]
+run = "formal/run-tlc.sh Historical_E77.cfg — the only configuration in the tree that takes FixPpuatRequiresPin out, RED. The other half of the pair, and the log whose trace body is byte-identical to the one above"
+path = "assurance/bundle/logs/SEC-FIDO-004/tlc-Historical_E77.log"
+bytes = 14391
+sha256 = "d69ebd952027412ad7a3b0e24f7e94d354afb4cabec92b0d5be5d84dc1fa7af3"
+
+[[artifact]]
+run = "formal/run-tlc.sh Mut_BugSetPinKeepsPpuat.cfg — the fifth RED naming this invariant, whose trace differs from the shared one in the two lines that carry gate.ppuatStale"
+path = "assurance/bundle/logs/SEC-FIDO-004/tlc-Mut_BugSetPinKeepsPpuat.log"
+bytes = 14390
+sha256 = "beedae517d84c4e8900a89f584a439ca0e09bc71d81810e6a52857c9f79fee30"
+
+[[artifact]]
+run = "formal/run-tlc.sh Solo_BugSetPinKeepsPpuat.cfg — the same switch's own solo configuration, which reports a SIBLING's name; the attribution row"
+path = "assurance/bundle/logs/SEC-FIDO-004/tlc-Solo_BugSetPinKeepsPpuat.log"
+bytes = 16366
+sha256 = "83ecd65d09a9f7af42605848d58502b634d9b376f9e6e7bb602597045f2c7a32"
+
+[[artifact]]
+run = "the code twin, driven for this bundle: formal/comutants.toml's BugPpuatIsAGate hunk applied to crates/rsk-fido/src/reset.rs in a worktree at 31c21a7, then `/usr/bin/time -l cargo test -p rsk-fido --target aarch64-apple-darwin`. Unedited, so the three failing tests name themselves and the assertion text carries the direction"
+path = "assurance/bundle/logs/SEC-FIDO-004/comutate-BugPpuatIsAGate.log"
+bytes = 51660
+sha256 = "13928ba3caee7642ada6584f3fcd795c3d23b596f97ec7edbd06c4d81dfca799"
+
+# ---- 7. Assumptions and TCB / trust dependencies -----------------------------
+
+# NINE rows. Six are covered by EXTENDING a registry entry that already exists —
+# three of those entries already name this property in `supports` and carried no
+# slice id at all — and one needs no registry change because it reuses the id
+# SEC-FIDO-007's bundle uses for the same standing assumption. The three new
+# entries are proposed rather than written: `assurance/platform.toml` is not this
+# bundle's file, and `scripts/platform_gate.py:1890-1918` will be RED against every
+# `AS-F004-*` id below until the integrator merges them.
+
+[[assumption]]
+id = "AS-F004-1"
+statement = "The invariant's ghost clause is DEAD by construction in every configuration that could carry it but one, so its GREEN is the absence of a write that cannot happen."
+kind = "model fidelity"
+discharger = "a configuration in which the ghost is REACHED. By construction it is none of the ones that assign FixPpuatRequiresPin TRUE: PpuatGuard is `gate.ppuat /\\ pin.set` wherever FixPpuatRequiresPin is TRUE (RSKeySecurityState.tla:1170), CmBeginViaPpuat is the clause's only writer, and its write at :1195 is `IF pin.set THEN {} ELSE {...}`. In the one that assigns it FALSE, Historical_E77.cfg, the guard IS weak and the ghost still never fires — the recorded counterexample ends with `viol = {}` at depth 13, because the structural clause falls first. What would discharge it is a configuration with the producer honest and the consumer weak, which formal/gen-configs.sh does not emit, or a SoloClause_* naming this clause alone in the shape that script already uses for the three clauses of ResetNeverWeakensSurvivingState"
+expressible = "no — a statement about which conjunct of a conjunction the search reaches, not a boolean a configuration could assign"
+registered = "yes — assurance/platform.toml PLAT-GRANT-001, pending. Written BY this bundle; there was no entry of this shape, and the id band is deliberate because PLAT-MODEL-012 through -014 were already claimed by sibling proposals when this was written"
+
+[[assumption]]
+id = "AS-F004-2"
+statement = "`SeedReachable`'s `ram` disjunct, which stands in clause 2's antecedent, is INERT on the shipped tree, so the clause is exactly as strong as its `store.seed`-only reading and no weaker."
+kind = "model fidelity"
+discharger = "already measured, and written down rather than re-derived: formal/README.md:833-845 records that `ram => store.seed` holds over all 17 190 324 states, that dropping the disjunct leaves the reachable set IDENTICAL and flips no verdict, and that the reason is DeviceUnlock needing a live flash seed while ResetConfirmed drops the RAM copy first. THE DIRECTION IS WHAT THIS ROW IS FOR: an inert term in an ANTECEDENT can only ever make an implication stronger, so nothing about this property is weakened by it — what is lost is a CLAIM. Clause 2 may not be read as covering a credential whose seed lives only in RAM, because no reachable state has `ram /\\ ~store.seed` for it to cover. And the guarantee that this stays true is another property's invariant, RamNeverOutlivesFlashSeed / SEC-FIDO-007, which is a dependency between two registry rows that neither row records"
+expressible = "no — a statement about the reachable state graph, not a constant; the constant that PINS it is another property's invariant"
+registered = "yes — assurance/platform.toml PLAT-MODEL-006, pending; this bundle proposes extending its covers with slice:AS-F004-2 and its supports with SEC-FIDO-004, because the same measured inertness is a premise of two properties and the entry names one"
+
+[[assumption]]
+id = "AS-F004-3"
+statement = "`EF_DEVICE_PIN` is outside `RSKeySecurityState`, so a gate record this property's sweep phases move is invisible to every configuration here."
+kind = "model abstraction"
+discharger = "modelling the vendor gate as a stage-4 action, at which point EF_DEVICE_PIN enters as one Boolean inside it. It matters HERE and not only for the reset family: crates/rsk-fido/src/reset.rs:248-252 puts EF_DEVICE_PIN in the same phase-2 set as EF_PIN, and reset.rs:235-242 says out loud that the list is five records and the clauses are three — so the phase order is bought for a record no invariant names. The reset argument covers it (phase 2 cannot begin until phase 1 has provably emptied the store, and the seed leads phase 1) and no invariant does"
+expressible = "no — a record outside the model's state, not a boolean inside it"
+registered = "yes — assurance/platform.toml PLAT-MODEL-011, pending, whose supports already names SEC-FIDO-004 and which carries no covers at all; this bundle proposes slice:AS-F004-3 as the first slice id to claim it"
+
+[[assumption]]
+id = "AS-F004-4"
+statement = "`DeviceUnlock` is WIDER than the firmware, and `ram` — the second half of clause 2's `SeedReachable` — has no other producer."
+kind = "model abstraction"
+discharger = "already argued and accepted: the model has no device lock, so it does not require the seed to be stored wrapped, and it omits AUT_DISABLE, which only ever CLEARS the RAM copy. A wider action reaches a superset of states, so a safety invariant proved over the model holds of the firmware; the entry's own failure direction is that this stops being sound the moment a liveness or coverage claim is made over the same action, and no claim in this bundle is either"
+expressible = "no — a scope statement about one action, not a constant"
+registered = "yes — assurance/platform.toml PLAT-MODEL-008, accepted-risk, whose supports already names SEC-FIDO-004 and which carries no covers; this bundle proposes slice:AS-F004-4"
+
+[[assumption]]
+id = "AS-F004-5"
+statement = "The existing C-tier reset bridge cannot express this property at all: `ResetPersistentView` has no field for the persistent grant, so `kani = 0` is a fact about the bridge rather than about the difficulty of the property."
+kind = "model fidelity"
+discharger = "reading the bridge, and it is shorter than the seed case SEC-FIDO-007 records. crates/rsk-fido/src/reset_assurance.rs:11 imports EF_ALWAYS_UV, EF_BACKUP_SEALED, EF_CRED, EF_KEY_DEV, EF_KEY_DEV_ENC and EF_PIN, and the delete projection at :173-178 has an arm for each; EF_PAUTHTOKEN is in neither, so the four SEC-FIDO-006 harnesses in crates/rsk-fido/src/reset_refinement_kani.rs run over a state that cannot represent the antecedent. The typed pair this clause needs already exists on the OTHER bridge — crates/rsk-fido/src/state_assurance.rs:12-22 defines TokenPersistentView { pin_set, persistent_grant } over TOKEN_PERSISTENT_FIDS = [EF_PIN, EF_PAUTHTOKEN] — and no harness asserts persistent_grant => pin_set over it. What would close the obligation is one field, one match arm and one assertion at ResetProgress::Idle"
+expressible = "no — a scope statement about four existing proofs and a struct that has no field, not a constant"
+registered = "yes — assurance/platform.toml PLAT-GRANT-002, pending. Written BY this bundle; PLAT-MODEL-007 is the nearest shape and its statement is about the seed-ordering invariant, so it is a sibling and not a home"
+
+[[assumption]]
+id = "AS-F004-6"
+statement = "TLC is sound for this model and the recorded run is the one that ran; every mechanised verdict here except the code twin is TLC's, and none of them was produced for this bundle."
+kind = "tool TCB"
+discharger = "a pinned checker and a recorded artifact, plus a run record that cannot rot by hand. tlaplus 1.7.4 IS pinned by flake.lock and formal/run-tlc.sh records the jar's sha256 prefix; formal/runs.toml keeps each row's TLC-written banner beside the runner's own line and scripts/run_count_gate.py holds one against the other. What none of that discharges is the soundness of the checker, which is why the entry exists. Second half, and it is this bundle's own: the ten TLC artifacts here were COPIED from a byte-identical backup of the tier recorded at b819ee5, and `git diff b819ee5..31c21a7` over formal/*.tla, *.cfg and *.sh is empty, which is what makes them evidence about the model at this commit"
+expressible = "no — a fact about a tool, not about the model"
+registered = "yes — assurance/platform.toml PLAT-TOOL-004, pending, whose supports already names SEC-FIDO-004; this bundle proposes extending its covers with slice:AS-F004-6"
+
+[[assumption]]
+id = "AS-F004-7"
+statement = "`FixPpuatRequiresPin`'s FALSE arm is unobserved: the one configuration that takes the consumer fix out reports a verdict the producer switch alone produces."
+kind = "model fidelity"
+discharger = "running the arm where it can decide something. Measured, not argued: Historical_E77.cfg is the sole configuration with FixPpuatRequiresPin = FALSE and its counterexample is byte-identical to Mut_BugPpuatIsAGate.cfg's, which has the fix ON — `diff` over the two recorded logs is the fingerprint line, two timestamps and the state totals, and the 404-line trace bodies share one md5. The constant is not inert in the model's sense, because the reachable set differs by 123 378 generated states; it is inert in the sense that costs a claim, which is that no verdict in this tree depends on its value. It is the same lesson formal/README.md records for a term nothing branches on, one layer out: here the branch exists and the arm decides nothing"
+expressible = "yes — it IS a boolean the configurations assign, and both arms are already emitted; what is missing is a configuration in which the FALSE arm is the reason for the verdict"
+registered = "yes — assurance/platform.toml PLAT-GRANT-003, pending. Written BY this bundle, and it is the row that can LEAVE this registry: a configuration whose RED is attributable to the consumer arm moves it to assurance/assumptions.toml"
+
+[[assumption]]
+id = "AS-F004-8"
+statement = "Two of this property's four asserting configurations exist for standing assumptions whose registry entries do not name this property, so the coverage argument those constants rest on is a premise of this evidence and is recorded against another row."
+kind = "model abstraction"
+discharger = "extending the two entries, and noticing which way the omission runs. PermWide.cfg and ForceChange.cfg are the only configurations that take WidePerms' and ForceChangeModelled's TRUE arm AND assert this invariant — formal/PermWide.cfg:55 and formal/ForceChange.cfg:55; every other configuration on either arm is a mutant that exists to fall. PLAT-MODEL-001 covers model:WidePerms and supports SEC-FIDO-001; PLAT-MODEL-010 covers model:ForceChangeModelled and supports SEC-FIDO-001 and SEC-FIDO-003. Neither names this property, so a reader of the platform page sees two constants whose other arm is run against rows that are not this one, while two of this row's four GREENs are exactly those arms"
+expressible = "yes — both are booleans assigned both ways, and assurance/assumptions.toml already holds them"
+registered = "yes — assurance/platform.toml PLAT-MODEL-001, pending; this bundle proposes extending its covers with slice:AS-F004-8 and its supports with SEC-FIDO-004, and extending PLAT-MODEL-010's supports only — two entries claiming one slice id would be two answers about one premise"
+
+[[assumption]]
+id = "AS-AUTH-2"
+statement = "The shipped image is built without --features always-uv, so gate.alwaysUv is a free state variable rather than the compiled default every reset restores."
+kind = "build configuration"
+discharger = "firmware/Cargo.toml's default feature set, and the firmware-always-uv matrix column. WEAKER for this property than for either bundle already in the roster, and the direction is the point: BOTH arms check this invariant, but THREE of the four asserting configurations are on the TRUE arm — AlwaysUv.cfg, PermWide.cfg and ForceChange.cfg all set AlwaysUvShipped = TRUE — so the arm the shipped image actually builds is carried by Shipped.cfg alone"
+expressible = "yes"
+registered = "yes — assurance/assumptions.toml AlwaysUvShipped, and assurance/platform.toml PLAT-BUILD-001, the one discharged row of that registry, which covers slice:AS-AUTH-2 and model:AlwaysUvShipped. The id is deliberately the one the other two bundles use: it is the same standing assumption, so a fresh id here would create a candidate no entry claims"
+
+# ---- 8. Mutation verdicts ----------------------------------------------------
+
+[[mutation]]
+level = "B"
+mutant = "BugPpuatIsAGate — EF_PAUTHTOKEN put back in the deferred gate phase, armed ALONE against this invariant alone"
+invocation = "formal/run-tlc.sh Solo_BugPpuatIsAGate.cfg"
+expected = "RED: NoAccessibleSecretWithoutGate"
+verdict = "RED: NoAccessibleSecretWithoutGate, 1 649 404 states, 194 256 distinct, depth 13, 4 s"
+fell = "clause 3, RSKeySecurityState.tla:1788 — read off the final state of the counterexample, which has gate.ppuat TRUE, pin.set FALSE, store.cred empty and viol empty, so neither of the other two clauses could have been the one"
+direction = "modelled"
+reading = "the falsifying state is a persistent grant record standing with EF_PIN already deleted, reached because ResetSweepGates' intra-phase order is a disjunction: with the grant in phase 2 the sweep may take the PIN first and ResetAborts before it takes the grant. The inverse — a grant revoked EARLY — cannot fail this implication at all, because it makes the antecedent false. The configuration checks TypeOK and this invariant and nothing else, so the RED cannot be a neighbour's."
+
+[[mutation]]
+level = "B"
+mutant = "the same switch against the whole six-invariant set"
+invocation = "formal/run-tlc.sh Mut_BugPpuatIsAGate.cfg"
+expected = "RED, and on THIS invariant rather than a sibling, because the shallowest violation the switch produces is this one"
+verdict = "RED: NoAccessibleSecretWithoutGate, 1 789 255 states, 208 160 distinct, depth 13, 5 s"
+fell = "the same clause at the same depth as the solo row, on a trace body with the same md5"
+direction = "modelled"
+reading = "this row is what says the solo configuration is not doing the work: when the whole set is checked TLC still reports this name first. The pair with the solo row is the direction that matters for attribution — a switch whose multi-invariant run reports a sibling is the shape SEC-FIDO-007 had to correct a credit rule for, and this switch is not it."
+
+[[mutation]]
+level = "B"
+mutant = "BugResetGatesFirst — the two sweep phases swapped, in the configuration purpose-built to isolate THIS invariant"
+invocation = "formal/run-tlc.sh Solo_NoAccessibleSecretWithoutGate.cfg"
+expected = "RED: NoAccessibleSecretWithoutGate, and formal/gen-configs.sh:305-307 says the configuration exists because this invariant is the one no switch names as its target"
+verdict = "RED: NoAccessibleSecretWithoutGate, 425 619 states, 58 661 distinct, depth 11, 2 s"
+fell = "clause 3 again, not the credential clause the switch was armed for: the final state has store.cred EMPTY, pin.everSet TRUE, pin.set FALSE and gate.ppuat TRUE, so clause 2's antecedent is false and the structural clause is what the search reached"
+direction = "modelled"
+reading = "the reading is a correction of the configuration's own comment. It was written on 2026-08-12 to demonstrate BugResetGatesFirst falsifying the credential clause; the structural clause was added later, and the search now reaches it at depth 11 through ResetAborts with no credential in play. The comment at formal/gen-configs.sh:305-306 is stale for a second reason as well — `no switch names this invariant as its target` stopped being true on 2026-08-13, sixteen hours after it was written, when formal/gen-configs.sh:75 gave BugPpuatIsAGate exactly that target."
+
+[[mutation]]
+level = "B"
+mutant = "the consumer fix taken out beside the producer switch — FixPpuatRequiresPin = FALSE, the only such configuration in the tree"
+invocation = "formal/run-tlc.sh Historical_E77.cfg"
+expected = "RED reproducing E77: a stranded grant USED on a key whose PIN record is gone, which is the ghost clause"
+verdict = "RED: NoAccessibleSecretWithoutGate, 1 665 877 states, 196 340 distinct, depth 13, 4 s — and NOT on the ghost"
+fell = "clause 3, on a trace body byte-identical to Mut_BugPpuatIsAGate's: same 404 lines, same md5, and `viol = {}` in the final state, so CmBeginViaPpuat never ran"
+direction = "modelled"
+reading = "the direction here is the finding. Both configurations arm BugPpuatIsAGate; one has the consumer fix and one does not, and they produce the same counterexample, so the FALSE arm changes the reachable set — 1 665 877 generated against 1 789 255 — without changing what falls or where. Nothing in this tree's recorded evidence therefore depends on FixPpuatRequiresPin's value, and the configuration that exists to reproduce E77 reproduces the state E77's producer half leaves rather than the use E77 was."
+
+[[mutation]]
+level = "B"
+mutant = "BugSetPinKeepsPpuat — setPIN no longer dropping the grant — in the switch's own solo configuration and in its whole-set twin"
+invocation = "formal/run-tlc.sh Solo_BugSetPinKeepsPpuat.cfg and formal/run-tlc.sh Mut_BugSetPinKeepsPpuat.cfg"
+expected = "the two rows to agree on which invariant the switch breaks"
+verdict = "they do not: Solo_ RED: NoTokenAfterInvalidation, 5 521 139 states, 599 634 distinct, depth 15, 12 s; Mut_ RED: NoAccessibleSecretWithoutGate, 1 700 134 states, 203 559 distinct, depth 13, 4 s"
+fell = "a sibling's name in the isolating configuration and this property's in the multi-invariant one, which is the opposite way round from the case the credit rule was fixed for"
+direction = "modelled"
+reading = "the pair is evidence about ATTRIBUTION and not about the property. The solo configuration names the invariant gen-configs.sh gives the switch as its target, so `mut` does not count this switch for this property even though the whole-set run reports this name first — and the Mut_ trace is the shared 13-state one differing only in gate.ppuatStale, so the switch is reaching the same defect the producer switch does rather than one of its own."
+
+[[mutation]]
+level = "code"
+mutant = "the same defect in production Rust: formal/comutants.toml's BugPpuatIsAGate hunk over crates/rsk-fido/src/reset.rs, which restores `|| fid == EF_PAUTHTOKEN.get()` on is_fido_gate_record"
+invocation = "the hunk applied in a `git worktree add --detach` at 31c21a7 with its anchor asserted to resolve exactly once, then `/usr/bin/time -l cargo test -p rsk-fido --target aarch64-apple-darwin`"
+expected = "killed by the tree's own suite, on the reset family"
+verdict = "killed, 10.52 s — `test result: FAILED. 666 passed; 3 failed; 1 ignored`"
+fell = "reset::tests::a_torn_reset_never_leaves_a_grant_without_its_pin, reset::tests::a_torn_device_wide_wipe_never_leaves_a_grant_without_its_pin and reset::tests::the_gate_set_defers_every_record_whose_absence_is_permissive, and those three alone"
+direction = "modelled"
+reading = "read the assertion text and not the colour: `tear at 10 left a credMgmt grant standing over a deleted PIN`, twice, and `0x1091 is a secret or a grant, not a gate`. Standing over a deleted PIN is the antecedent true with the consequent false, which is the modelled defect; the inverse — the grant swept too early — makes the antecedent false and could not fail any of the three. The patch site is is_fido_gate_record, which crates/rsk-fido/src/reset.rs:228 wraps as the tagged is_fido_gate_fid, so this is the one place where a tag, a model mutant and a code twin all name the same function."
+
+[[mutation]]
+level = "gate"
+mutant = "the property's Refines tags removed, one at a time and then both, with `production_rust` pointed at the copies so the tree was never edited"
+invocation = "scripts/assurance_gate.py check_tags, driven four ways over the two tagged files"
+expected = "the rule to name the property when its owner is gone"
+verdict = "baseline green; credmgmt.rs stripped GREEN; reset.rs stripped GREEN; both stripped EXIT-worthy — `NoAccessibleSecretWithoutGate: checked by Shipped.cfg but has no Refines tag in production Rust`"
+fell = "scripts/assurance_gate.py:1053-1062, the both-ways rule between OWNER_CFGS' checked invariants and the tags in production Rust"
+direction = "modelled"
+reading = "the two green arms are the result. The rule is count-to-one: either tag alone satisfies it, so it cannot see that one of the two is a consequent test, cannot see that the producer is untagged, and would stay green if the only surviving tag were the wrong one. This is the derivation in which a missing owner was ever going to show, and what it shows is a boolean about a file set."
+
+[[mutation]]
+level = "gate"
+mutant = "OWNER_CFGS narrowed by one name, with both tags already gone"
+invocation = "scripts/assurance_gate.py check_tags with Shipped.cfg dropped from OWNER_CFGS"
+expected = "the finding to survive, because eight other owner configurations remain"
+verdict = "GREEN — the finding disappears entirely"
+fell = "nothing, which is the verdict: with Shipped.cfg out of the tuple no configuration in OWNER_CFGS checks this invariant, so the rule has nothing to say about it"
+direction = "modelled"
+reading = "the whole tag obligation for this property hangs on one entry of a nine-name tuple. It is the direction that loses a rule rather than the one that fires it falsely, and it is worth recording beside the row above because the two together say what `rust = 2` is: one configuration's membership, and a file set that mentions a name."
+
+[[mutation]]
+level = "gate"
+mutant = "the derived `rust` column asked what a tag is worth — a SECOND tag inside an already-counted file, and the same tag on the untagged producer"
+invocation = "scripts/assurance_gate.py derive, with production_rust pointed at copies carrying one extra tag line"
+expected = "the column to move when an owner is added"
+verdict = "a second tag in reset.rs leaves rust = 2; the tag added to seed.rs takes it to rust = 3"
+fell = "scripts/assurance_gate.py:220-222, grep_word, which matches the bare name anywhere in a file and returns file names"
+direction = "modelled"
+reading = "the column is a file count wearing an owner count's name, and this measures exactly what the missing producer tag costs: one, in a number, in a table, with no finding beside it. It also shows the direction the column cannot be wrong in — adding a tag to a file already counted cannot inflate it — which is why the error this bundle found is an UNDER-count and not a false claim."
+
+# ---- 9. Timestamp, freshness and revalidation inputs -------------------------
+
+[freshness]
+measured = "2026-08-30, Europe/Moscow"
+expires_on_prover_bump = "tlaplus 1.7.4 or its jar hash — every model verdict here is TLC's, and PLAT-TOOL-004 is the entry that says so"
+expires_on_toolchain_bump = "rustc/cargo 1.96.0 — the code twin and the two derivation sweeps only"
+expires_on_stepping = "nothing here is a hardware result and none is claimed; a stepping change revalidates the platform registry's board rows, not this bundle"
+expires_on_owner_change = "crates/rsk-fido/src/seed.rs, credmgmt.rs, clientpin.rs and reset.rs, and formal/RSKeySecurityState.tla's MintPpuat, CmBeginViaPpuat, ResetSweepSecrets or ResetSweepGates"
+expires_on_model_change = "a fourth clause on this invariant, a SoloClause_* configuration naming any of the three, or a second configuration assigning FixPpuatRequiresPin FALSE — the last one is what would make AS-F004-7 dischargeable"
+expires_on_schema_change = "assurance/properties.toml's field set, formal/comutants.toml's status vocabulary, or assurance_gate.py's OWNER_CFGS tuple"
+
+# ---- 10. Measured costs ------------------------------------------------------
+
+# THE RUNNER SECONDS OF EVERY TLC ROW ARE THE RECORDED TIER'S, not this bundle's:
+# no TLC run was performed here. The PEAK of every TLC row is a BOUND and says so
+# — `formal/run-tlc.sh` records no RSS, and the precedent this follows is the one
+# already in the tree at assurance/bundle/SEC-FIDO-007.toml's last cost row.
+
+# THE HUMAN COLUMN IS A RECONSTRUCTION, AND ITS AGGREGATE DOES NOT FIT THE
+# WINDOW IT IS DATED IN. The thirteen rows below total 305 human_minutes, and
+# the six bundles this one arrived with total 1709 — 28.5 hours, every one of
+# them stamped `freshness.measured = 2026-08-30` inside a window that runs from
+# `31c21a7` (2026-08-30 22:03:52 +0300) to `b185fc3` (2026-08-31 01:24:37),
+# which is 3 h 21 min. NO TIMER PRODUCED ANY OF THEM: they are attended time
+# reconstructed after the fact, and every `basis` below says so in its own row
+# rather than leaving a reader to find this paragraph. They are kept because
+# they are the only cost signal the programme has, not because they are
+# measurements.
+#
+# AND THE SHIPPED BOUND IS NOT THE ONE `SEC-FIDO-002` CARRIES over a
+# byte-identical artifact — `317703de…`, the same log in six directories. 2940
+# MiB is a `/usr/bin/time -l` SAMPLE of a DIFFERENT run — the log at
+# `assurance/bundle/logs/SEC-FIDO-007/tlc-Shipped.log` has its own sha256, its
+# own seed and its own closing line, so the figure bounds THAT process and is
+# carried across to this one. `SEC-FIDO-002` bounds the same log with 3705
+# instead — the JVM ceiling the banner states, derived from the artifact rather
+# than transferred to it, and the larger of the two. Neither is this run's RSS.
+# The unit is MiB, which is checkable: the sibling writes the same sample as
+# 3083 at `assurance/bundle/SEC-FIDO-007.toml:572`, and that is 2940 MiB in
+# decimal MB.
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-004/tlc-Shipped.log"
+human_minutes = 5
+runner_seconds = 1913
+peak_memory_mb = 2940
+basis = "runner is the row's own timer in formal/runs.toml:66, cross-checked against TLC's `Finished in 31min 52s` in the log itself. peak is NOT measured here: it is the figure /usr/bin/time -l produced over the Shipped run recorded in assurance/bundle/SEC-FIDO-007.toml (2940 MiB, which is 3 082 813 440 B), and it BOUNDS every TLC process in this bundle because Shipped is the largest configuration here and all of them ran under the same -Xmx4g. human is attended time RECONSTRUCTED after the fact, not measured"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-004/tlc-AlwaysUv.log"
+human_minutes = 3
+runner_seconds = 519
+peak_memory_mb = 2940
+basis = "runner from formal/runs.toml:67; peak is the Shipped bound in MiB above, stated as a bound. human is attended time RECONSTRUCTED after the fact, not measured"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-004/tlc-PermWide.log"
+human_minutes = 4
+runner_seconds = 553
+peak_memory_mb = 2940
+basis = "runner from formal/runs.toml:68; peak is the Shipped bound in MiB. human is attended time — RECONSTRUCTED after the fact, not measured — and carries reading the four asserting configurations' constants apart, which is where the one-relying-party caveat came from"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-004/tlc-ForceChange.log"
+human_minutes = 2
+runner_seconds = 177
+peak_memory_mb = 2940
+basis = "runner from formal/runs.toml:69; peak is the Shipped bound in MiB. human is attended time RECONSTRUCTED after the fact, not measured"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-004/tlc-Solo_NoAccessibleSecretWithoutGate.log"
+human_minutes = 21
+runner_seconds = 2
+peak_memory_mb = 2940
+basis = "runner from formal/runs.toml:134; peak is the Shipped bound in MiB and is a gross over-estimate for a two-second run, which is what a bound is. human is RECONSTRUCTED attended time, never measured, and is the largest per-artifact figure here: it carries reading the eleven-state counterexample, finding that the configuration falls on a clause its own comment does not name, and blaming formal/gen-configs.sh:305 back to the commit that made it stale"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-004/tlc-Solo_BugPpuatIsAGate.log"
+human_minutes = 8
+runner_seconds = 4
+peak_memory_mb = 2940
+basis = "runner from formal/runs.toml:118; peak is the Shipped bound in MiB. human is attended time — RECONSTRUCTED after the fact, not measured — over reading the final state and establishing which of the three clauses it falsifies"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-004/tlc-Mut_BugPpuatIsAGate.log"
+human_minutes = 6
+runner_seconds = 5
+peak_memory_mb = 2940
+basis = "runner from formal/runs.toml:87; peak is the Shipped bound in MiB. human is attended time — RECONSTRUCTED after the fact, not measured — over the diff against Historical_E77 that produced the byte-identical finding"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-004/tlc-Historical_E77.log"
+human_minutes = 14
+runner_seconds = 4
+peak_memory_mb = 2940
+basis = "runner from formal/runs.toml:71; peak is the Shipped bound in MiB. human is attended time — RECONSTRUCTED after the fact, not measured — and carries the other half of the diff, plus establishing by grep that this is the only configuration in the roster assigning FixPpuatRequiresPin FALSE"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-004/tlc-Mut_BugSetPinKeepsPpuat.log"
+human_minutes = 5
+runner_seconds = 4
+peak_memory_mb = 2940
+basis = "runner from formal/runs.toml:90; peak is the Shipped bound in MiB. human is attended time — RECONSTRUCTED after the fact, not measured — over the two-line trace difference that puts this row in the same family as the other three"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-004/tlc-Solo_BugSetPinKeepsPpuat.log"
+human_minutes = 7
+runner_seconds = 12
+peak_memory_mb = 2940
+basis = "runner from formal/runs.toml:121; peak is the Shipped bound in MiB. human is attended time — RECONSTRUCTED after the fact, not measured — over the attribution reading — why this row credits a sibling while its Mut_ twin reports this property"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-004/comutate-BugPpuatIsAGate.log"
+human_minutes = 18
+runner_seconds = 10.52
+peak_memory_mb = 956
+basis = "runner and peak are BOTH measured here, by /usr/bin/time -l over the cargo invocation that wrote this log: 10.52 s real and 1 002 373 120 B maximum resident set size, which is the 956 MiB this column carries. It is the only row in this bundle whose peak is a measurement rather than a bound, and the runner is short because the worktree shared the main build cache. human is attended time — RECONSTRUCTED after the fact, not measured — over setting the worktree up, asserting the anchor, and reading the three assertion messages for their direction"
+
+[[cost]]
+artifact = "the analytical half — groups 1, 3 and 7, which produced no run of their own"
+human_minutes = 168
+runner_seconds = 0
+peak_memory_mb = 0
+basis = "the human figure is attended time RECONSTRUCTED after the fact, never measured, over reading the invariant apart into three clauses, the five counterexamples, the four production files and the two projections, the threat-model clause against the property it is registered as the root of, and the nine slice assumptions against the platform registry. It is the largest single figure in this bundle and it is NOT a measurement taken by any tool; the zeros are honest, because no process ran"
+
+[[cost]]
+artifact = "the two derivation sweeps and the registry proposals, which wrote no log"
+human_minutes = 44
+runner_seconds = 31
+peak_memory_mb = 956
+basis = "human is attended time — RECONSTRUCTED after the fact, not measured — over driving check_tags four ways and derive three ways with production_rust pointed at copies, and over writing the three new platform entries and the six extensions the integrator has to merge. runner is the python time across those seven invocations and is a LOWER BOUND — they were not timed individually and that is not recoverable. peak is the code twin's measured figure, 956 MiB, which bounds every python process in this row"

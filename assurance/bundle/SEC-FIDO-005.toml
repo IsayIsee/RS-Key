@@ -1,0 +1,725 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 RS-Key contributors
+#
+# THE ROW WHOSE REQUIREMENT ROOT THE ROADMAP STILL RECORDS AS MISSING.
+#
+# `SEC-FIDO-005` `NoUnmanageableCredential`: cfgs=40 mut=3 co=3 kani=0 fuzz=0
+# rust=3 test=0 — the same ten groups, the same floors, the same
+# `scripts/bundle_gate.py` the first two are held to.
+#
+# Three things about it are worth reading before the table:
+#
+#  * `FORMAL_VERIFICATION_ROADMAP.md:2538-2543` says this property "числится в
+#    `threat_clauses.toml` `[[untraced]]` с вердиктом `missing-clause`", and that
+#    the stage-4 exit is therefore unreachable BY DEFINITION. That is STALE.
+#    `assurance/properties.toml:123` roots it at `TM-HOST-CRED-REVOCABLE` today
+#    and `scripts/threat_gate.py` serves the edge; the only `[[untraced]]` row
+#    left is `SEC-FIDO-007`'s. This bundle's first job was to check that, and its
+#    second was the harder question the programme has been burned by — whether
+#    the clause COVERS the property or merely links to it. It covers, and it
+#    covers MORE than the invariant asserts. `property.threat_clause_reading`
+#    carries the quotes.
+#  * `kani = 0` here is a CORRECT zero, in the sense `SEC-FIDO-007` established
+#    for its own, but for a different reason: there, the neighbouring reset
+#    harnesses are deliberately WIDER than the invariant; here there is no
+#    neighbouring harness at all — `crates/rsk-fido/src/credmgmt_kani.rs`'s four
+#    proofs are three of SEC-FIDO-001's Begin decisions and one of SEC-FIDO-003's,
+#    and no Kani harness in this tree draws an `EF_CRED`/`EF_RP` pair. So the
+#    method group below has no `bounded proof` row, and
+#    `result.k_no_bounded_proof` says which obligation that leaves with no
+#    machine-checked source evidence and what would close it.
+#  * ONE OF THE FORTY CONFIGURATIONS WAS A SECOND COPY OF ANOTHER, AND IS NOT
+#    ANY MORE. `diff formal/Historical_E76.cfg formal/Mut_BugSeedDoesNotLead.cfg`
+#    was EMPTY when this bundle was written — both emitted with identical
+#    arguments — so the `cfgs = 40` denominator counted 39 distinct
+#    configurations. `formal/gen-configs.sh:322` now emits the first as
+#    `emit Historical_E76.cfg BugSeedDoesNotLead TRUE TRUE` and the `Mut_` loop
+#    at `:329` still passes FALSE, so the two files differ at exactly one line —
+#    `48c48`, `FixSweepDropsCredsBeforeRpEntries` — and the forty are forty
+#    distinct configurations. THE FINDING SURVIVES AS ITS REPAIR: what E76 now
+#    runs is the counterfactual repair nothing else in the tree runs, and the
+#    tier recorded at 9cafee7 has RUN it — GREEN over a complete search, where
+#    the superseded twin aborted RED. Every number on this bundle's E76 rows is
+#    re-derived from that record; the RED reading is kept as the roster finding
+#    it was — see `result.b_historical_e76`.
+
+# ---- 1. Property, subject and owners -----------------------------------------
+
+[property]
+id = "SEC-FIDO-005"
+invariant = "NoUnmanageableCredential"
+# `assurance/properties.toml:122`, verbatim.
+statement = "Every live credential is reachable by the management surface: its EF_RP entry exists."
+# §4.1's subject classes. THREE are covered — the requirement is real (the next
+# two fields), the model asserts the invariant on four configurations, and three
+# production files carry the tag — and the fifth entry of `subjects_absent` is
+# not a class but the obligation this bundle has no machine-checked source
+# evidence for, named where a reader of the subject list will meet it.
+subjects = ["requirement", "abstract model", "Rust source"]
+subjects_absent = [
+  "FFI",
+  "binary",
+  "hardware",
+  "integration",
+  "bounded proof over the Rust source — no harness in this tree bounds the implication at the code level",
+]
+subjects_absent_reading = "the missing obligation is exactly this: that `credential_store`'s ordered writes and `decrement_rp`'s removal keep `EF_CRED ⊆ EF_RP` over an ARBITRARY interleaving of flash outcomes, rather than over the write budgets two host tests enumerate. What stands in its place is `crates/rsk-fido/src/credential_tests.rs:648` and `crates/rsk-fido/src/credmgmt_tests.rs:2265`, which sweep a failure budget across the sequence and assert the implication at every failing point — evidence, and bounded by a loop rather than by a solver. What would close it: a harness over `rsk-fs`'s `Fs` with a symbolic write/delete outcome per step, in the shape `crates/rsk-fs/src/powercut_kani.rs` already has for the store's own tears, asserting `has_data(EF_CRED + s) => has_data(EF_RP + j)` after `credential_store` and after `delete_credential`. It is NOT written here: adding a harness would move the derived `kani` column and the status word with it, which is stage 4's call and not a bundle's"
+requirement = [
+  "CTAP 2.3 §6.8 authenticatorCredentialManagement — enumerateRPs (0x02/0x03), enumerateCredentials (0x04/0x05) and deleteCredential (0x06), the surface the property is named for",
+  "docs/threat-model.md:94-115 `TM-HOST-CRED-REVOCABLE` — the clause, which states the implication in prose and states the write ORDER that buys it",
+  "assurance/properties.toml:123 — the registry's own `source`, both of the above, and the row `threat_gate.py` now serves",
+]
+threat_clause = "docs/threat-model.md#TM-HOST-CRED-REVOCABLE"
+# AND IT COVERS. This is the field `SEC-FIDO-007` had to answer `no` to, so the
+# comparison is the point. That clause (TM-ZEROIZATION) was topical and not the
+# claim; this one states the claim: "a credential whose `EF_RP` entry is missing
+# is one `getAssertion` signs with happily and neither surface will show you" IS
+# `store.cred \subseteq store.rpent` in prose, over the same two records, naming
+# the same two browse surfaces the model's `store.rpent` abstracts. It goes on to
+# state the ordering the model's `RegisterWriteA`/`RegisterWriteB` encode — "the
+# `EF_RP` entry is written before the credential, and the credential goes before
+# the count that names it" — and the reset carve-out `BugSeedDoesNotLead` is the
+# mutant of: "**The resets are not, and this page will not pretend otherwise.**"
+threat_clause_reading = "a covering, and the two places it is WIDER than the invariant are what a reader owes. First, the clause's subject is `see and revoke`, and the invariant formalises only `its EF_RP entry exists` — the clause itself says the gap out loud (`what a strand costs is DISCOVERY, and revocation only so far as revoking a thing means finding it first`), and the code side of that gap is `result.r_management_surface`: an EF_RP record that exists but does not READ, does not carry a positive count, or does not UNSEAL is skipped by both surfaces, and the model's set membership cannot tell any of the three from a healthy record. Second, the clause admits a residual the invariant does not — `a torn wipe can still strand a credential, and what the ordering buys is that the survivor is undecryptable rather than that it does not exist` — while `Shipped.cfg` is GREEN, because `KeepOpen` (RSKeySecurityState.tla:309) empties `store.cred` the moment the last seed copy goes. The clause and the model do not disagree; the model equates `undecryptable` with `absent`, and AS-CRED-4 is the row that says so. Neither widening is a mis-mapping: the clause is about these records, these surfaces and this order, which is what `SEC-FIDO-007`'s anchor was not"
+# The three files `assurance_gate.grep_word` counts as `rust = 3`. Read the
+# derivation before the column: it matches the bare invariant name anywhere in a
+# production file (`kani`/`tests` names dropped) and returns FILE NAMES, so a
+# second tag in a counted file moves nothing.
+owners_tagged = [
+  "crates/rsk-fido/src/credential.rs:795 credential_store — the producer of the ANTECEDENT (`store.cred`) and the site that writes the consequent first",
+  "crates/rsk-fido/src/credmgmt.rs:687 decrement_rp — the sole destroyer of the CONSEQUENT (`store.rpent`)",
+  "crates/rsk-fido/src/passkeys.rs:89 for_each_rp — the management surface, which is what `unmanageable` MEANS",
+]
+# BOTH HALVES OF THE IMPLICATION ARE COVERED, and the grep that shows it is
+# `grep -rn NoUnmanageableCredential crates/ firmware/`: five hits, three of them
+# in production files, one per half plus the reader. That is a better tag set
+# than `SEC-FIDO-007`'s, whose single tag sat on the consequent alone.
+owners_tag_reading = "covered, and two named gaps rather than a wrong tag. The gaps are the SOLE producer of the consequent, `crates/rsk-fido/src/credential.rs:901 bump_rp`, which writes `rec[0] = 1` into a fresh EF_RP record and carries no tag of any kind; and `crates/rsk-fido/src/reset.rs`, which destroys BOTH sides in one sweep, carries six `Refines` tags for four OTHER properties (SEC-FIDO-004, -006, -006A, -006B, -006C at :35, :105, :199, :217-219, :285) and none for this one — while being the file `formal/comutants.toml`'s third co-mutant patches and the file whose model twin `ResetSweepSecrets` produces the deepest counterexample this property has. Neither absence moves the derived column: `credential.rs` and `reset.rs` are one file each, and `credential.rs` is already counted"
+# Every production site that writes either side, enumerated because the tag set
+# names three functions and the sites are ten — eight entries, of which the third
+# names the three best-effort rollbacks together.
+owners_writers = [
+  "crates/rsk-fido/src/credential.rs:853 — `bump_rp(...)?` inside `credential_store`, the EF_RP write that LEADS the credential (the order the threat clause states)",
+  "crates/rsk-fido/src/credential.rs:888 — `fs.put(EF_CRED + slot, ...)`, the antecedent's only producer",
+  "crates/rsk-fido/src/credential.rs:867, :884, :890 — the three best-effort `let _ = decrement_rp(...)` rollbacks, each itself a flash write",
+  "crates/rsk-fido/src/credmgmt.rs:672 — `delete_credential`'s `fs.delete(EF_CRED + slot)`, the antecedent's destroyer, ahead of the RP work",
+  "crates/rsk-fido/src/credmgmt.rs:711 — `let _ = fs.delete(EF_RP + j)` at count zero, the consequent's destroyer",
+  "crates/rsk-fido/src/credmgmt.rs:715 — `fs.put(EF_RP + j, ...)` on the write-back path, the count decrement that does NOT delete",
+  "crates/rsk-fido/src/passkeys.rs:284 — the trusted-display delete's `let _ = decrement_rp(...)`, the same effect keyed by slot",
+  "crates/rsk-fido/src/reset.rs — the wipe, which deletes the seed first and then sweeps EF_RP and EF_CRED in flash-ring order (the clause's stated carve-out)",
+]
+owners_readers = [
+  "crates/rsk-fido/src/credmgmt.rs:335 enumerate_rps — CTAP 0x02/0x03, the host's browse surface; it walks EF_RP and never EF_CRED",
+  "crates/rsk-fido/src/passkeys.rs:89 for_each_rp — the trusted-display Passkeys view, the second EF_RP walk",
+  "crates/rsk-fido/src/credmgmt.rs:640 find_resident — deleteCredential's own EF_CRED scan, which is why a strand costs discovery and not revocation outright",
+]
+# The three files `formal/comutants.toml` patches for this property, which the
+# derived `co = 3` counts and no tag names.
+owners_co_refuted = [
+  "crates/rsk-fido/src/credential.rs — BugCredBeforeRp, two hunks",
+  "crates/rsk-fido/src/credmgmt.rs — BugDeleteRpBeforeCred, two hunks",
+  "crates/rsk-fido/src/reset.rs — BugSeedDoesNotLead, one hunk",
+]
+# The tests that kill them, recorded here because they count in NO derived
+# column: `assurance_gate`'s `rust` axis drops filenames containing `tests`, and
+# its `test` axis reads only `tests/**/*.py`.
+owner_of_the_kill = "crates/rsk-fido/src/credential_tests.rs:648 a_failed_registration_never_leaves_a_credential_without_its_rp and its mirror at :702 a_failed_registration_leaves_neither_the_credential_nor_its_rp_entry; for the delete half, crates/rsk-fido/src/credmgmt_tests.rs:2265 a_torn_delete_never_leaves_a_credential_without_its_rp"
+
+# ---- 2. Commit, build and features -------------------------------------------
+
+[build]
+commit = "31c21a771734c1fc87f093c38125bffbee47c558"
+tree_state = "NOT clean, and saying which parts are this property's is the whole of this field. Nineteen tracked files carried concurrent uncommitted work while this bundle was written, including formal/RSKeySecurityState.tla, formal/gen-configs.sh, formal/Shipped.cfg and formal/floors.txt. Two things were therefore checked by CONTENT rather than assumed: the requirement clause is byte-identical to HEAD (`awk` over the `TM-HOST-CRED-REVOCABLE` bullet against `git show HEAD:docs/threat-model.md` gives 20 identical lines), and every model line this bundle cites still holds — NoUnmanageableCredential at RSKeySecurityState.tla:1823, KeepOpen at :309, the Fix conjunct at :1405, ResetAborts at :1484, PowerCut at :1522. The gen-configs.sh citations DID shift and were re-taken. The properties.toml diff touches SEC-POL-003 and SEC-POL-006 only. The TLC rows were recorded at `b819ee5`, `git diff b819ee5..HEAD -- 'formal/*.tla' 'formal/*.cfg' 'formal/*.sh'` is EMPTY, and the working-tree edits to formal/ arrived AFTER those runs — so a re-run of any TLC row here may not reproduce its state counts, which is a freshness statement and not a defect. The code row was driven at this exact commit in a detached worktree, so it is unaffected. Untracked: FORMAL_VERIFICATION_ROADMAP.md, five sibling bundles being written concurrently, this file and its log directory"
+matrix_column = "firmware"
+cargo_features = "the default workspace feature set, with no `--features` flag on any row; the co-refutation slice is `cargo test -p rsk-fido` on that same set"
+board_knobs = "BOARD unset and LED_KIND unset — the default 4 MB layout, and nothing on this property's path reads either"
+host_triple = "aarch64-apple-darwin"
+firmware_triple = "thumbv8m.main-none-eabihf"
+machine = "18 cores, macOS 27.0 aarch64 — the figure TLC's own banner records, so the artifact and this line cannot disagree"
+# THREE equivalent columns, not two, and the third is the difference from both
+# existing bundles: `docs/assurance-matrix.md:77` derives `cov` on column 01 and
+# `equ` on 15, 27 and 30. All three are knob-only columns whose cargo-feature
+# closure is the default build's, and a model check plus a host-test slice reads
+# no board preset.
+equivalent_columns = ["firmware-pico", "abrobot-4m", "waveshare-one"]
+
+# ---- 3. Method and scope/bounds ----------------------------------------------
+
+# SEVEN rows: four model checks, two reviews and one mutation. There is NO
+# `bounded proof` row and no `trace` row, and neither is an omission —
+# `grep -lw NoUnmanageableCredential formal/*.cfg` is 40 configurations of
+# `RSKeySecurityState` and nothing of `TraceSecurity`, and no `#[kani::proof]` in
+# this tree names the invariant or draws an EF_CRED/EF_RP pair.
+
+[[method]]
+obligation = "the invariant over the whole reachable space of the shipped constants"
+method = "model-check"
+artifact = "formal/RSKeySecurityState.tla::NoUnmanageableCredential + Shipped.cfg::NoUnmanageableCredential"
+bound_rps = 2
+stops_rps = "every interleaving that needs a second credential for ONE relying party. `store.cred` and `store.rpent` are subsets of RPs, so the cardinality IS this invariant's own domain — two relying parties with one credential each, against a device that holds hundreds over as many; AS-CRED-1 is the row that owns it"
+bound_channels = 2
+stops_channels = "a falsifying state that first arises over a third concurrent channel"
+bound_max_retries = 8
+stops_max_retries = "nothing by shrinking: eight IS the shipped ladder. It is off this property's path and is what makes the doors above the store reachable"
+bound_mismatch_limit = 3
+stops_mismatch_limit = "nothing by shrinking, for the same reason as the ladder it pairs with"
+bound_max_clock = 1
+stops_max_clock = "any falsifying state that needs a second unit of elapsed time"
+bound_reset_window = 0
+stops_reset_window = "the in-window arm. At zero the wipe is reached only outside the power-up window, so an interleaving that begins inside a legitimate in-window reset is not searched"
+shipped_relation = "MaxRetries and MismatchLimit ARE the shipped MAX_PIN_RETRIES (8) and PIN_MISMATCH_LIMIT (3) at crates/rsk-fido/src/consts.rs; MaxClock 1 is the smallest value at which Tick is not dead; ResetWindow 0 runs the window closed only. RPs = 2 IS on this property's path, and that is the difference from SEC-FIDO-007's identical-looking row: `store.cred` and `store.rpent` are SUBSETs of RPs, so the cardinality is the invariant's own domain — two relying parties, one credential each, against a device that holds MAX_RESIDENT_CREDENTIALS (256) credentials over as many RPs. What two buys is that the counterexamples below are not artefacts of a single-RP degeneracy; what it costs is every interleaving that needs a second credential for ONE rp, which is AS-CRED-1"
+cfg = "none"
+features = "none"
+
+[[method]]
+obligation = "the same invariant on the three arms the default image does not build, so the assertion is not one configuration's"
+method = "model-check"
+artifact = "AlwaysUv.cfg::NoUnmanageableCredential PermWide.cfg::NoUnmanageableCredential ForceChange.cfg::NoUnmanageableCredential"
+bound_arms = 3
+stops_arms = "any arm of a standing assumption no configuration takes. What the three buy is that all four of the tree's non-mutant configurations assert this invariant, which is the whole of its numerator; none of the three constants they vary is on this property's path, so they buy no depth on it"
+bound_rps = 2
+stops_rps = "every interleaving needing a second credential for one relying party, on the three arms as on the shipped row"
+bound_channels = 2
+stops_channels = "a falsifying state that first arises over a third concurrent channel, on all three arms"
+bound_max_retries = 2
+stops_max_retries = "the six rungs between two and the shipped eight, on the alwaysUv arm — free here, because no clause of this invariant names a retry count"
+bound_mismatch_limit = 1
+stops_mismatch_limit = "the two mismatches between one and the shipped three, and nothing this invariant can express"
+shipped_relation = "the retry ladder is REDUCED on the AlwaysUv arm (formal/AlwaysUv.cfg:6-7, 2:1 against the shipped 8:3) and left alone on the other two. AND NONE OF THE THREE CONSTANTS THE ARMS VARY IS ON THIS PROPERTY'S PATH: AlwaysUvShipped is a gate default, WidePerms is the permission-set cardinality and ForceChangeModelled is a PIN-policy flag, while `store.cred \\subseteq store.rpent` names two store fields and no gate. What the three rows buy is therefore not depth on the invariant but that all four of the tree's non-mutant configurations assert it — which is the whole of the `4 of 40` numerator, and which most MODELLED-ONLY rows do not have"
+cfg = "none"
+features = "none"
+
+[[method]]
+obligation = "non-degeneracy: the invariant CAN go red, in each of the three places the tree models it failing, and the red names it rather than a sibling"
+method = "model-check"
+artifact = "Solo_BugCredBeforeRp.cfg::BugCredBeforeRp Solo_BugDeleteRpBeforeCred.cfg::BugDeleteRpBeforeCred Solo_BugSeedDoesNotLead.cfg::BugSeedDoesNotLead"
+bound_invariants = 2
+stops_invariants = "anything about the rest of the invariant set. TypeOK and this name alone is what tells these kills from a neighbour's"
+bound_armed_switches = 1
+stops_armed_switches = "any defect needing two switches at once"
+bound_solo_configurations = 3
+stops_solo_configurations = "a fourth ordering. The three switches are the three orderings the shipped tree chose — registration, credential-management delete and the wipe — so an ordering nobody wrote a switch for is not shown to be falsifiable"
+bound_counterexample_depths = 14
+stops_counterexample_depths = "nothing — the depth is the deepest MEASURED trace of the three and not a cap the configurations impose; the other two fall shallower"
+shipped_relation = "each configuration checks TypeOK and this invariant and NOTHING else, and arms exactly one Bug* with every other FALSE — which is what tells these kills from a neighbouring invariant's. The three switches are the three orderings the shipped tree chose: registration (EF_RP before EF_CRED, credential.rs:853 vs :888), credential-management delete (EF_CRED before the count, credmgmt.rs:672 vs :679) and the wipe (the seed before the batch — the `FIDO_SEED_FIDS` loop at reset.rs:113-117, under the comment at :105-107 that says why). The depth bound is the deepest of the three traces, 14 on Solo_BugDeleteRpBeforeCred; the other two fall at 7 and 13. Unlike SEC-FIDO-007, the Solo_ rows are not the ONLY place this property is observed to fail — `formal/gen-configs.sh:185-187` puts a mutant's target invariant FIRST in a Mut_ configuration's INVARIANTS block, so all three Mut_ twins report this name too"
+cfg = "none"
+features = "none"
+
+[[method]]
+obligation = "the historical row: the wipe order this tree had before 0x08BF, run against the whole invariant set"
+method = "model-check"
+artifact = "Historical_E76.cfg::BugSeedDoesNotLead"
+bound_invariants = 7
+stops_invariants = "clause attribution. Seven invariants are checked at once, so TLC reports the first violated name and a red on this row need not be this property's — which is what the solo rows above exist for"
+bound_armed_switches = 1
+stops_armed_switches = "any defect needing a PAIR of switches at once — and note what the one switch buys here now: this configuration and Mut_BugSeedDoesNotLead.cfg were the same file under two names when this row was written and differ at exactly line 48 today, so the roster's denominator counts forty distinct configurations rather than one of them twice"
+bound_states_searched = 986872269
+stops_states_searched = "anything about WHICH of the seven invariants earned the green. The search is complete now — 0 states left on queue, depth 58 — so the count is the whole reachable set rather than the point a violation stopped it at, and a completed search is equally silent about all seven names. The key was `bound_states_before_abort` while this configuration aborted; there is no abort to count to any more"
+shipped_relation = "the configuration is the pre-0x08BF tree — `BugSeedDoesNotLead = TRUE` — at `Shipped.cfg`'s constants, and it is the row that says this invariant is what the E76 fix was FOR. It is also this bundle's first finding about the apparatus rather than the property, AND THAT FINDING HAS SINCE BEEN REPAIRED AT THE GENERATOR. `diff formal/Historical_E76.cfg formal/Mut_BugSeedDoesNotLead.cfg` was EMPTY when this row was written, both emitted with the same four arguments, so the two files were one configuration under two names and the `cfgs = 40` denominator counted 39 distinct ones. `formal/gen-configs.sh:322` now passes TRUE for the repair — `emit Historical_E76.cfg BugSeedDoesNotLead TRUE TRUE` — where the `Mut_` loop at `:329` still passes FALSE, so `diff` is the single hunk `48c48` on `FixSweepDropsCredsBeforeRpEntries` and the forty are forty distinct. THE RUN OF THE NEW CONTENT NOW EXISTS and this row is derived from it: `formal/runs.toml`'s safety tier, recorded at 9cafee7, has `Historical_E76.cfg GREEN states=986872269 distinct=77563872 depth=58 1927s`. So the counterfactual repair HOLDS the invariant the E76 defect breaks — `Mut_BugSeedDoesNotLead.cfg`, the same switch with `FixSweepDropsCredsBeforeRpEntries = FALSE`, is still RED at 1 875 109 states — and the pair of constants costs the reachable set nothing: the distinct count is Shipped.cfg's 77 563 872 exactly, at Shipped.cfg's depth of 58, for 36 072 more states generated"
+cfg = "none"
+features = "none"
+
+[[method]]
+obligation = "the production side: which sites own each half, whether the tags reach them, and what `reachable by the management surface` means in Rust that `store.rpent` does not say"
+method = "review"
+artifact = "crates/rsk-fido/src/credential.rs::credential_store + crates/rsk-fido/src/credmgmt.rs::decrement_rp + …enumerate_rps + crates/rsk-fido/src/passkeys.rs::for_each_rp"
+bound_tagged_owners = 3
+stops_tagged_owners = "any owner outside the three the tag set names. This is a count of SITES and not a shrink of a shipped constant, because a review has no other unit"
+bound_writer_sites = 8
+stops_writer_sites = "a writer in a file the review did not open. Eight entries over four files is what was read, and one entry holds three best-effort rollbacks, so the site count is larger than the entry count"
+bound_reader_sites = 3
+stops_reader_sites = "anything about what a reader DOES with a slot it read. The count names the three browse surfaces and not their agreement — measured, two of them disagree on one skip condition"
+bound_skip_conditions = 3
+stops_skip_conditions = "the invariant itself, and this is the finding: a record that exists and is SKIPPED satisfies `store.rpent` as plain set membership while being exactly what the clause forbids. Three skip conditions are three ways for that to happen, and no model bound reaches any of them"
+bound_files_in_argument = 4
+stops_files_in_argument = "anything in a fifth file"
+bound_crates = 1
+stops_crates = "a site outside rsk-fido. The whole argument is in one crate, so a management surface in another would be outside it"
+shipped_relation = "eight writer entries over four files in ONE crate — ten sites, since one entry holds the three best-effort rollbacks — against the three functions the tag set names; the count is a count of sites and not a shrink of a shipped constant, because a review has no other unit. The three skip conditions are the finding: both browse surfaces drop an EF_RP slot when `fs.read` answers None (credmgmt.rs:364, passkeys.rs:113), when `n < RP_PREFIX || buf[0] == 0` (credmgmt.rs:368, passkeys.rs:117) and when `unseal_rp_id` fails (credmgmt.rs:402, passkeys.rs:122) — and `store.rpent` is plain set membership, so a record that exists and is skipped satisfies the invariant while being exactly what the clause forbids. The two surfaces do not even agree with each other on the third: `enumerate_rps` answers `CtapError::Other` for the WHOLE walk, so one unsealable record hides every other relying party from the host, while `for_each_rp` skips that one and lists the rest"
+cfg = "none — every site above is unconditional production code; the invariant's name appears in no cfg-gated mirror"
+features = "none"
+
+[[method]]
+obligation = "the five sites the tree already records as open in this class, and whether the model's abstraction hides them"
+method = "review"
+artifact = "CHANGELOG.md crates/rsk-fido/src/credential.rs::bump_rp crates/rsk-fido/src/credmgmt.rs::delete_credential crates/rsk-fido/src/largeblobext.rs::discard"
+bound_open_sites = 5
+stops_open_sites = "any site in this class the CHANGELOG's list does not name. The five were read from a list the tree already keeps, so the review is exactly as complete as that list is"
+bound_sites_in_the_forbidden_direction = 0
+stops_sites_in_the_forbidden_direction = "nothing about whether the five are harmless. Measured, none can falsify this invariant — every one strands an EF_RP entry OVER a credential that is gone, which is the direction `cred subseteq rpent` does not constrain — so the zero says this property does not reach them and SEC-STORE-006 is where that direction is asserted"
+bound_model_actions_that_can_fail = 0
+stops_model_actions_that_can_fail = "every one of the five leaks. No action of the model can FAIL a flash write, so an `Err` returned by `Fs::put` and a best-effort rollback that itself fails are outside every configuration in this bundle"
+bound_tear_producers = 2
+stops_tear_producers = "a tear anywhere but between two writes that succeeded. Both producers act between successful writes, so the failure mode where the write itself returns an error is not a tear this model can produce"
+shipped_relation = "CHANGELOG.md [0.4.11] `Still open, same class, and named here` names five sites as open, same class, `so the next sweep starts from a list`: the power-cut window between the RP bump and the credential write; `delete_credential` removing EF_CRED and then answering `NotAllowed` when the EF_RP write fails; `decrement_rp`'s own `let _ = fs.delete(EF_RP + j)`; the trusted-display delete swallowing the same failure; and `largeblobext::discard`. MEASURED AGAINST THE INVARIANT, AND THIS IS THE ANSWER: none of the five can falsify it. Every one strands an EF_RP entry OVER a credential that is gone or never landed — `rpent \\supset cred`, the direction `cred \\subseteq rpent` does not constrain — which is precisely why the shipped order was chosen. What the model hides is therefore not a defect in this property's direction but the five leaks themselves: no action of `RSKeySecurityState` can FAIL a flash write (the two tear producers are `PowerCut`, RSKeySecurityState.tla:1522, and `ResetAborts`, :1484, and both act between two writes that succeeded), so an `Err` returned by `Fs::put` and a best-effort rollback that itself fails are outside every configuration. AS-CRED-3 is the row that owns it, and `SEC-STORE-006 NoSilentOrphan` is where that direction is asserted instead"
+cfg = "none"
+features = "none"
+
+[[method]]
+obligation = "the code twins: the same three defects injected into production Rust, and whether the tree's own suite catches them"
+method = "mutation"
+artifact = "formal/comutants.toml::BugCredBeforeRp + scripts/comutate.py + crates/rsk-fido/src/credential_tests.rs::a_failed_registration_never_leaves_a_credential_without_its_rp"
+bound_registered_twins = 3
+stops_registered_twins = "any model switch with no code twin. Three are registered, one per switch targeting this invariant, so the code-level verdict covers the defects somebody wrote patches for"
+bound_patch_hunks = 2
+stops_patch_hunks = "any defect the two hunks cannot express. They defer one call past one write in the shipped file, which is that defect and not the class it belongs to"
+bound_patched_files = 1
+stops_patched_files = "a defect that has to span two files"
+bound_driven_here = 1
+stops_driven_here = "the other two verdicts as OBSERVATIONS. One of the three was re-driven for this bundle; the other two are transcribed from the register, so their kills are recorded rather than re-measured"
+bound_credited_configurations = 3
+stops_credited_configurations = "what the killing tests are ABOUT. The credit is three because the index reads solo configurations by invariant name; the tests that fall are named for this property's shape and not for the property, and no derived column counts them"
+shipped_relation = "three twins are registered — one per model switch, at formal/comutants.toml:96, :125 and :343 — and all three carry `expect = \"killed\"`, which is a RECORDED verdict per that file's own status vocabulary (:19-21) and not a plan. ONE of the three was re-driven for this bundle, BugCredBeforeRp, whose two hunks defer `bump_rp` past the EF_CRED write in the shipped file; the other two are transcribed from the register and are marked as such in the mutation table. The credit is three because `comutate.solo_index` reads the Solo_ configuration BY INVARIANT NAME (scripts/comutate.py:337-365) and all three switches target this invariant. What the column does NOT say, and the source does: the killing tests are named for this property's shape but not for the property, and no derived column counts them"
+cfg = "none"
+features = "none — the slice is `cargo test -p rsk-fido --lib` on the default feature set, with `--target aarch64-apple-darwin` because the workspace default target is the firmware's"
+
+# ---- 4. Tool, version, invocation and environment ----------------------------
+
+# FIVE tools and no prover, for the reason `property.subjects_absent` gives:
+# `kani = 0` is this property's correct value, so cargo-kani and CBMC — which
+# carry SEC-FIDO-001's only UNHASHED provenance, the version being pinned and the
+# fetched solver bundle not — are absent here rather than unfilled.
+
+[[tool]]
+name = "tlaplus"
+version = "1.7.4"
+provenance = "flake.lock; tla2tools.jar sha256 936a262061c914694dfd… — the prefix formal/run-tlc.sh:16 records, which is the half PLAT-TOOL-003 does not have for cargo-kani"
+invocation = "java -XX:+UseParallelGC -Xmx4g -cp $TLA2TOOLS_JAR tlc2.TLC -nowarning -workers 2 -config <cfg> RSKeySecurityState"
+environment = "nix develop; WORKERS=2, HEAP=4g — not the liveness tier's 12g, because no configuration here declares a temporal property"
+
+[[tool]]
+name = "openjdk"
+version = "1.8.0_492 (Zulu 8.94.0.17-CA-macos-aarch64)"
+provenance = "flake.lock"
+invocation = "see tlaplus"
+environment = "nix develop"
+
+[[tool]]
+name = "rustc"
+version = "1.96.0 (ac68faa20 2026-05-25)"
+provenance = "flake.lock"
+invocation = "cargo test -p rsk-fido --lib --target aarch64-apple-darwin, in a detached worktree at this commit with the comutant's two hunks applied"
+environment = "nix develop; CARGO_TARGET_DIR pointed at the main tree's cache, which is what scripts/comutate.py:903-905 does for the same reason — only the patched crate recompiles"
+
+[[tool]]
+name = "cargo"
+version = "1.96.0 (30a34c682 2026-05-25)"
+provenance = "flake.lock"
+invocation = "see rustc; the slice `formal/comutants.toml` names for all three twins is exactly `cargo test -p rsk-fido`"
+environment = "nix develop"
+
+[[tool]]
+name = "python"
+version = "3.13.13"
+provenance = "flake.lock"
+invocation = "python3 scripts/assurance_gate.py, scripts/threat_gate.py and scripts/bundle_gate.py — the three the result group transcribes or rests on"
+environment = "nix develop"
+
+# ---- 5. Principal result -----------------------------------------------------
+
+[result]
+# TIER B — the invariant over the shipped constants and the three arms. There is
+# no tier A (no requirement gate module abstracts this property) and no tier C
+# (see k_no_bounded_proof).
+b_shipped = "Shipped.cfg GREEN — 986 836 197 states, 77 563 872 distinct, depth 58, 1913 s; NoUnmanageableCredential among the nine invariants Shipped.cfg checked at the recorded run — the working tree has three more in that file, added by concurrent work after these numbers were taken"
+b_always_uv = "AlwaysUv.cfg GREEN — 273 124 081 states, 23 521 512 distinct, depth 51, 519 s; the same invariant with alwaysUv as the compiled default and the retry ladder reduced to 2:1"
+b_perm_wide = "PermWide.cfg GREEN — 344 527 413 states, 21 456 020 distinct, depth 45, 553 s; WidePerms TRUE, the permission-set arm"
+b_force_change = "ForceChange.cfg GREEN — 106 956 959 states, 10 765 176 distinct, depth 46, 177 s; ForceChangeModelled TRUE, the forced-PIN-change arm"
+b_asserted_arms = "four of the four non-mutant configurations that name this invariant assert it, which is the whole `4 of 40` numerator of docs/assurance-vector.md:67 — and the honest reading is in the method table: not one of the three constants those arms vary appears in `store.cred \\subseteq store.rpent`, so what the three extra arms buy is breadth of configuration and not depth on the property"
+
+# NON-DEGENERACY. Three switches, three Solo_ configurations, three depths.
+b_solo_cred_before_rp = "Solo_BugCredBeforeRp.cfg RED: NoUnmanageableCredential — 7031 states, 1893 distinct, depth 7, 1 s. The trace is PressDown, RegisterStart, TouchConfirm, RegisterTouched, RegisterWriteA (which under the switch writes the CREDENTIAL first), PowerCut — and the quiescent state the cut leaves is `store = [seed |-> TRUE, cred |-> {r1}, rpent |-> {}]`: a live, decryptable passkey with no entry either browse surface can find"
+b_solo_delete_rp_before_cred = "Solo_BugDeleteRpBeforeCred.cfg RED: NoUnmanageableCredential — 3 363 453 states, 375 001 distinct, depth 14, 8 s. Fourteen steps because the delete has to be reached: register both records, SetPin, GetPinToken, DeleteCredStart, then DeleteCredWriteA drops the RP entry first and PowerCut lands between the two writes"
+b_solo_seed_does_not_lead = "Solo_BugSeedDoesNotLead.cfg RED: NoUnmanageableCredential — 1 875 183 states, 219 676 distinct, depth 13, 5 s. This is the deepest of the three in what it says: the falsifying state is reached through ResetSweepSecrets and ResetAborts, so the store is left with `cred = {r1}, rpent = {}` AND `seed = TRUE` — the credential is not merely unlistable, it is still openable, and the device kept running. `ResetAborts` is the second producer of a quiescent state and the model's own comment at :1758-1765 argues the `Idle` conditioning from PowerCut alone"
+b_mut_names_this_invariant = "all three Mut_ twins report THIS invariant and not a sibling's — Mut_BugCredBeforeRp RED: NoUnmanageableCredential, 7031 states, 1893 distinct, depth 7, identical to its Solo_ twin's counts. That is the opposite of SEC-FIDO-007's experience, and the mechanism is formal/gen-configs.sh:185-187: a Mut_ configuration lists its target invariant FIRST, and TLC reports the first invariant violated. The attribution question that bundle had to answer therefore does not arise here"
+b_historical_e76 = "Historical_E76.cfg GREEN — 986 872 269 states, 77 563 872 distinct, depth 58, 1927 s, complete search, from formal/runs.toml's safety tier recorded at 9cafee7. THE RUN OF THE NEW CONTENT NOW EXISTS: the file carries the counterfactual repair (formal/gen-configs.sh:322), formal/floors.txt:Historical_E76.cfg asks GREEN of it, and the recording answers. What that GREEN is evidence OF is the repair, not the property — the one-line control Mut_BugSeedDoesNotLead.cfg is still RED: NoUnmanageableCredential at 1 875 109 states, so the green is the conjunct at RSKeySecurityState.tla:1405 doing work rather than an invariant nothing can break. The superseded reading is kept in this bundle's header: the old verdict was RED at those same 1 875 109 states, and it was a finding about the roster — the two files were then byte-identical. Note what the new run costs: the SAME 77 563 872 distinct states Shipped.cfg finds, at the same depth 58, for 36 072 more states generated and 11 s LESS wall clock"
+b_denominator = "of the forty configurations naming the invariant: 5 GREEN (AlwaysUv, ForceChange, Historical_E76, PermWide, Shipped), 6 RED naming it (3 Solo_, 3 Mut_) and 29 RED naming another property first — 12 NoAuthorizationBypass, 6 NoTokenAfterInvalidation, 5 NoCrossTransportTouchConsumption, 3 NoAccessibleSecretWithoutGate (Historical_E77 among them) and 3 ResetNeverWeakensSurvivingState. A configuration CHECKING an invariant is not evidence about it, and this is what that costs on this row: 29 of the 40 are a mutant of something else. The fortieth was a second copy of another when this was written and is now the one distinct experiment nothing else runs, so the denominator is forty distinct. RE-DERIVED against the safety tier recorded at 9cafee7, and the prediction the superseded split carried was right in both halves: E76 moved RED to GREEN, `7 RED naming it` became six, and the fifth assertion arrived"
+
+# THE CODE TWIN, driven. One of three; the other two are the register's.
+c_twin = "the two hunks of formal/comutants.toml:96-123 applied to crates/rsk-fido/src/credential.rs in a detached worktree at this commit, then `cargo test -p rsk-fido --lib --target aarch64-apple-darwin`: FAILED, 667 passed; 2 failed; 1 ignored, 11.75 s. The patch moves `bump_rp` from ahead of the EF_CRED write to behind it — the shipped file, not a model edit"
+c_twin_direction = "BOTH failures fall in the modelled direction and the assertion text is what says so, not the exit code. `a_failed_registration_never_leaves_a_credential_without_its_rp` panics at credential_tests.rs:676 with `write budget 3 left a credential with no EF_RP record — invisible to every enumeration and revocation surface`, which IS the defect; its mirror `a_failed_registration_leaves_neither_the_credential_nor_its_rp_entry` panics at :728 with `write budget 3 answered an error over a credential that is live`, which is the same state seen from the other side. Neither says `should have been refused`, and neither says the registration was over-refused — the inverse defect, a rollback that removes too much, would fail the mirror alone and with the opposite message"
+c_twin_untransferred = "the other two twins are transcribed from formal/comutants.toml and were NOT re-driven here: BugDeleteRpBeforeCred (:125-154, `expect = \"killed\"`, whose note records it as batch 1's one measured GAP, closed by a_torn_delete_never_leaves_a_credential_without_its_rp) and BugSeedDoesNotLead (:343-359, `expect = \"killed\"`). A recorded verdict is evidence and a re-run is better evidence; this bundle bought one and says which"
+
+# THE PRODUCTION SIDE, by review.
+r_owners = "8 writer entries (10 sites, one entry holding the three best-effort rollbacks) and 3 reader sites over 4 files in 1 crate, against the 3 functions the Refines tags name. The sole producer of the consequent (bump_rp) and the file that destroys both sides (reset.rs) carry no tag for this property, and reset.rs carries six for four others"
+r_tag = "both halves of the implication are tagged, which is what SEC-FIDO-007's single tag was not: credential.rs::credential_store owns the antecedent, credmgmt.rs::decrement_rp owns the consequent, passkeys.rs::for_each_rp owns the reader that makes `manageable` mean anything"
+r_management_surface = "`store.rpent` is set membership; the shipped surfaces need three more conjuncts. Both drop a slot on a failed `fs.read`, on `buf[0] == 0` and on a failed `unseal_rp_id`, and the model can express none of them — so a device whose EF_RP record exists but does not unseal satisfies this invariant while showing the owner nothing. The two surfaces also disagree on the last arm: enumerate_rps fails the whole walk with CtapError::Other, for_each_rp skips one record. Of the three arms only the read failure is one a live medium reaches, and it is the same class docs/threat-model.md:60-93 states as its own clause"
+r_rollback_class = "the five sites CHANGELOG.md [0.4.11] `Still open, same class, and named here` leaves open in this class are ALL in the direction this invariant does not constrain — each strands an EF_RP entry over a credential that never landed or is already gone. That is not luck: it is the shipped write order, and the threat clause states the same thing in the same words. The model hides them for a different reason than a wrong direction — it has no failing write at all"
+r_fix_arm_never_run = "THE RUN HAS HAPPENED, so this row's name is now its history. `FixSweepDropsCredsBeforeRpEntries` — the counterfactual repair the tree did NOT take, RSKeySecurityState.tla:1405, which holds the sweep's rpent arm until `store.cred` is empty — WAS FALSE in every configuration that assigns it and TRUE in none when this row was written; measured now, it is TRUE in exactly one, formal/gen-configs.sh:322 over Historical_E76.cfg, against 95 files that pass FALSE. formal/runs.toml's safety tier at 9cafee7 records that file GREEN over a complete search, so a recorded verdict now DOES depend on the constant's value and the tree has MEASURED that the repair holds this invariant. The conjunct is load-bearing and observed to be: the one-line control Mut_BugSeedDoesNotLead.cfg is RED on this invariant at 1 875 109 states. What is still true of the row: the constant is outside the standing-assumption registry, so the assumption gate's both-arms rule never looks at it — gate_assumption below tracks four booleans and this is not one, and the FALSE arm is observed through that control rather than through the gate"
+m_store_support = "formal/RSKeyStore.tla:47 declares `Supports RSKeySecurityState!NoUnmanageableCredential — SEC-FIDO-005`, and assurance_gate validates that edge. It is a DECLARED support and not a run: no configuration of the store model checks this invariant, and what the store model asserts is its own SEC-STORE invariants — the record-level facts (a torn write lands the old value or the new one; a deleted file's metadata does not linger) that the EF_RP and EF_CRED records of this property rest on"
+k_no_bounded_proof = "the obligation with NO machine-checked source evidence is the implication over an arbitrary interleaving of flash outcomes, and it has none because no `#[kani::proof]` in this tree names the invariant or draws an EF_CRED/EF_RP pair — `crates/rsk-fido/src/credmgmt_kani.rs`'s four harnesses are three of SEC-FIDO-001's Begin decisions and one of SEC-FIDO-003's, and `crates/rsk-fs/src/powercut_kani.rs`'s four are the store's own tears one layer below the records. So `kani = 0` is correct and not unfilled, in the same sense SEC-FIDO-007's is and for a different reason: there the neighbouring harnesses are deliberately wider than the invariant, here there is no neighbour. What would close it is named in property.subjects_absent_reading, and writing it is stage 4's call — a harness would move the derived column and the status word with it, which a bundle may not do"
+t_trace = "no TraceSecurity configuration checks this invariant and none of the recorded session's fields projects `store.cred` or `store.rpent`, so the trace axis is `0 of 0` rather than a zero over a denominator. That is an absence with a consequence worth stating: every verdict in this bundle is a claim about the MODEL and the two host tests, and nothing here compares either against a recorded device session"
+m_matrix_cells = "docs/assurance-matrix.md:77 claims this property on four cells of thirty-one — one covered (`firmware`) and three equivalent (`firmware-pico`, `abrobot-4m`, `waveshare-one`) — and this bundle settles none of the remaining twenty-seven: a model check and a host-test slice read no board preset, no flash geometry and no cargo feature"
+
+# The gates, each with the number it derives today. Derived live for this bundle
+# rather than copied from a sibling.
+gate_ghost = "ghost-gate: 21 action(s) record NoAuthorizationBypass over 24 route(s), consulting 11 guard(s) — unchanged by this bundle and transcribed because the roster rule demands every gate line whether or not this property moved it; the ghost register is about a different invariant entirely, and this property records no `viol` anywhere"
+gate_ledger = "token-refinement-gate: GREEN keys=2 api=11 volatile=11/10 persistent=14/5 outcomes=7/6 walk=4 softlock=12 window=2 testonly=1 — the ledger owns the token axes, and not one of this property's owner sites is in any of them"
+gate_assumption = "assumption-gate: 5 standing assumption(s) AlwaysUvShipped TRUE=5 FALSE=91 ForceChangeModelled TRUE=3 FALSE=93 PowerOnClearsScratch2 TRUE=11 FALSE=4 RekeyOrderModelled TRUE=2 FALSE=13 WidePerms TRUE=3 FALSE=93. Three of the five have BOTH arms checking this invariant — AlwaysUvShipped through AlwaysUv.cfg, WidePerms through PermWide.cfg and ForceChangeModelled through ForceChange.cfg — which is more than either existing bundle can say, and is also exactly what result.b_asserted_arms says is worth little here. Transcribed at the moment of writing and VOLATILE, and that prediction has now been paid twice over: this line moved twice while the bundle was being written, because formal/ was under concurrent edit and every generated configuration is a denominator in it, and it moved again afterwards when `RekeyOrderModelled` entered the registry and two `Historical_Boot*` configurations entered the roster"
+gate_matrix = "matrix-gate: 40 P0-family properties × 31 build configurations = 1240 cells (37 covered, 143 equivalent, 0 conditional, 106 out-of-scope, 954 gap) — UNCHANGED by this bundle, and the per-property half of that row is in result.m_matrix_cells rather than here, because a number this line does not derive does not belong on it"
+gate_registry = "assurance-gate: SEC-FIDO-005 NoUnmanageableCredential MODELLED-ONLY cfgs=40 mut=3 co=3 kani=0 fuzz=0 rust=3 test=0 — and this bundle moves none of them. `cfgs=40` is still the finding rather than the evidence, for one reason now instead of two: twenty-nine of the forty are mutants of some other property that merely CHECK this one. The other reason is gone — one of the forty WAS a byte-identical copy of another and is not any more, so the forty are forty distinct configurations and the number did not have to move for the meaning to. `rust=3` counts files and not tags, so tagging bump_rp would move nothing and tagging reset.rs would move it by one"
+
+# ---- 6. Raw artifact or log --------------------------------------------------
+
+[[artifact]]
+run = "formal/run-tlc.sh Shipped.cfg — the invariant over the shipped constants, and the largest space it is asserted over"
+path = "assurance/bundle/logs/SEC-FIDO-005/tlc-Shipped.log"
+bytes = 7163
+sha256 = "317703de77238fd60a9cb2fc9391ba387c3d2c352529a98e21be7f970f3d1452"
+
+[[artifact]]
+run = "formal/run-tlc.sh AlwaysUv.cfg — AS-AUTH-2's other arm, the same invariant with alwaysUv as the compiled default"
+path = "assurance/bundle/logs/SEC-FIDO-005/tlc-AlwaysUv.log"
+bytes = 3135
+sha256 = "4fd7becdee7d1cada4b68b905ba11966f97ae9b59b83fc0bc19f6ceeaaac49cd"
+
+[[artifact]]
+run = "formal/run-tlc.sh PermWide.cfg — WidePerms' other arm"
+path = "assurance/bundle/logs/SEC-FIDO-005/tlc-PermWide.log"
+bytes = 3307
+sha256 = "1b2a8dfe9b4da6d863e334cc6efbb3cdf34eeb3b448d30e4bb51672897990cdc"
+
+[[artifact]]
+run = "formal/run-tlc.sh ForceChange.cfg — ForceChangeModelled's other arm, and the fourth and last configuration that ASSERTS this invariant"
+path = "assurance/bundle/logs/SEC-FIDO-005/tlc-ForceChange.log"
+bytes = 2112
+sha256 = "25b7a355205d89defaf052ce50648efe85e6f17c0743bb3555068dbe75e19833"
+
+[[artifact]]
+run = "formal/run-tlc.sh Solo_BugCredBeforeRp.cfg — the registration order, RED. The log IS the seven-state counterexample"
+path = "assurance/bundle/logs/SEC-FIDO-005/tlc-Solo_BugCredBeforeRp.log"
+bytes = 8293
+sha256 = "19bbccc3997c9116dcf2c5b60e240aafac9c6190b2b982a3e2456f96bbdc3aa1"
+
+[[artifact]]
+run = "formal/run-tlc.sh Mut_BugCredBeforeRp.cfg — the same switch against the whole invariant set, which reports THIS invariant's name and not a sibling's"
+path = "assurance/bundle/logs/SEC-FIDO-005/tlc-Mut_BugCredBeforeRp.log"
+bytes = 8291
+sha256 = "5dcba4feb525f2cc8c16be342322d4672ebf8bf693add45361f72b8259e0e534"
+
+[[artifact]]
+run = "formal/run-tlc.sh Solo_BugDeleteRpBeforeCred.cfg — the credential-management delete order, RED at depth 14"
+path = "assurance/bundle/logs/SEC-FIDO-005/tlc-Solo_BugDeleteRpBeforeCred.log"
+bytes = 15401
+sha256 = "6fbaec420b1fb2f95eab5f03840ff1740d7d203a0acb76f0643bf6103e63e5da"
+
+[[artifact]]
+run = "formal/run-tlc.sh Solo_BugSeedDoesNotLead.cfg — the wipe order, RED, and the one trace that leaves the stranded credential still openable"
+path = "assurance/bundle/logs/SEC-FIDO-005/tlc-Solo_BugSeedDoesNotLead.log"
+bytes = 14422
+sha256 = "dbc4dea23f91ac4908327d0ef862d170d059bf05659a4822c6ec99ec080e81a8"
+
+[[artifact]]
+run = "formal/run-tlc.sh Historical_E76.cfg — the pre-0x08BF tree with the counterfactual repair `FixSweepDropsCredsBeforeRpEntries` applied, GREEN over a complete search. THIS LOG REPLACES THE SUPERSEDED ONE: the old artifact was the run of the byte-identical twin of Mut_BugSeedDoesNotLead.cfg, RED, 14 422 bytes at sha256 535a5bd5…, and it recorded a finding about the roster rather than a result about the property. This one is the run of the content formal/gen-configs.sh:322 emits, taken in the safety tier recorded at 9cafee7"
+path = "assurance/bundle/logs/SEC-FIDO-005/tlc-Historical_E76.log"
+bytes = 7330
+sha256 = "32b1e7da56667db2fc74a0143b0d1f386a3541d354ab359b37502a3b6f1c390e"
+
+[[artifact]]
+run = "the co-refutation slice, driven for this bundle: formal/comutants.toml's two BugCredBeforeRp hunks applied in a detached worktree at this commit, then `cargo test -p rsk-fido --lib --target aarch64-apple-darwin`. Unedited, so the two failing tests name themselves and print the assertion that fell"
+path = "assurance/bundle/logs/SEC-FIDO-005/comutate-BugCredBeforeRp.log"
+bytes = 53066
+sha256 = "0a1bc93a320447121b5ab19c9dab6ee8a03a688df2e684b6d9a89097e3e3ee3d"
+
+# ---- 7. Assumptions and TCB / trust dependencies -----------------------------
+
+# EIGHT rows. Four reuse an entry of `assurance/platform.toml` — one of which
+# (PLAT-BUILD-001) already claims its id and needs nothing — and four need a new
+# entry. None of it is written here: this bundle may not edit that registry, so
+# every addition and every `covers` extension is PROPOSED, and
+# `scripts/platform_gate.py:1890-1918` derives every id below and fails in BOTH
+# directions until an entry claims it.
+#
+# INTEGRATOR: merging the proposals flips four `registered` fields in this file
+# from `no` to `yes` — AS-CRED-2, AS-CRED-3, AS-CRED-4 and AS-CRED-5. They read
+# `no` today because that is what the registry says today, and `check_bundles`
+# compares `registered.startswith("yes")` against the registry in both
+# directions, so a `yes` written ahead of the merge is a claim the registry does
+# not make and a `no` left after it is the same error mirrored.
+
+[[assumption]]
+id = "AS-CRED-1"
+statement = "`store.cred` and `store.rpent` are SETS of relying parties — one credential per RP — so the EF_RP count byte that `bump_rp` increments and `decrement_rp` decrements does not exist in the model, and neither does any interleaving that needs two credentials of one relying party."
+kind = "model abstraction"
+discharger = "the store slice of stage 5, and until then the two host tests that reach where the model cannot: crates/rsk-fido/src/credmgmt_tests.rs:2166 deleting_one_of_two_credentials_writes_back_to_its_own_rp_slot exists precisely because `decrement_rp`'s write-back path (credmgmt.rs:715) is a fourth EF_RP write that no sole-credential test reaches. The count is where this property's sharpest unmodelled failure would live: a count that under-runs deletes the EF_RP record with a credential still behind it, which is the invariant's forbidden direction, and crates/rsk-fido/src/credential.rs:937-942 says in its own comment that a 256th credential once recorded 255 and did exactly that (audit run-35)"
+expressible = "no — a cardinality, not a boolean; scripts/assumption_gate.py accepts a boolean CONSTANT and nothing else"
+registered = "yes — assurance/platform.toml PLAT-MODEL-002, pending, whose statement is this assumption in as many words and whose `supports` already names SEC-FIDO-005. Its `covers` needs `slice:AS-CRED-1` beside the AS-AUTH-6 it holds; an extension, not a new row"
+
+[[assumption]]
+id = "AS-CRED-2"
+statement = "`r \\in store.rpent` means the EF_RP record for r is REACHABLE by the management surface, and in the shipped tree it means only that the record exists: both surfaces additionally require the read to succeed, the count byte to be positive and the rpId to unseal."
+kind = "model fidelity"
+discharger = "reading the two surfaces apart, and there is no run behind it. crates/rsk-fido/src/credmgmt.rs:364, :368 and :402 and crates/rsk-fido/src/passkeys.rs:113, :117 and :122 are the six `continue`/error arms; the third pair does not even agree — enumerate_rps answers CtapError::Other for the whole walk while for_each_rp skips one record. Of the three the read-failure arm is the one a live medium reaches, and docs/threat-model.md:60-93 states it as a threat of its own. What would discharge this is either a second model variable for `listable` or a test at each surface driving a refused EF_RP read and asserting what the owner is shown"
+expressible = "no — the alternative needs a second VARIABLE, and a boolean constant cannot carry a per-record predicate"
+registered = "yes — assurance/platform.toml PLAT-CRED-001, pending. The nearest existing row is PLAT-MODEL-002, which is about cardinality and not about what membership MEANS, and folding this into it would be two answers under one premise"
+
+[[assumption]]
+id = "AS-CRED-3"
+statement = "No action of `RSKeySecurityState` can fail a flash write: the model's only tears are `PowerCut` and `ResetAborts` between two writes that succeeded, so an `Fs::put` returning `Err` — and a best-effort rollback that itself fails — is outside every configuration this property is checked on."
+kind = "model abstraction"
+discharger = "the five sites CHANGELOG.md [0.4.11] `Still open, same class, and named here` already records as open, read against the invariant. All five strand an EF_RP entry over a missing credential, which is the direction `cred \\subseteq rpent` does not constrain, so the abstraction costs this property nothing in its own direction and costs the tree the whole opposite direction — asserted instead by SEC-STORE-006 NoSilentOrphan, on a different model. What discharges it is either a failing-write action in RSKeySecurityState (which would need the rollback modelled with it, and the rollbacks are best-effort BY CONSTRUCTION) or the bounded proof property.subjects_absent names"
+expressible = "no — a missing transition, not a constant; adding it changes `Next` and every configuration's state count with it"
+registered = "yes — assurance/platform.toml PLAT-CRED-002, pending. PLAT-FLASH-001 is the nearest existing row and is NOT it: that assumption is about the SILICON's tear behaviour under a supply cut, and this one is about the model omitting the medium's `Err` return, which is a different half of the same sentence"
+
+[[assumption]]
+id = "AS-CRED-4"
+statement = "`KeepOpen` equates `the seed that opens it is gone` with `the record is not there`, so a reset that leaves an undecryptable EF_CRED record behind is `store.cred = {}` in the model — which is why Shipped.cfg is GREEN over a wipe the threat clause says can still strand a credential."
+kind = "model abstraction"
+discharger = "reading the clause and the operator together, and this is the one place where they appear to disagree. docs/threat-model.md:107-111 says `a torn wipe can still strand a credential, and what the ordering buys is that the survivor is undecryptable rather than that it does not exist`; formal/RSKeySecurityState.tla:305-309 defines `store.cred` as `the records that still OPEN` and empties both fields when the last seed copy goes. So the two agree in substance and differ in what a record IS. It matters because the discrepancy is invisible from either side alone: a reader of Shipped.cfg's GREEN would conclude the wipe strands nothing. What discharges it is a model that carries the record and its openability apart, which is the same second variable AS-CRED-2 wants"
+expressible = "no — a definition, not a constant"
+registered = "yes — assurance/platform.toml PLAT-CRED-003, pending. PLAT-MODEL-008 is the nearest existing row and is about DeviceUnlock's width, not about what the store fields denote"
+
+[[assumption]]
+id = "AS-CRED-5"
+statement = "The model carries a counterfactual repair for the reset half of this property — `FixSweepDropsCredsBeforeRpEntries` — whose TRUE arm is assigned by exactly one configuration and has now been RUN, GREEN: the model has checked that the repair holds this invariant. What survives the discharge is that the constant is outside the standing-assumption registry, so its two arms are held by a hand-written control rather than by the assumption gate."
+kind = "model fidelity"
+discharger = "a RECORDED RUN of the other arm — DONE, and this is what it said. The constant was assigned FALSE by every configuration that assigns it and TRUE by none when this row was written; measured now, it is TRUE in exactly one file — Historical_E76.cfg, from formal/gen-configs.sh:322 — and FALSE in 95, and formal/runs.toml's safety tier at 9cafee7 records that file GREEN over a complete search. So the inert-assumption reading is gone twice over: the conjunct at RSKeySecurityState.tla:1405 cannot be deleted with every verdict unchanged (deleting its effect gives Mut_BugSeedDoesNotLead.cfg, which is RED on this invariant), and a recorded verdict now rests on it. The narrower thing that remains is enrolment, not evidence: the constant is outside assurance/assumptions.toml, so the assumption gate's both-arms rule does not reach it — unlike FixPpuatRequiresPin, whose FALSE arm Historical_E77.cfg does run — and the FALSE arm here is held by the hand-named control above instead"
+expressible = "yes, and it already IS a constant — the gen-configs.sh call passing TRUE exists, over Historical_E76.cfg at Shipped.cfg's constants, which is where the question `would this repair have worked` is the one the counterfactual is for. The recorded run of it exists now too; what is missing is enrolment in assurance/assumptions.toml, which is what would put BOTH arms under a gate"
+registered = "yes — assurance/platform.toml PLAT-CRED-004, DISCHARGED and re-derived in the same pass as this row: the emit call it asked for exists and so does the run, so the `.cfg` is no longer an experiment merely arranged. Its evidence is the configuration, formal/runs.toml and this bundle's preserved log, and its revalidated_by is the next --record — because the discharge rests on ONE recorded run of ONE arm. It is still the row most likely to LEAVE that registry rather than sit in it: enrolling the constant in assurance/assumptions.toml would put both arms under the assumption gate, which is the one thing the discharge does not buy"
+
+[[assumption]]
+id = "AS-CRED-6"
+statement = "TLC is sound for this model and the recorded run is the run that produced the verdict; nine of this bundle's ten artifacts are TLC's."
+kind = "tool TCB"
+discharger = "a pinned checker and a recorded artifact. tlaplus 1.7.4 IS pinned by flake.lock and formal/run-tlc.sh:16 records the jar's sha256 prefix; formal/runs.toml keeps the tier's own TLC lines beside the runner's and scripts/run_count_gate.py holds one against the other. What none of that discharges is the checker's own soundness, which is what the entry is for"
+expressible = "no — a fact about a tool, not about the model"
+registered = "yes — assurance/platform.toml PLAT-TOOL-004, pending, whose `supports` already names SEC-FIDO-005 in its P0-launch roster. Its `covers` needs `slice:AS-CRED-6` beside the AS-RAM-7 it holds; an extension, not a new row"
+
+[[assumption]]
+id = "AS-CRED-7"
+statement = "The compiler on the co-refutation path is rustc 1.96.0 and its output is what the two failing tests are about; nothing here reaches the emitted firmware image."
+kind = "compiler"
+discharger = "stage 11's source-to-binary work, and nothing here. The code row was driven on the host triple against `RamStorage`, not on silicon and not on the thumbv8m image; the ordering it exercises is the same source, and that the emitted image preserves it is the claim this row carries"
+expressible = "no — a fact about a compiler, not about the model"
+registered = "yes — assurance/platform.toml PLAT-TOOLCHAIN-001, pending on stage 11, which already covers slice:TCB-1 and slice:AS-RAM-4. Its `covers` needs `slice:AS-CRED-7`; an extension, and deliberately not a second entry — one premise, one answer"
+
+[[assumption]]
+id = "AS-AUTH-2"
+statement = "The shipped image is built without --features always-uv, so gate.alwaysUv is a free state variable rather than the compiled default every reset restores."
+kind = "build configuration"
+discharger = "firmware/Cargo.toml's default feature set, and the firmware-always-uv matrix column. Both arms check this invariant — formal/Shipped.cfg with AlwaysUvShipped FALSE and formal/AlwaysUv.cfg with it TRUE — as do both arms of WidePerms and ForceChangeModelled, which is three of the four standing assumptions running against one property; and result.b_asserted_arms is the row that says what that is worth, which is less than the count suggests"
+expressible = "yes"
+registered = "yes — assurance/assumptions.toml AlwaysUvShipped, and assurance/platform.toml PLAT-BUILD-001, which already covers slice:AS-AUTH-2 and model:AlwaysUvShipped. The id is deliberately the one SEC-FIDO-001 and SEC-FIDO-007 use: it is the same standing assumption, and a fresh id here would create a candidate no entry claims"
+
+# ---- 8. Mutation verdicts ----------------------------------------------------
+
+[[mutation]]
+level = "B"
+mutant = "BugCredBeforeRp — `credential_store`'s two writes reversed, EF_CRED before EF_RP, armed ALONE"
+invocation = "formal/run-tlc.sh Solo_BugCredBeforeRp.cfg"
+expected = "RED: NoUnmanageableCredential"
+verdict = "RED: NoUnmanageableCredential, 7031 states, 1893 distinct, depth 7, 1 s"
+fell = "NoUnmanageableCredential — the only invariant besides TypeOK the configuration checks, so the RED cannot be a neighbour's"
+direction = "modelled"
+reading = "the counterexample ends at PowerCut with `cred = {r1}` and `rpent = {}`: the cut landed between the two writes and the half that survived is the one no enumeration reaches. The inverse — a registration that writes the RP entry and never the credential — cannot fail this implication at all, because it makes the antecedent false, and that is exactly the state the shipped order produces on purpose."
+
+[[mutation]]
+level = "B"
+mutant = "the same switch against the whole seven-invariant set"
+invocation = "formal/run-tlc.sh Mut_BugCredBeforeRp.cfg"
+expected = "RED, and on THIS property's name rather than a sibling's"
+verdict = "RED: NoUnmanageableCredential, 7031 states, 1893 distinct, depth 7, 1 s — counts identical to the Solo_ row"
+fell = "NoUnmanageableCredential, reported first out of seven"
+direction = "modelled"
+reading = "this row exists because SEC-FIDO-007's equivalent went the other way and its bundle had to argue the attribution. The mechanism is formal/gen-configs.sh:185-187, which puts a mutant's TARGET invariant at the head of the INVARIANTS block, and TLC reports the first one violated; the identical state counts say the two runs found the same violation at the same point. So on this property a Mut_ verdict and a Solo_ verdict carry the same information, which is not a general fact about the apparatus."
+
+[[mutation]]
+level = "B"
+mutant = "BugDeleteRpBeforeCred — deleteCredential's EF_RP decrement moved ahead of the EF_CRED delete, armed ALONE"
+invocation = "formal/run-tlc.sh Solo_BugDeleteRpBeforeCred.cfg"
+expected = "RED: NoUnmanageableCredential"
+verdict = "RED: NoUnmanageableCredential, 3 363 453 states, 375 001 distinct, depth 14, 8 s"
+fell = "NoUnmanageableCredential, at the state after DeleteCredWriteA and a PowerCut"
+direction = "modelled"
+reading = "fourteen steps and not seven because the delete has to be reached — a credential, a PIN, a token and a DeleteCredStart come first — and the extra depth is what says the two orderings are separate defects rather than one defect seen twice. The inverse here is the SHIPPED order, which leaves an RP entry over a deleted credential and cannot fail this invariant; formal/RSKeySecurityState.tla:1229 calls that outcome `invisible but harmless` and CHANGELOG.md [0.4.11] `the RP keeps a slot with nothing in it` records that `invisible` is the honest half and `harmless` costs a slot until the next reset."
+
+[[mutation]]
+level = "B"
+mutant = "BugSeedDoesNotLead — the pre-0x08BF wipe, the seed swept in ring order instead of leading, armed ALONE"
+invocation = "formal/run-tlc.sh Solo_BugSeedDoesNotLead.cfg"
+expected = "RED: NoUnmanageableCredential"
+verdict = "RED: NoUnmanageableCredential, 1 875 183 states, 219 676 distinct, depth 13, 5 s"
+fell = "NoUnmanageableCredential, at the state ResetAborts leaves behind"
+direction = "modelled"
+reading = "the strongest of the three, and the reason is in the final state rather than the depth: `store = [seed |-> TRUE, cred |-> {r1}, rpent |-> {}]`. The sweep took the RP entry while the seed record was still live, and ResetAborts — a `?` anywhere in the wipe, which answers an error and KEEPS THE DEVICE RUNNING — returned it to Idle. So the stranded credential is not merely unlistable, it is still decryptable, which is the one case the threat clause's ordering argument is entirely about. The inverse, a sweep that takes credentials before RP entries, is the counterfactual repair `FixSweepDropsCredsBeforeRpEntries` names and no configuration runs it."
+
+[[mutation]]
+level = "B"
+mutant = "the same switch with the COUNTERFACTUAL REPAIR armed beside it — `BugSeedDoesNotLead = TRUE` and `FixSweepDropsCredsBeforeRpEntries = TRUE`, against the whole invariant set"
+invocation = "formal/run-tlc.sh Historical_E76.cfg"
+expected = "GREEN, which is the claim: the repair the model proposed and 0x08BF did not take closes the defect the three rows above kill on. formal/floors.txt:Historical_E76.cfg asks GREEN of this file"
+verdict = "GREEN, 986 872 269 states, 77 563 872 distinct, depth 58, 1927 s — complete search, 0 states left on queue"
+fell = "nothing, which is the verdict. The control is one line away and it is RED: Mut_BugSeedDoesNotLead.cfg is this file with `FixSweepDropsCredsBeforeRpEntries = FALSE` — `diff` is the single hunk `48c48` — and it falls on NoUnmanageableCredential at 1 875 109 states"
+direction = "modelled"
+reading = "the row was a finding about the ROSTER and is a result about the REPAIR now, and the two readings are worth keeping side by side. The finding: `diff formal/Historical_E76.cfg formal/Mut_BugSeedDoesNotLead.cfg` was EMPTY, the two emits passed the same four arguments, two of the forty configurations were one configuration, the derived `cfgs` counted it twice, and the 70-state gap between two recorded runs of that one file was where TLC's two workers happened to be when the violation aborted — the cleanest demonstration available that a state count on an aborted run is not a property of the model. The result: formal/gen-configs.sh:322 arms the counterfactual repair and the Mut_ loop at :329 does not, `diff` is the single hunk `48c48`, and the recorded run of the new content is GREEN over a COMPLETE search — so the count is a property of the model this time. What that green is evidence of is bounded: it says the repair holds this invariant in the model, not that 0x08BF should have taken it, and it rests on one run of one arm. Read the two counts together and they say something the verdict column cannot: 77 563 872 distinct is Shipped.cfg's figure to the state, at Shipped.cfg's depth of 58, while 36 072 MORE states were generated — the armed pair moves edges around inside the shipped reachable set without adding a state to it."
+
+[[mutation]]
+level = "code"
+mutant = "the registration defect in production Rust: formal/comutants.toml's two BugCredBeforeRp hunks over crates/rsk-fido/src/credential.rs"
+invocation = "git worktree add --detach; apply both hunks; cargo test -p rsk-fido --lib --target aarch64-apple-darwin"
+expected = "killed by the tree's own suite, and killed by the test that names the defect"
+verdict = "killed, 11.75 s — `test result: FAILED. 667 passed; 2 failed; 1 ignored`"
+fell = "credential::tests::a_failed_registration_never_leaves_a_credential_without_its_rp at credential_tests.rs:676, and credential::tests::a_failed_registration_leaves_neither_the_credential_nor_its_rp_entry at :728; no third test moved"
+direction = "modelled"
+reading = "read WHICH assertion fell and in which direction, because that is the whole content of a red run. The first says `write budget 3 left a credential with no EF_RP record — invisible to every enumeration and revocation surface`, which is the modelled defect in the modelled direction; the second says `write budget 3 answered an error over a credential that is live`, the same state from the host's side. Neither message is an over-refusal, and the inverse defect — a rollback that removes MORE than it should — would fail the mirror alone with `left an EF_RP record with no credential`. Note also what the pair says about the test rather than the code: the first test asserts inside `if fs.has_data(EF_CRED)` and its own doc comment at :700-712 explains that the conditional shape passes when the branch is never entered, which is why the unconditional mirror exists beside it."
+
+[[mutation]]
+level = "B"
+mutant = "the 29 configurations that CHECK this invariant and are a mutant of something else"
+invocation = "formal/run-tlc.sh over the 40 configurations naming the invariant, as recorded in formal/runs.toml"
+expected = "RED, and NOT on this property's name — a configuration checking an invariant is not evidence about it"
+verdict = "29 RED on another property first: 12 NoAuthorizationBypass, 6 NoTokenAfterInvalidation, 5 NoCrossTransportTouchConsumption, 3 ResetNeverWeakensSurvivingState, 2 NoAccessibleSecretWithoutGate, plus Historical_E77 on the last of those"
+fell = "a sibling's invariant in every one of the 29, because TLC reports the first violated and none of these switches targets this property"
+direction = "modelled"
+reading = "the row is about the DENOMINATOR and not about the property, and it is transcribed from formal/runs.toml rather than re-run. It is what `cfgs = 40` was made of: four assertions, seven kills, twenty-nine mutants of other properties that happen to carry this invariant in their list, and one duplicate file. The duplicate is gone — the forty are forty distinct now — and the rest of the split still stands until the tier is re-recorded, when E76 is expected GREEN and the four-and-seven becomes five-and-six. A reader who takes 40 for the strength of the evidence has the number backwards either way, and docs/assurance-vector.md:45 says so in as many words for every row."
+
+[[mutation]]
+level = "gate"
+mutant = "one artifact's `bytes` moved by one, on a copy of this bundle audited outside the roster"
+invocation = "python3 -c 'bundle_gate.audit_one(root, <copy with tlc-Shipped.log bytes 7163 -> 7164>)'"
+expected = "one new finding: the digest rule names the file and both counts"
+verdict = "1 new finding beyond the four this bundle's own volatile gate_assumption line carries — `assurance/bundle/logs/SEC-FIDO-005/tlc-Shipped.log` is 7163 bytes and the bundle records 7164`"
+fell = "the byte-length rule ALONE — the sha256 comparison ran beside it and PASSED, because the mutation edited the recorded length and left the log alone"
+direction = "modelled"
+reading = "driven on a copy at a path the roster glob does not see, so no concurrently-written bundle in `assurance/bundle/` was disturbed to take it. That the sha256 half stayed green is the content: the two checks are independent, which is what the rule's own comment says it added them for — a byte count is satisfied by any file of the same length. The direction that matters is a log EDITED after the number beside it was written, not a log that is missing, which the path arm already refuses."
+
+[[mutation]]
+level = "gate"
+mutant = "every `bound_*` key stripped from all seven method rows"
+invocation = "python3 -c 'bundle_gate.audit_one(root, <copy with all 33 bound_* keys removed>)'"
+expected = "the per-row floor and the group floor both trip, and the `shipped_relation` sentence beside them does not save the row"
+verdict = "15 new findings from 33 deleted keys — 7 rows each `no bound_*`, 7 rows each `0 bound(s), under the floor of 2`, and `0 bound_* key(s) over the method rows, under the floor of 24`"
+fell = "THREE rules on one edit: the REQUIRED-field rule, BOUND_FLOOR on every row, and BOUNDS_FLOOR over the group — and the leaf count fell only from 411 to 378, which is why the group floor did not catch it"
+direction = "modelled"
+reading = "this is the hole bundle_gate.py's own docstring records having had — stripping every bound from SEC-FIDO-001 left the exit at 0 while the scope sentence was required all along. What the measurement adds is that the leaf floor is NOT what refuses it: 378 leaves still clears every group, so the rules that fire are the three named above and the redundancy is the defence. The direction is a bundle that keeps its prose and loses its numbers, which is the shape that reads as complete."
+
+[[mutation]]
+level = "gate"
+mutant = "`direction` deleted from the driven code-level row"
+invocation = "python3 -c 'bundle_gate.audit_one(root, <copy with mutation[5].direction removed>)'"
+expected = "the row is refused for having a verdict and no direction, and the verdict floor loses it"
+verdict = "2 new findings — `mutation #6: no direction` and `direction None is not one of ('modelled', 'inverse')`. The verdict count did NOT move: the summary still reads `10 mutation verdict(s) and 0 disposed as inverse`"
+fell = "the REQUIRED-field rule and the DIRECTIONS rule — and NOT the verdict floor, which was the half this row was written expecting"
+direction = "modelled"
+reading = "the expectation was half wrong and the measurement is the row. `verdicts = len(named) - inverse` at scripts/bundle_gate.py:1450 counts every row that is not `inverse`, so a row with NO direction at all is still counted as a verdict, and the summary line a reader sees over-reports by one. It is redundant coverage rather than a hole — the DIRECTIONS rule takes the exit to 1 on the same edit — but the printed count is not a count of rows whose direction was read, which is what the group's own docstring says the field is for. Measured on the row this bundle actually drove, so the case is not synthetic."
+
+# ---- 9. Timestamp, freshness and revalidation inputs -------------------------
+
+[freshness]
+measured = "2026-08-30, Europe/Moscow"
+expires_on_prover_bump = "tlaplus 1.7.4 or its jar hash — nine of the ten artifacts are TLC's, and PLAT-TOOL-004 is the entry that says so"
+expires_on_toolchain_bump = "rustc/cargo 1.96.0 — the co-refutation slice only, and AS-CRED-7 is what it rests on"
+expires_on_stepping = "nothing here is a hardware result and no row claims one; a stepping change revalidates PLAT-FLASH-001, which this property's write-order argument sits on top of, not this bundle"
+expires_on_owner_change = "any file in property.owners_writers or property.owners_readers, and formal/RSKeySecurityState.tla's RegisterWriteA, RegisterWriteB, DeleteCredWriteA, DeleteCredWriteB or ResetSweepSecrets"
+expires_on_model_change = "the definition of KeepOpen, or a second credential per relying party entering the model — AS-CRED-1 names the count as where the unmodelled failure would live"
+expires_on_requirement_change = "docs/threat-model.md's TM-HOST-CRED-REVOCABLE clause, whose ordering sentence is the requirement half of every row here; a rewrite that drops `the EF_RP entry is written before the credential` unroots this property again"
+expires_on_schema_change = "assurance/properties.toml's field set, formal/comutants.toml's status vocabulary, or formal/gen-configs.sh's INVARIANTS ordering, on which result.b_mut_names_this_invariant depends"
+
+# ---- 10. Measured costs ------------------------------------------------------
+
+# THE HUMAN COLUMN IS A RECONSTRUCTION, AND ITS AGGREGATE DOES NOT FIT THE
+# WINDOW IT IS DATED IN. The twelve rows below total 268 human_minutes, and the
+# six bundles this one arrived with total 1709 — 28.5 hours, every one of them
+# stamped `freshness.measured = 2026-08-30` inside a window that runs from
+# `31c21a7` (2026-08-30 22:03:52 +0300) to `b185fc3` (2026-08-31 01:24:37),
+# which is 3 h 21 min. NO TIMER PRODUCED ANY OF THEM: they are attended time
+# reconstructed after the fact, and every `basis` below says so in its own row
+# rather than leaving a reader to find this paragraph. They are kept because
+# they are the only cost signal the programme has, not because they are
+# measurements.
+#
+# AND THE SHIPPED BOUND IS NOT THE ONE `SEC-FIDO-002` CARRIES over a
+# byte-identical artifact — `317703de…`, the same log in six directories. 2940
+# MiB is a `/usr/bin/time -l` SAMPLE of a DIFFERENT run — the log at
+# `assurance/bundle/logs/SEC-FIDO-007/tlc-Shipped.log` has its own sha256, its
+# own seed and its own closing line, so the figure bounds THAT process and is
+# carried across to this one. `SEC-FIDO-002` bounds the same log with 3705
+# instead — the JVM ceiling the banner states, derived from the artifact rather
+# than transferred to it, and the larger of the two. Neither is this run's RSS.
+# The unit is MiB, which is checkable: the sibling writes the same sample as
+# 3083 at `assurance/bundle/SEC-FIDO-007.toml:572`, and that is 2940 MiB in
+# decimal MB.
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-005/tlc-Shipped.log"
+human_minutes = 5
+runner_seconds = 1913
+peak_memory_mb = 2940
+basis = "runner is run-tlc.sh's own timer as formal/runs.toml:66 records it for the tier this log came from; NO process was run for this bundle, so peak is NOT a measurement taken here — it is the figure assurance/bundle/SEC-FIDO-007.toml:523 took with /usr/bin/time -l over the Shipped configuration of this same tier at the same HEAP=4g — 2940 MiB, which is 3 082 813 440 B — and it bounds every TLC process in this bundle. human is attended time RECONSTRUCTED after the fact, not measured"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-005/tlc-AlwaysUv.log"
+human_minutes = 2
+runner_seconds = 519
+peak_memory_mb = 2940
+basis = "runner from formal/runs.toml:67; peak is the Shipped bound in MiB described in the row above and not a measurement of this run. human is attended time RECONSTRUCTED after the fact, not measured"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-005/tlc-PermWide.log"
+human_minutes = 2
+runner_seconds = 553
+peak_memory_mb = 2940
+basis = "runner from formal/runs.toml:68; peak is the Shipped bound in MiB, not a measurement of this run. human is attended time RECONSTRUCTED after the fact, not measured"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-005/tlc-ForceChange.log"
+human_minutes = 2
+runner_seconds = 177
+peak_memory_mb = 2940
+basis = "runner from formal/runs.toml:69; peak is the Shipped bound in MiB, not a measurement of this run. human is attended time RECONSTRUCTED after the fact, not measured"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-005/tlc-Solo_BugCredBeforeRp.log"
+human_minutes = 11
+runner_seconds = 1
+peak_memory_mb = 2940
+basis = "runner from formal/runs.toml:107; peak is the Shipped bound in MiB and is loose here by three orders of magnitude, which is the honest cost of not re-running the row. human is attended time — RECONSTRUCTED after the fact, not measured — and carries reading the seven-state counterexample and deciding which direction its final state is"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-005/tlc-Mut_BugCredBeforeRp.log"
+human_minutes = 6
+runner_seconds = 1
+peak_memory_mb = 2940
+basis = "runner from formal/runs.toml:76; peak is the Shipped bound in MiB, not a measurement of this run. human is attended time — RECONSTRUCTED after the fact, not measured — and is where the contrast with SEC-FIDO-007's attribution problem was read out of gen-configs.sh rather than assumed"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-005/tlc-Solo_BugDeleteRpBeforeCred.log"
+human_minutes = 5
+runner_seconds = 8
+peak_memory_mb = 2940
+basis = "runner from formal/runs.toml:108; peak is the Shipped bound in MiB, not a measurement of this run. human is attended time — RECONSTRUCTED after the fact, not measured — over the fourteen-state trace"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-005/tlc-Solo_BugSeedDoesNotLead.log"
+human_minutes = 9
+runner_seconds = 5
+peak_memory_mb = 2940
+basis = "runner from formal/runs.toml:120; peak is the Shipped bound in MiB, not a measurement of this run. human is attended time — RECONSTRUCTED after the fact, not measured — and carries the ResetAborts reading — that the stranded credential is left openable, which is what separates this trace from the other two"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-005/tlc-Historical_E76.log"
+human_minutes = 14
+runner_seconds = 1927
+peak_memory_mb = 2940
+basis = "runner from formal/runs.toml's safety tier at 9cafee7, of the content this configuration carries TODAY — 1927 s where the superseded twin aborted in 5. peak is still the Shipped bound in MiB and not a measurement of this run, and it is a better-founded borrow than it was: this run searches the same 77 563 872 distinct states Shipped.cfg does. human is RECONSTRUCTED attended time, never measured, and none of it was the log: it is the diff against Mut_BugSeedDoesNotLead.cfg, reading gen-configs.sh's two emit sites, and confirming that the 70-state gap between two runs of one file was scheduling"
+
+[[cost]]
+artifact = "assurance/bundle/logs/SEC-FIDO-005/comutate-BugCredBeforeRp.log"
+human_minutes = 19
+runner_seconds = 11.75
+peak_memory_mb = 944
+basis = "the ONLY row here whose three figures were all taken for this bundle: /usr/bin/time -l over the worktree run reports 11.75 real and 989 593 600 bytes maximum resident set size, which is 944 MiB. human is attended time — RECONSTRUCTED after the fact, not measured — over applying the hunks, restoring the tree, and reading both assertion messages for their direction rather than taking the exit code"
+
+[[cost]]
+artifact = "the analytical half — groups 1, 3, 5 and 7, which produced no run of their own"
+human_minutes = 172
+runner_seconds = 0
+peak_memory_mb = 0
+basis = "the human figure is attended time RECONSTRUCTED after the fact, never measured, over the work that has no artifact: reading the clause and deciding covering-versus-link, the eleven owner sites over four files, the three skip conditions in the two management surfaces, the five open rollback sites against the invariant's direction, and the FixSweepDropsCredsBeforeRpEntries arm count. It is the largest single figure in this bundle and it is NOT a measurement taken by a tool; the zeros are honest, because no process ran"
+
+[[cost]]
+artifact = "the gate mutations, driven on copies outside the roster"
+human_minutes = 21
+runner_seconds = 9
+peak_memory_mb = 944
+basis = "runner is the wall time of the three audit_one invocations over the mutated copies; human is attended time — RECONSTRUCTED after the fact, not measured — over writing them, and over choosing to drive them on copies at a path the roster glob cannot see rather than moving a file in a directory other bundles were being written into. peak is the co-refutation row's measured figure, 944 MiB, which bounds a Python process reading TOML"

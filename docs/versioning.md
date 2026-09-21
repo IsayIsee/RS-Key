@@ -10,20 +10,21 @@ against real host software is in the [Interop matrix](interop.md).
 
 ## Firmware version
 
-`5.7.4` (`rsk_sdk::FIRMWARE_VERSION`) is reported everywhere a tool reads a device
+`5.8.0` (`rsk_sdk::FIRMWARE_VERSION`) is reported everywhere a tool reads a device
 firmware version: FIDO getInfo and CTAPHID `INIT`, the YubiKey Management
-`DeviceInfo` (`ykman info`), and the OATH / OTP / PIV version fields. It mimics a
-current YubiKey 5 so Yubico tooling unlocks its feature gates. Override it with
-the `FW_VERSION` build variable. It is **not** the OpenPGP card version and **not**
-the USB `bcdDevice`.
+`DeviceInfo` (`ykman info`), the OATH / OTP / PIV version fields, and OpenPGP's
+vendor `VERSION` command (INS 0xF1). It mimics a current YubiKey 5 so Yubico
+tooling unlocks its feature gates. Override it with the `FW_VERSION` build
+variable. It is **not** the OpenPGP card version and **not** the USB
+`bcdDevice`.
 
 | Surface | Advertised version | Spec implemented |
 |---|---|---|
-| FIDO / CTAPHID | getInfo `versions` = `U2F_V2`, `FIDO_2_0`, `FIDO_2_1`, `FIDO_2_3`; device version `5.7.4` | CTAP2 (FIDO2) + CTAP1 (U2F) |
+| FIDO / CTAPHID | getInfo `versions` = `U2F_V2`, `FIDO_2_0`, `FIDO_2_1`, `FIDO_2_3`; device version `5.8.0` | CTAP2 (FIDO2) + CTAP1 (U2F) |
 | OpenPGP card | `3.4` | OpenPGP Smart Card Application 3.4 |
-| PIV | `5.7.4` | NIST SP 800-73-4 (command subset) |
-| OATH | SELECT version `5.7.4` | YKOATH (Yubico OATH over CCID), AID `A0 00 00 05 27 21 01` |
-| Management | `DeviceInfo` version `5.7.4` | YubiKey Management over the FIDO / CCID transports |
+| PIV | `5.8.0` | NIST SP 800-73-4 (command subset) |
+| OATH | SELECT version `5.8.0` | YKOATH (Yubico OATH over CCID), AID `A0 00 00 05 27 21 01 01` |
+| Management | `DeviceInfo` version `5.8.0` | YubiKey Management over the FIDO / CCID transports |
 | USB `bcdDevice` | a four-digit hex counter (current value: the top of [the changelog](https://github.com/TheMaxMur/RS-Key/blob/main/CHANGELOG.md)) | internal build counter — bumped on every behaviour change, **not** a protocol version |
 
 `U2F_V2` drops out of `versions` on a build with `alwaysUv` enabled (CTAP 2.1
@@ -33,9 +34,10 @@ option ids and getInfo members instead.
 
 ## Which build is on this device?
 
-Not the firmware version — `5.7.4` is a **compatibility constant**, identical on
-every build of every release, so it answers "what will Yubico tooling unlock",
-never "what is flashed here". The build identity is the **`bcdDevice`** counter:
+Not the firmware version — `5.8.0` is a **compatibility constant**, identical on
+every build of a release (`5.7.4` before bcdDevice `0x09CC`), so it answers "what
+will Yubico tooling unlock", never "what is flashed here". The build identity is
+the **`bcdDevice`** counter:
 
 ```sh
 rsk-tui --once          # prints "bcdDevice 0x…" alongside the applet state

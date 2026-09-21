@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 RS-Key contributors
+#
+# Whether the vendor reboot reaches the bootloader at all. It gates
+# PLAT-ROM-001 and is the only row here whose test exists and has no runner:
+# tools/emu has no bootloader to fall into.
+
+assumption = "PLAT-ROM-002"
+method = "`python tests/51_secure_reboot.py --bootsel` against a no-touch board. The plain run drives P1=0x00 and the warm reset; only --bootsel takes the P1=0x01 path this row is about. The board needs a UF2 re-dragged afterwards, which is why it is a throwaway board and not the provisioned one."
+boot_config = "A no-touch image (firmware-no-touch), because the test drives the vendor AID without a finger on the board."
+expected = "The device enumerates as the RP2350 mass-storage bootloader after the command, and the CCID interface is gone. PASS = the drive appears. FAIL = the device re-enumerates as the authenticator, i.e. the command performed a warm reset and the P1 byte is not doing what the applet says."
+outcome = "pass"
+board = "Waveshare RP2350-Zero, 4 MB QSPI flash, QFN60, chipid 0x6e4a9b82bbbc05a7, secure boot off."
+stepping = "RP2350 A4"
+firmware_sha256 = "b5be8a3fd0f153bea66e06d27bf6716e8969545a227a35908cf45cf728c886d4"
+first_boot_capture = "assurance/board/PLAT-ROM-002-2026-09-03-enumeration.txt"
+actual = """The drive appeared, so PASS on the clause as written -- and on the two halves that clause spells out, both read off the host rather than off the script. `python tests/51_secure_reboot.py --bootsel` exited 0 against a no-touch image: SELECT of the vendor AID answered 9000, REBOOT with P1=0x01 answered 9000, and the device then left the bus. That is all the script claims; its own last line says only "BOOTSEL requested", so it cannot tell a drop to the bootloader from a warm reset and the expectation was checked afterwards, independently. The device came back as idVendor 11914 / idProduct 15 under the USB product name "RP2350 Boot", the mass-storage volume RP2350 mounted, and `smartcard.System.readers()` returned an empty list -- the CCID interface is gone. Not a warm reset, then, and the P1 byte does what the applet says. Both captures are beside this record."""
+arm_taken = """PASS. The device enumerates as the RP2350 mass-storage bootloader after the command, and the CCID interface is gone. PASS = the drive appears. FAIL = the device re-enumerates as the authenticator, i.e. the command performed a warm reset and the P1 byte is not doing what the applet says."""
+note = """The run is dated 2026-09-03 and the image it was taken on is pinned two ways: `firmware_sha256` is the UF2 that was dragged to the board, and the ELF it was converted from, the chipid and the bcdDevice the device reported back are captured verbatim in assurance/board/image-2026-09-03.txt. The transcript of the run itself, banner and all, is assurance/board/PLAT-ROM-002-2026-09-03-reboot.log; the enumeration `first_boot_capture` names is the separate reading that settles the expectation. picotool v2.2.0-a4. WHAT THIS DOES NOT SETTLE: PLAT-ROM-001 is the other question about the same drop -- whether the word in WATCHDOG.scratch2 survives it -- and nothing here reads that register. This row was only ever the gate on it."""

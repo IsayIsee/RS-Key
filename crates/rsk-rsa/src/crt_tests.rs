@@ -70,6 +70,41 @@ fn private_op_five_field_satisfies_bellcore() {
 }
 
 #[test]
+fn private_op_refuses_a_faulted_crt_intermediate() {
+    // The Bellcore attack itself, driven: one CRT field computed under a glitch
+    // leaves `sig ≡ cᵈ` modulo ONE prime, and `gcd(sigᵉ − c, n)` hands the
+    // attacker the other. `private_op`'s `sigᵉ ≡ c` check is the only thing
+    // between that and the host, and every other test here feeds it a correct
+    // signature — so none of them can fall if the check is deleted.
+    let key = test_key();
+    let mut plain = [0u8; MAX_CRT_PLAIN];
+    let n = crt_plaintext(&key, &mut plain).unwrap();
+    let c = sample_block();
+    let mut sig = [0u8; MAX_RSA_BYTES];
+
+    // Control: the same blob unfaulted still signs, so a refusal below is the
+    // fault and not the fixture drifting out from under the assertions.
+    let good = crt_from_plain(&plain[..n]).unwrap();
+    assert_eq!(private_op(&good, &c, &mut SeqRng(1), &mut sig), Ok(256));
+
+    // One bit in the low byte of each CRT field in turn: `dP`/`dQ` fault a half
+    // of the exponentiation, `qInv` faults Garner's recombination. A 640-byte
+    // blob has no 2-field reading, so `qInv·Q ≡ 1 (mod P)` is not consulted and
+    // all three reload as CRT — the fault reaches `sign_crt`, not the parser.
+    for (field, what) in [(2usize, "dP"), (3, "dQ"), (4, "qInv")] {
+        let mut faulted = plain;
+        faulted[(field + 1) * 128 - 1] ^= 0x01;
+        assert_eq!(parse_rsa_blob(&faulted[..n]).unwrap(), (128, true));
+        let crt = crt_from_plain(&faulted[..n]).unwrap();
+        assert_eq!(
+            private_op(&crt, &c, &mut SeqRng(1), &mut sig),
+            Err(RsaError::Failed),
+            "a signature over a faulted {what} left private_op"
+        );
+    }
+}
+
+#[test]
 fn private_op_legacy_two_field_recomputes_and_matches() {
     // An old `P‖Q` blob (no cached dP/dQ/qInv) must recompute them and produce a
     // byte-identical signature to the 5-field path.

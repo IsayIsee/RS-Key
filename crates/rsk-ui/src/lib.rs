@@ -51,8 +51,8 @@ pub const PANEL_W: u16 = 240;
 /// Panel height in pixels.
 pub const PANEL_H: u16 = 320;
 
-/// A touch coordinate in panel pixels (CST328 reports the same axes the ST7789 is
-/// addressed in; the firmware driver normalizes any rotation before it gets here).
+/// A touch coordinate in panel pixels: the CST328 is configured at the panel
+/// resolution and reports the ST7789's own axes, so nothing rotates or flips it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Point {
     pub x: u16,
@@ -602,9 +602,9 @@ pub enum SettingsPage {
     /// Display-sleep timeout adjust (−/+/Back) — blanks the panel after inactivity to
     /// stop image retention on the IPS glass.
     Sleep,
-    /// The Security sub-page: device + FIDO PIN, the audit log, the backup status, and the
-    /// (danger) Factory reset. Reached from the Root "Security" row; the title-bar back
-    /// chevron returns to Root.
+    /// The Security sub-page: the device, FIDO and PIV PINs, the PIN-pad scramble toggle,
+    /// the audit log, the backup status, and the (danger) Factory reset. Reached from the
+    /// Root "Security" row; the title-bar back chevron returns to Root.
     Security,
 }
 
@@ -653,8 +653,9 @@ pub enum RootEntry {
     /// Drill into the Display sub-page ([`SettingsPage::Display`]) — brightness, display
     /// sleep, and the touch timeout (all the panel/interaction knobs).
     Display,
-    /// Drill into the Security sub-page ([`SettingsPage::Security`]) — device + FIDO PIN,
-    /// the audit log, the backup status, and the (danger) Factory reset.
+    /// Drill into the Security sub-page ([`SettingsPage::Security`]) — the device, FIDO and
+    /// PIV PINs, the PIN-pad scramble toggle, the audit log, the backup status, and the
+    /// (danger) Factory reset.
     Security,
     /// The Firmware screen: the installed build version and the (hold-to-confirm)
     /// reboot-to-update-over-USB action. Last on the list — a rarely-touched maintenance
@@ -710,7 +711,7 @@ pub enum AdjustKey {
 
 /// Settings list rows, shared by the Root list and its Display / Security sub-pages — each
 /// is a full-width row in `settings_row_rect(i)`. The Root has three (Display / Security /
-/// Firmware); Security has the most (six). Sized so the longest list (Security) fits below
+/// Firmware); Security has the most (seven). Sized so the longest list (Security) fits below
 /// the chrome and above the panel bottom (a const-assert validates it) at a touch-comfortable
 /// row height, with a clear gap below the title-bar back chevron so a stray reach for it can't
 /// land on the first row.
@@ -807,7 +808,7 @@ pub const ADJ_MINUS_RECT: Rect = Rect::new(16, ADJ_Y, ADJ_W, ADJ_H);
 pub const ADJ_PLUS_RECT: Rect = Rect::new(PANEL_W - 16 - ADJ_W, ADJ_Y, ADJ_W, ADJ_H);
 
 // Compile-time layout invariants (paint and hit-test share these rects): the longest
-// settings list (Security, six rows) fits on-panel; the −/+ controls are disjoint with a gap
+// settings list (Security, seven rows) fits on-panel; the −/+ controls are disjoint with a gap
 // and sit above Back. A bad geometry edit fails the build. The Root page paints the four-tab
 // nav (its peer tabs do) and the no-nav sub-pages reuse the same rows below a back chevron —
 // so the Root list is bounded by `NAV_TOP` (clear of the nav) while the no-nav Security list,

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 RS-Key contributors
 
 use super::*;
+use rsk_fs::storage::faults::{Cut, RemoveStuck};
 use rsk_fs::storage::ram::RamStorage;
 
 fn dev() -> Device<'static> {
@@ -683,4 +684,441 @@ fn a_failed_registration_never_leaves_a_credential_without_its_rp() {
         saw_partial,
         "vacuous: no write budget produced a partial registration"
     );
+}
+
+/// The mirror of the case above, and the half it does not assert. A registration
+/// that fails must leave NOTHING — not the credential the host was told it did
+/// not get, and not an EF_RP entry over one that never landed. `decrement_rp`
+/// deletes the record at count 0 alone and the count is bumped once per credential
+/// that lands, so an entry left over one that never landed floors at 1: the slot
+/// is unreusable short of `authenticatorReset` while `enumerateRPs` and the
+/// Passkeys view both keep listing an RP with nothing in it.
+///
+/// Asserted UNCONDITIONALLY at every failing budget, not inside an
+/// `if has_data(EF_RP)`. The conditional shape passes when the branch is never
+/// entered, and with the rollbacks in place the branch is never entered — the
+/// rule that matters would then be carried rather than checked.
+#[test]
+fn a_failed_registration_leaves_neither_the_credential_nor_its_rp_entry() {
+    let d = dev();
+    let rp_hash = sha256(b"example.com");
+    let mut out = [0u8; 512];
+    let len = credential_create(&SEED, &d, &input(), &rp_hash, &IV, &mut out).unwrap();
+
+    let mut saw_partial = false;
+    for budget in 0..8 {
+        let mut fs: Fs<FailWriteAfter> = Fs::new(FailWriteAfter {
+            inner: RamStorage::new(),
+            budget,
+        });
+        let r = credential_store(
+            &SEED,
+            &d,
+            &mut fs,
+            &out[..len],
+            &rp_hash,
+            "example.com",
+            &[0xDE, 0xAD, 0xBE, 0xEF],
+            &[],
+        );
+        if r.is_ok() {
+            continue;
+        }
+        saw_partial = true;
+        assert!(
+            !fs.has_data(EF_CRED),
+            "write budget {budget} answered an error over a credential that is live"
+        );
+        assert!(
+            !fs.has_data(EF_RP),
+            "write budget {budget} left an EF_RP record with no credential — \
+             the count floors at 1 and the slot never comes back"
+        );
+    }
+    assert!(
+        saw_partial,
+        "vacuous: no write budget produced a partial registration"
+    );
+}
+
+/// The rollback's GUARD, which the case above cannot reach: on a RE-registration
+/// of an (rp, user) the store already holds, `bump_rp` raises an existing count
+/// from n to n+1 and creates nothing, so a failure must return it to n and must
+/// NOT delete the record. Dropping `if new_record` entirely left the suite green
+/// and recreated audit run-35's defect — a live discoverable credential with no
+/// EF_RP entry, invisible to `enumerateRPs` and to the Passkeys view while
+/// `getAssertion` authenticates with it happily.
+#[test]
+fn a_failed_re_registration_does_not_delete_the_rp_the_first_one_created() {
+    let d = dev();
+    let rp_hash = sha256(b"example.com");
+    let mut out = [0u8; 512];
+    let len = credential_create(&SEED, &d, &input(), &rp_hash, &IV, &mut out).unwrap();
+
+    // One landed registration, then the same (rp, user) again on a store that
+    // runs out of writes part-way. `new_record` is false on the second call.
+    let mut saw_partial = false;
+    for budget in 0..8 {
+        let mut warm: Fs<FailWriteAfter> = Fs::new(FailWriteAfter {
+            inner: RamStorage::new(),
+            budget: usize::MAX,
+        });
+        credential_store(
+            &SEED,
+            &d,
+            &mut warm,
+            &out[..len],
+            &rp_hash,
+            "example.com",
+            &[0xDE, 0xAD, 0xBE, 0xEF],
+            &[],
+        )
+        .unwrap();
+        assert!(warm.has_data(EF_RP) && warm.has_data(EF_CRED));
+        // The budget belongs to the SECOND call, so the backend is carried over
+        // rather than the `Fs`: `into_storage` is the only way across.
+        let mut fs: Fs<FailWriteAfter> = Fs::new(FailWriteAfter {
+            inner: warm.into_storage().inner,
+            budget,
+        });
+        // A fresh `Fs` has an empty present/decided bitmap, and `credential_store`
+        // reads it to decide `new_record`. Without the scan the second call is a
+        // FIRST registration over a store that already holds one, which is a
+        // different case than the one this test is about — measured: it deleted
+        // the record and the assertion below fired for the wrong reason.
+        fs.scan();
+        if credential_store(
+            &SEED,
+            &d,
+            &mut fs,
+            &out[..len],
+            &rp_hash,
+            "example.com",
+            &[0xDE, 0xAD, 0xBE, 0xEF],
+            &[],
+        )
+        .is_ok()
+        {
+            continue;
+        }
+        saw_partial = true;
+        assert!(
+            fs.has_data(EF_RP),
+            "write budget {budget} deleted the RP record the FIRST registration \
+             created — the credential still there is then unlistable and \
+             undeletable, which is audit run-35"
+        );
+    }
+    assert!(
+        saw_partial,
+        "vacuous: no write budget produced a partial re-registration"
+    );
+}
+
+/// The consequence `Fs::present_slots` answers for: `credential_store` writes the
+/// first slot the bitmap calls free without re-reading it, so after a boot scan a
+/// read fault cut short it minted straight over a live discoverable credential.
+/// KEY_STORE_FULL is the honest answer on a store it cannot enumerate.
+#[test]
+fn a_truncated_scan_does_not_let_a_new_credential_land_on_a_live_one() {
+    use rsk_fs::storage::faults::TruncatedWalk;
+    let d = dev();
+    let rp_hash = sha256(b"example.com");
+    let mut fs = Fs::new(TruncatedWalk::new());
+    let mut out = [0u8; 512];
+    let len = credential_create(&SEED, &d, &input(), &rp_hash, &IV, &mut out).unwrap();
+    credential_store(
+        &SEED,
+        &d,
+        &mut fs,
+        &out[..len],
+        &rp_hash,
+        "example.com",
+        &[0xDE, 0xAD, 0xBE, 0xEF],
+        &[],
+    )
+    .unwrap();
+    let mut first = [0u8; 1024];
+    let n = fs.read(EF_CRED, &mut first).unwrap();
+
+    // A reboot whose enumeration faults: slot 0 holds a live credential the walk
+    // never yielded.
+    let mut fs = Fs::new(fs.into_storage());
+    fs.scan();
+    let other = sha256(b"other.example");
+    let len2 = credential_create(&SEED, &d, &input(), &other, &IV, &mut out).unwrap();
+    assert_eq!(
+        credential_store(
+            &SEED,
+            &d,
+            &mut fs,
+            &out[..len2],
+            &other,
+            "other.example",
+            &[0x01, 0x02],
+            &[],
+        ),
+        Err(Error::NoMemory),
+        "a store that cannot enumerate itself must refuse, not pick slot 0"
+    );
+    let mut still = [0u8; 1024];
+    assert_eq!(fs.read(EF_CRED, &mut still), Some(n));
+    assert_eq!(
+        still[..n],
+        first[..n],
+        "the live credential was overwritten"
+    );
+}
+
+/// `bump_cred_store_state` reads the tag it advances with the collapsing `Fs::read`,
+/// whose `None` covers "never written" and "the flash could not serve it" alike, and
+/// the absent arm is the ZERO tag — right for the first, a replay for the second. So
+/// a faulted probe writes 1 over the live value and starts the sequence again from a
+/// prefix the platform has already been served: it is handed a tag it is holding, so
+/// it keeps the cache this record exists to make it drop.
+///
+/// Refused rather than clamped, because the bump runs BEFORE the write it describes:
+/// its `Err` aborts the store change too, so tag and store stay in step.
+#[test]
+fn a_faulted_cred_state_probe_does_not_replay_the_store_tag() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    // Three store changes: 1, 2 and 3 are each a tag the platform has been served.
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        bump_cred_store_state(&mut fs).unwrap();
+        seen.push(medium.value(EF_CRED_STATE).unwrap());
+    }
+    assert_eq!(
+        seen[2],
+        3u128.to_le_bytes(),
+        "control: three changes, tag 3"
+    );
+
+    medium.stick_once(EF_CRED_STATE);
+    let bumped = bump_cred_store_state(&mut fs);
+    medium.stick(None);
+
+    let after = medium.value(EF_CRED_STATE).unwrap();
+    assert!(
+        !seen[..2].contains(&after),
+        "a faulted probe replayed tag {} — a platform holding it is told nothing changed",
+        u128::from_le_bytes(after[..].try_into().unwrap())
+    );
+    assert_eq!(
+        after, seen[2],
+        "a refused bump must leave the tag where it was"
+    );
+    assert_eq!(
+        bumped,
+        Err(Error::MemoryFatal),
+        "a bump that could not read the tag it advances must refuse"
+    );
+}
+
+/// `bump_rp` finds the rp's existing EF_RP record with the collapsing `Fs::read`,
+/// whose `None` covers "this slot is a different rp" and "the flash could not serve
+/// this slot" alike — and the absent arm falls through to the free-slot path. So one
+/// faulted probe of the record that DOES hold this rpIdHash files a SECOND record
+/// for the same rp. Nothing merges them again: `decrement_rp` `break`s at its first
+/// match, so it only ever drains one of the pair, and while both stand
+/// `enumerateRPs` counts the rp twice. Worse, when the first record reaches zero it
+/// deletes EF_RPNICK at ITS slot — destroying the rp's nickname while the rp is
+/// still live under the duplicate.
+#[test]
+fn a_faulted_rp_probe_does_not_file_a_second_record_for_the_same_rp() {
+    let d = dev();
+    let rp_hash = sha256(b"example.com");
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    let mut out = [0u8; 512];
+    let store = |fs: &mut Fs<_>, out: &[u8], user: &[u8]| {
+        credential_store(&SEED, &d, fs, out, &rp_hash, "example.com", user, &[])
+    };
+    let records_for_rp = |medium: &rsk_fs::storage::faults::ProbeMedium| {
+        (0..MAX_RESIDENT_CREDENTIALS)
+            .filter(|i| {
+                medium
+                    .value(EF_RP + i)
+                    .is_some_and(|v| v.len() >= RP_PREFIX && v[1..RP_PREFIX] == rp_hash[..])
+            })
+            .collect::<Vec<u16>>()
+    };
+
+    let mut first = input();
+    first.user_id = &[0x01];
+    let len = credential_create(&SEED, &d, &first, &rp_hash, &IV, &mut out).unwrap();
+    store(&mut fs, &out[..len], first.user_id).unwrap();
+    assert_eq!(
+        records_for_rp(&medium),
+        vec![0],
+        "control: one registration, one EF_RP record"
+    );
+
+    // A second user at the same rp: `bump_rp` must land on EF_RP+0, whose read faults.
+    let mut second = input();
+    second.user_id = &[0x02];
+    let len2 = credential_create(&SEED, &d, &second, &rp_hash, &IV, &mut out).unwrap();
+    medium.stick(Some(EF_RP));
+    let stored = store(&mut fs, &out[..len2], second.user_id);
+    medium.stick(None);
+
+    assert_eq!(
+        records_for_rp(&medium),
+        vec![0],
+        "a faulted probe filed a SECOND EF_RP record for one rpIdHash — enumerateRPs \
+         lists the rp twice and no decrement_rp ever merges the pair"
+    );
+    assert_eq!(
+        stored,
+        Err(Error::MemoryFatal),
+        "a registration that could not read the rp index must refuse, not duplicate it"
+    );
+}
+
+/// …and the refusal reaches no further than the slot that could have been this rp.
+///
+/// The first shape of the fix returned on the faulted probe where it happened, which
+/// made ONE unreadable EF_RP record deny every resident registration on the device —
+/// for every relying party, including ones whose own record reads perfectly. Measured
+/// that way before it was narrowed: registering at `other.example` with `example.com`'s
+/// slot stuck answered `Err(MemoryFatal)`, and `makeCredential` reported that to the
+/// platform as `KeyStoreFull` — "delete some passkeys", which cannot help a flash
+/// fault and destroys data to no end.
+#[test]
+fn a_faulted_probe_of_another_rps_slot_does_not_deny_this_registration() {
+    let d = dev();
+    let mine = sha256(b"example.com");
+    let other = sha256(b"other.example");
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    let mut out = [0u8; 512];
+
+    // Slot 0 goes to `other.example`, slot 1 to `example.com`: the fault lands on a
+    // record that belongs to somebody else.
+    for (hash, id, user) in [
+        (&other, "other.example", 0x01u8),
+        (&mine, "example.com", 0x02),
+    ] {
+        let mut req = input();
+        req.user_id = core::slice::from_ref(&user);
+        let len = credential_create(&SEED, &d, &req, hash, &IV, &mut out).unwrap();
+        credential_store(&SEED, &d, &mut fs, &out[..len], hash, id, &[user], &[]).unwrap();
+    }
+    let before = medium
+        .value(EF_RP + 1)
+        .expect("example.com's record is on the medium");
+    assert_eq!(
+        before[0], 1,
+        "control: one credential for example.com so far"
+    );
+
+    let mut third = input();
+    third.user_id = &[0x03];
+    let len = credential_create(&SEED, &d, &third, &mine, &IV, &mut out).unwrap();
+    medium.stick(Some(EF_RP)); // other.example's slot, not this rp's
+    let stored = credential_store(
+        &SEED,
+        &d,
+        &mut fs,
+        &out[..len],
+        &mine,
+        "example.com",
+        &[0x03],
+        &[],
+    );
+    medium.stick(None);
+
+    assert_eq!(
+        stored,
+        Ok(()),
+        "a slot belonging to another rp cannot hide this one, so it must not refuse"
+    );
+    assert_eq!(
+        medium.value(EF_RP + 1).map(|v| v[0]),
+        Some(2),
+        "the second credential for example.com must be counted on its own record"
+    );
+}
+
+#[test]
+fn the_boot_pass_re_arms_the_lap_before_it_boxes_a_cleartext_rp_id() {
+    // This pass converges over boots BY DESIGN: it returns whole while the seed is
+    // PIN-wrapped or the device soft-locked, and skips a record whose read faulted.
+    // So the boot that boxes an rpId is routinely NOT the boot that latched the
+    // marker, and what the box supersedes is the domain in the clear.
+    const OTP: [u8; 32] = [0x77; 32];
+    let otp_dev = Device {
+        otp_key: Some(&OTP),
+        ..dev()
+    };
+    let rp_hash = sha256(b"example.com");
+    let mut rec = [0u8; RP_REC_MAX];
+    rec[0] = 1;
+    rec[1..RP_PREFIX].copy_from_slice(&rp_hash);
+    rec[RP_PREFIX..RP_PREFIX + 11].copy_from_slice(b"example.com");
+    let legacy = rec[..RP_PREFIX + 11].to_vec();
+    let mut buf = [0u8; RP_REC_MAX];
+    let mut scratch = [0u8; RP_REC_MAX];
+
+    // The ORDER, on the one medium that can tell the two orderings apart.
+    let (cut, medium) = Cut::new();
+    let mut fs = Fs::new(cut);
+    fs.scan();
+    crate::seed::encrypt_keydev_f1(&otp_dev, &mut fs, &SEED).unwrap();
+    fs.put(EF_RP, &legacy).unwrap();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    assert!(
+        fs.has_data(rsk_fs::EF_HARDENED),
+        "fixture: an earlier boot latched the marker"
+    );
+    medium.clear_ops();
+    migrate_rp_seal(&otp_dev, &mut fs);
+    medium.assert_re_armed_before(EF_RP, |_| false, "migrate_rp_seal");
+    assert!(
+        !fs.has_data(rsk_fs::EF_HARDENED),
+        "the box superseded a cleartext rpId, so the lap must run again"
+    );
+    let n = fs.read(EF_RP, &mut buf).unwrap();
+    assert_eq!(
+        unseal_rp_id(&SEED, &rp_hash, &buf[RP_PREFIX..n], &mut scratch),
+        Some(("example.com", true)),
+        "fixture: the record really is boxed now"
+    );
+
+    // The GATE. A medium refusing only `remove(EF_HARDENED)` reaches that same end
+    // state with no reset in it, so the box must not go ahead at all.
+    let (stuck, medium) = RemoveStuck::new();
+    let mut fs = Fs::new(stuck);
+    fs.scan();
+    crate::seed::encrypt_keydev_f1(&otp_dev, &mut fs, &SEED).unwrap();
+    fs.put(EF_RP, &legacy).unwrap();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    medium.refuse(Some(rsk_fs::EF_HARDENED));
+    migrate_rp_seal(&otp_dev, &mut fs);
+    let n = fs.read(EF_RP, &mut buf).unwrap();
+    assert_eq!(
+        unseal_rp_id(&SEED, &rp_hash, &buf[RP_PREFIX..n], &mut scratch),
+        Some(("example.com", false)),
+        "the re-arm never landed, so the cleartext record must stay in force instead \
+         of being superseded under a marker nothing will clear"
+    );
+    assert!(
+        medium.live(rsk_fs::EF_HARDENED),
+        "fixture: the refusal really left the marker on the medium"
+    );
+
+    // The control, same medium, fault cleared: the box DOES happen, so the assertion
+    // above is about the gate and not about a pass that never fires.
+    medium.refuse(None);
+    migrate_rp_seal(&otp_dev, &mut fs);
+    let n = fs.read(EF_RP, &mut buf).unwrap();
+    assert_eq!(
+        unseal_rp_id(&SEED, &rp_hash, &buf[RP_PREFIX..n], &mut scratch),
+        Some(("example.com", true))
+    );
+    assert!(!medium.live(rsk_fs::EF_HARDENED));
 }

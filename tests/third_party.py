@@ -141,14 +141,6 @@ DIVERGENCES: dict[str, dict[str, str]] = {
         # listed for the challenge TLV and now fail one step earlier.
         "test_070_oath.py::test_rename_prefix_extension": "enrolls a 7-byte OATH secret; a YubiKey refuses a KEY TLV under 16 bytes",
         "test_070_oath.py::test_delete": "enrolls a 9-byte OATH secret; a YubiKey refuses a KEY TLV under 16 bytes",
-        # encCredStoreState (0x1E) and encIdentifier (0x19) are implemented now, and
-        # the sibling entry that used to sit here was REMOVED because it started
-        # passing — a strict xfail is how this list refuses to describe a
-        # divergence that got closed. What is left is conditionality, not absence:
-        # 0x1E is served only once a PERSISTENT pinUvAuthToken has been issued (a
-        # value under a key nobody holds says nothing), and this case reads getInfo
-        # without minting one.
-        "test_000_getinfo.py::test_get_info_ctap_23_fields_are_well_formed": "encCredStoreState (0x1E) is served only to a holder of the persistent token, which this case never mints",
         # pinComplexityPolicy (0x1B) IS advertised. What this case asks for is
         # SETTING it through setMinPINLength, which is a different surface: RS-Key's
         # policy is the build's, not a host-writable flag.
@@ -245,12 +237,12 @@ DIVERGENCES: dict[str, dict[str, str]] = {
         # because a YubiKey 5.7.4 does — measured, 3 runs. RS-Key answers 6B00 for
         # OpenPGP's 82 and 84 alike.
         "::test_openpgp_reset_code_and_pw_status": "§7.2.3 defines P2 81/83 only, so 82 is 6B00 (wrong P1-P2), not 6A88",
-        # Reported firmware version. RS-Key defaults to 5.7.4 (a current YubiKey 5,
-        # `FW_VERSION=X.Y.Z` at build time); the suite hardcodes its own device's
-        # 5.7.0. One number, read through the Management DeviceInfo TLV and through
-        # PIV GET VERSION.
-        "::test_management_applet_config": "the suite hardcodes its own 5.7.0; RS-Key reports FW_VERSION (5.7.4)",
-        "::test_piv_basic_version_serial_and_object_round_trip": "the suite hardcodes its own 5.7.0; RS-Key reports FW_VERSION (5.7.4)",
+        # Reported firmware version. RS-Key reports `FW_VERSION` — a current YubiKey 5's
+        # by default, `FW_VERSION=X.Y.Z` at build time — and the suite hardcodes its own
+        # device's 5.7.0. One number, read through the Management DeviceInfo TLV and
+        # through PIV GET VERSION.
+        "::test_management_applet_config": "the suite hardcodes its own 5.7.0; RS-Key reports FW_VERSION",
+        "::test_piv_basic_version_serial_and_object_round_trip": "the suite hardcodes its own 5.7.0; RS-Key reports FW_VERSION",
         # Replaying a single-auth challenge as a mutual-auth witness. RS-Key
         # refuses it a step earlier than the suite expects — on the challenge
         # *kind* (`ChallengeKind::MutualWitness`, audit run-34), so it never

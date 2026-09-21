@@ -54,7 +54,7 @@ const SPKI_PREFIX: &[u8] = &[
 ];
 
 /// TBSCertificate length (header `30 82 01 8D` + 397 content bytes).
-const TBS_LEN: usize = 401;
+pub(crate) const TBS_LEN: usize = 401;
 
 /// Offset of the 16-byte serial in the DER, past the cert and TBS headers and
 /// `VERSION ‖ 02 10`.

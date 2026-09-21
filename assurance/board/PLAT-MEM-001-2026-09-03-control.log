@@ -1,0 +1,29 @@
+rs-key devshell
+  rustc:    rustc 1.96.0 (ac68faa20 2026-05-25)
+  target:   thumbv8m.main-none-eabihf
+  picotool: picotool v2.2.0-a4 (Darwin, Clang-21.1.8, Release)
+
+Build:  cargo build --release -p firmware   # pick the target crate
+  (or:  nix build .#firmware                 # hermetic → result/firmware.uf2)
+PT:     scripts/pt.sh target/thumbv8m.main-none-eabihf/release/firmware fw-pt.elf   # fence the KV store
+UF2:    picotool uf2 convert fw-pt.elf -t elf firmware.uf2
+Flash:  hold BOOTSEL, plug in the RP2350, drag firmware.uf2 to the RP2350 drive
+Check:  ./scripts/check.sh        # fmt + clippy + test + audit + deny + gitleaks
+Fuzz:   nix develop .#fuzz -c cargo fuzz run <target>
+CLI:    rsk status | rsk backup … | rsk secure-boot … | rsk otp … (rsk --help)
+TUI:    rsk-tui                    # live device dashboard
+Docs:   ./scripts/docs.sh serve    # preview the docs site (build|check)
+reader: RS-Key RS-Key Security Key
+
+Requesting the presence-gated reboot to BOOTSEL — touch the device…
+  SELECT vendor: 9000
+
+Dumped 532480 bytes of SRAM to sram.bin
+  control: 4096 B of .text matches the ELF ✓ (picoboot reads work, and this ELF is the flashed image)
+  control: 0/18 immutable .data symbols byte-exact, 2943/7836 .data bytes match the ELF
+
+RESULT: flash reads back, SRAM does not.
+  whole dump: 532480 B, 0 non-zero, 1 distinct
+  read-back probe: a pattern written to 0x20010000 reads straight back ✓
+
+SETTLED: main SRAM does not survive the drop to BOOTSEL — every byte of the dump is zero, not just the control window. picoboot serves SRAM faithfully, so those zeros are the memory itself and nothing is recoverable from RAM this way. Note what it is NOT evidence of: the platform cleared it, not worker::reboot's scrub, and the result belongs to this silicon revision and boot configuration.

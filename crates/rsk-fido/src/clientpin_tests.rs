@@ -10,6 +10,7 @@ use minicbor::encode::Write as _;
 use rsk_crypto::Device;
 use rsk_crypto::pinproto::public_xy;
 use rsk_fs::Fs;
+use rsk_fs::storage::faults::{Cut, CutMedium, ProbeStuck};
 use rsk_fs::storage::ram::RamStorage;
 
 struct SeqRng(u64);
@@ -35,6 +36,17 @@ fn setup() -> (Fs<RamStorage>, SeqRng) {
     let mut rng = SeqRng(1);
     ensure_seed(&dev(), &mut fs, &mut rng).unwrap();
     (fs, rng)
+}
+
+/// [`setup`] on a medium that logs the order of the appends it serves — the only
+/// place the re-arm of the at-rest lap can be seen to land BEFORE the re-key it
+/// covers rather than after it.
+fn setup_cut() -> (Fs<Cut>, CutMedium, SeqRng) {
+    let (cut, medium) = Cut::new();
+    let mut fs = Fs::new(cut);
+    let mut rng = SeqRng(1);
+    ensure_seed(&dev(), &mut fs, &mut rng).unwrap();
+    (fs, medium, rng)
 }
 
 fn run<S: rsk_fs::Storage>(
@@ -1414,7 +1426,7 @@ fn wrong_pin_decrements_then_locks_out() {
 fn the_legacy_get_pin_token_refuses_an_rp_id() {
     // CTAP 2.1 §6.5.5.7: subCommand 5 takes neither permissions nor an rpId —
     // it grants the fixed mc|ga set and no rp binding. The refusal was held by
-    // nothing: `clientpin.rs:392` hands `req.rp_id` to `issue_token` whatever the
+    // nothing: `clientpin.rs:395` hands `req.rp_id` to `issue_token` whatever the
     // subcommand, so relaxing the guard mints a legacy token BOUND to an rp the
     // caller named. Found by the reverse mutation pass (D2).
     let (mut fs, mut rng) = setup();
@@ -1619,7 +1631,7 @@ fn pin_verifier_and_pinwrapped_seed_migrate_at_verify() {
 
     // Legacy pre-OTP state: seed exists, a PIN is set, and the seed was
     // left PIN-wrapped (0x03).
-    let (mut fs, mut rng) = setup();
+    let (mut fs, medium, mut rng) = setup_cut();
     let seed0 = load_keydev(&dev(), &mut fs).unwrap();
     let mut padded = [0u8; PADDED_PIN_LEN];
     padded[..PIN.len()].copy_from_slice(PIN);
@@ -1646,6 +1658,10 @@ fn pin_verifier_and_pinwrapped_seed_migrate_at_verify() {
     // the lap (request_rescrub) or that copy stays readable in a raw flash
     // dump forever — audit run-35 found four of five lazy re-keys skipping it.
     fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    assert!(
+        fs.has_data(rsk_fs::EF_HARDENED),
+        "fixture: the lap has latched"
+    );
 
     // The OTP build: first verify migrates the verifier and unwraps the
     // seed straight to a plain 0x12, costing no retry.
@@ -1659,17 +1675,31 @@ fn pin_verifier_and_pinwrapped_seed_migrate_at_verify() {
         state: &mut state2,
         now_ms: 0,
     };
+    // The verify's own retry spend rewrites EF_PIN with the SAME verifier, so
+    // "still weak" is every write that leaves the verifier bytes alone.
+    let before = medium
+        .value(EF_PIN)
+        .expect("fixture: EF_PIN is on the medium");
+    medium.clear_ops();
     spend_and_verify_pin_hash(&mut ctx, &pin_hash[..16]).unwrap();
+    medium.assert_re_armed_before(
+        EF_PIN,
+        |v| v.len() == before.len() && v[1..] == before[1..],
+        "spend_and_verify_pin_hash's kbase fallback",
+    );
     let mut pin_rec = [0u8; PIN_FILE_LEN];
     ctx.fs.read(EF_PIN, &mut pin_rec).unwrap();
     assert_eq!(pin_rec[0], MAX_PIN_RETRIES);
     assert_eq!(ctx.fs.read(EF_KEY_DEV.get(), &mut raw), Some(61));
     assert_eq!(raw[0], 0x12);
     assert_eq!(load_keydev(&otp_dev(), ctx.fs), Some(seed0));
+    // What this witnesses is the `request_rescrub` CALL, not a leak: `RamStorage`
+    // is a map that overwrites in place, so no superseded copy survives any write
+    // here for a test to read. The medium that keeps one is the flash ring.
     assert!(
         !ctx.fs.has_data(rsk_fs::EF_HARDENED),
-        "a lazy re-key must re-arm the at-rest lap: the copy it superseded is \
-         sealed under a root the public chip serial derives"
+        "a lazy re-key must re-arm the at-rest lap: the marker is still latched, \
+         so no rescrub was requested"
     );
 
     // Second verify takes the direct path (verifier already re-stored).
@@ -1684,6 +1714,240 @@ fn pin_verifier_and_pinwrapped_seed_migrate_at_verify() {
         now_ms: 0,
     };
     spend_and_verify_pin_hash(&mut ctx3, &pin_hash[..16]).unwrap();
+}
+
+/// F6: the `if migrated` guard is narrower than the writes it was placed in front of.
+/// `migrate_keydev_pin` re-keys `EF_KEY_DEV` off the pre-OTP arm on the SUCCESS path,
+/// whatever `EF_PIN`'s verifier says — and the two records part company the moment a
+/// faulted `read_key` makes that migration a no-op for one verify: `EF_PIN` lands
+/// OTP-rooted, the seed stays 0x03, and every later verify re-keys it with `migrated`
+/// false and no re-arm anywhere. So the re-arm belongs where the knowledge is.
+#[test]
+fn a_seed_migration_with_an_already_migrated_verifier_re_arms_the_lap() {
+    const OTP_KEY: [u8; 32] = [0x79; 32];
+    fn otp_dev() -> Device<'static> {
+        Device {
+            otp_key: Some(&OTP_KEY),
+            ..dev()
+        }
+    }
+
+    let (mut fs, medium, mut rng) = setup_cut();
+    let seed0 = load_keydev(&dev(), &mut fs).unwrap();
+    let mut padded = [0u8; PADDED_PIN_LEN];
+    padded[..PIN.len()].copy_from_slice(PIN);
+    let mut state = FidoState::new();
+    // EF_PIN is written by the OTP build, so its verifier is ALREADY OTP-rooted and
+    // the fallback that sets `migrated` never fires.
+    {
+        let mut presence = crate::AlwaysConfirm;
+        let mut ctx = Ctx {
+            presence: &mut presence,
+            dev: otp_dev(),
+            fs: &mut fs,
+            rng: &mut rng,
+            state: &mut state,
+            now_ms: 0,
+        };
+        store_new_pin(&mut ctx, &padded).unwrap();
+    }
+    // The seed is the straggler: a pre-OTP PIN-wrapped 0x03 under the same PIN.
+    let pin_hash = sha256(PIN);
+    crate::seed::wrap_keydev_legacy(&dev(), &mut fs, &seed0, &pin_hash[..16]);
+    let mut raw = [0u8; 61];
+    assert_eq!(fs.read(EF_KEY_DEV.get(), &mut raw), Some(61));
+    assert_eq!(raw[0], 0x03, "fixture: the seed is pre-OTP PIN-wrapped");
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    assert!(
+        fs.has_data(rsk_fs::EF_HARDENED),
+        "fixture: the lap has latched"
+    );
+
+    medium.clear_ops();
+    let mut state2 = FidoState::new();
+    let mut presence = crate::AlwaysConfirm;
+    let mut ctx = Ctx {
+        presence: &mut presence,
+        dev: otp_dev(),
+        fs: &mut fs,
+        rng: &mut rng,
+        state: &mut state2,
+        now_ms: 0,
+    };
+    spend_and_verify_pin_hash(&mut ctx, &pin_hash[..16]).unwrap();
+    assert_eq!(ctx.fs.read(EF_KEY_DEV.get(), &mut raw), Some(61));
+    assert_eq!(
+        raw[0], 0x12,
+        "fixture: the verify really did re-key the seed off the pre-OTP arm"
+    );
+    assert_eq!(load_keydev(&otp_dev(), ctx.fs), Some(seed0));
+    assert!(
+        !ctx.fs.has_data(rsk_fs::EF_HARDENED),
+        "the seed was re-keyed off the chip-serial arm with `migrated` false, so \
+         nothing re-armed the lap and that 0x03 copy stays in the ring for good"
+    );
+    // EF_PIN is rewritten here too (the retry spend and its reset), but it re-keys
+    // nothing — the append the order is about is the seed's.
+    medium.assert_re_armed_before(EF_KEY_DEV.get(), |_| false, "migrate_keydev_pin");
+}
+
+/// How the two records part company on a real card, so F6's state is not a fixture.
+/// `migrate_keydev_pin` opens with `fs.read_key(EF_KEY_DEV, …)`, and `read_key`
+/// collapses a flash READ FAULT into the same `None` an absent slot gives — so one
+/// faulted probe makes the seed migration a silent no-op for that verify, while the
+/// SAME verify goes on to persist an OTP-rooted `EF_PIN`. From then on `migrated` is
+/// false for a seed still sitting at 0x03.
+#[test]
+fn a_faulted_seed_probe_leaves_the_verifier_migrated_and_the_seed_behind() {
+    const OTP_KEY: [u8; 32] = [0x7A; 32];
+    fn otp_dev() -> Device<'static> {
+        Device {
+            otp_key: Some(&OTP_KEY),
+            ..dev()
+        }
+    }
+
+    let (stuck, medium) = ProbeStuck::new();
+    let mut fs = Fs::new(stuck);
+    let mut rng = SeqRng(1);
+    ensure_seed(&dev(), &mut fs, &mut rng).unwrap();
+    let seed0 = load_keydev(&dev(), &mut fs).unwrap();
+    let mut padded = [0u8; PADDED_PIN_LEN];
+    padded[..PIN.len()].copy_from_slice(PIN);
+    let mut state = FidoState::new();
+    {
+        let mut presence = crate::AlwaysConfirm;
+        let mut ctx = Ctx {
+            presence: &mut presence,
+            dev: dev(),
+            fs: &mut fs,
+            rng: &mut rng,
+            state: &mut state,
+            now_ms: 0,
+        };
+        store_new_pin(&mut ctx, &padded).unwrap();
+    }
+    let pin_hash = sha256(PIN);
+    crate::seed::wrap_keydev_legacy(&dev(), &mut fs, &seed0, &pin_hash[..16]);
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+
+    // Verify #1 on the OTP build: `migrated` is true, so the verifier is re-keyed and
+    // the lap re-armed — but the seed probe faults, and the migration answers Ok over
+    // a record it never read.
+    medium.stick_once(EF_KEY_DEV.get());
+    {
+        let mut state2 = FidoState::new();
+        let mut presence = crate::AlwaysConfirm;
+        let mut ctx = Ctx {
+            presence: &mut presence,
+            dev: otp_dev(),
+            fs: &mut fs,
+            rng: &mut rng,
+            state: &mut state2,
+            now_ms: 0,
+        };
+        spend_and_verify_pin_hash(&mut ctx, &pin_hash[..16]).unwrap();
+    }
+    let mut raw = [0u8; 61];
+    assert_eq!(fs.read(EF_KEY_DEV.get(), &mut raw), Some(61));
+    assert_eq!(raw[0], 0x03, "the faulted probe left the seed pre-OTP");
+    let mut pin_rec = [0u8; PIN_FILE_LEN];
+    assert_eq!(fs.read(EF_PIN, &mut pin_rec), Some(PIN_FILE_LEN));
+    assert_eq!(
+        &pin_rec[3..PIN_FILE_LEN],
+        &otp_dev().pin_derive_verifier(&pin_hash[..16])[..PIN_FILE_LEN - 3],
+        "…while the same verify persisted an OTP-rooted verifier, so no later \
+         verify will set `migrated` again",
+    );
+
+    // The next boot laps and latches the marker again.
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    let mut state3 = FidoState::new();
+    let mut presence = crate::AlwaysConfirm;
+    let mut ctx = Ctx {
+        presence: &mut presence,
+        dev: otp_dev(),
+        fs: &mut fs,
+        rng: &mut rng,
+        state: &mut state3,
+        now_ms: 0,
+    };
+    spend_and_verify_pin_hash(&mut ctx, &pin_hash[..16]).unwrap();
+    assert_eq!(ctx.fs.read(EF_KEY_DEV.get(), &mut raw), Some(61));
+    assert_eq!(
+        raw[0], 0x12,
+        "verify #2 re-keyed the seed off the chip-serial arm"
+    );
+    assert!(
+        !ctx.fs.has_data(rsk_fs::EF_HARDENED),
+        "…with `migrated` false, so on the old guard nothing re-armed the lap and \
+         the 0x03 copy stays in the ring for the life of the key"
+    );
+}
+
+/// The trusted display's PIN verify carries its own copy of the kbase fallback, so
+/// nothing `spend_and_verify_pin_hash` does holds it: it re-keys the same pre-OTP
+/// verifier and owes the same re-arm, in the same order. No test reached this site
+/// at all before — the host path shadowed it in every reachability sweep.
+#[test]
+fn a_local_pin_verify_re_arms_the_lap_before_it_re_keys() {
+    const OTP_KEY: [u8; 32] = [0x78; 32];
+    fn otp_dev() -> Device<'static> {
+        Device {
+            otp_key: Some(&OTP_KEY),
+            ..dev()
+        }
+    }
+
+    // Pre-OTP: the verifier `store_new_pin` lands is rooted in the public chip serial.
+    let (mut fs, medium, mut rng) = setup_cut();
+    let mut padded = [0u8; PADDED_PIN_LEN];
+    padded[..PIN.len()].copy_from_slice(PIN);
+    let mut state = FidoState::new();
+    {
+        let mut presence = crate::AlwaysConfirm;
+        let mut ctx = Ctx {
+            presence: &mut presence,
+            dev: dev(),
+            fs: &mut fs,
+            rng: &mut rng,
+            state: &mut state,
+            now_ms: 0,
+        };
+        store_new_pin(&mut ctx, &padded).unwrap();
+    }
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    assert!(
+        fs.has_data(rsk_fs::EF_HARDENED),
+        "fixture: the lap has latched"
+    );
+
+    // The OTP build. The pad's verify takes the fallback and re-stores the verifier
+    // under the OTP arm; its own retry spend rewrites EF_PIN without re-keying it,
+    // so "still weak" is every write that leaves the verifier bytes alone.
+    let before = medium
+        .value(EF_PIN)
+        .expect("fixture: EF_PIN is on the medium");
+    medium.clear_ops();
+    assert!(matches!(
+        spend_and_verify_local_pin(&otp_dev(), &mut fs, PIN),
+        LocalPin::Ok
+    ));
+    assert_ne!(
+        medium.value(EF_PIN).as_deref().map(|v| &v[1..]),
+        Some(&before[1..]),
+        "fixture: the verify never re-keyed the verifier, so there is no order to hold"
+    );
+    assert!(
+        !fs.has_data(rsk_fs::EF_HARDENED),
+        "a lazy re-key must re-arm the at-rest lap: the marker is still latched, \
+         so no rescrub was requested"
+    );
+    medium.assert_re_armed_before(
+        EF_PIN,
+        |v| v.len() == before.len() && v[1..] == before[1..],
+        "spend_and_verify_pin_at's kbase fallback",
+    );
 }
 
 #[test]
@@ -2229,9 +2493,9 @@ fn cose_with_alg(x: &[u8; 32], y: &[u8; 32], alg: Option<i64>) -> std::vec::Vec<
 /// them holds back.
 ///
 /// `pinHashEnc` arrives straight from the CBOR decoder (`clientpin.rs:91`) and
-/// nothing bounds it; `macd` is `[0u8; 112]` and `clientpin.rs:256` copies
+/// nothing bounds it; `macd` is `[0u8; 112]` and `clientpin.rs:259` copies
 /// `newPinEnc ‖ pinHashEnc` into it BEFORE the MAC is verified. Widen that guard
-/// (`clientpin.rs:241-243`) to `&&` — the shape a cargo-mutants MISSED row left
+/// (`clientpin.rs:244-246`) to `&&` — the shape a cargo-mutants MISSED row left
 /// open with "the consequence is not yet determined" — and a correct `newPinEnc`
 /// with an over-long `pinHashEnc` walks past it into a slice-index panic,
 /// unauthenticated. Both protocols, because 112 is `80 + 32` on two and `64 + 48`
@@ -2524,3 +2788,404 @@ fn a_torn_change_pin_never_leaves_the_grant_under_the_new_pin() {
     assert!(saw_torn, "vacuous: no budget tore the change");
     assert!(saw_landed, "vacuous: no budget landed the new verifier");
 }
+
+/// setPIN's only guard is `has_data(EF_PIN)`, so a probe the flash could not serve
+/// let an unauthenticated host install its own PIN over the owner's — the case
+/// `Storage::last_error` was added for (audit run-36) and the half of it the
+/// present-cache alone never closed: nothing is memoised, and the single call
+/// still answers "no PIN set".
+#[test]
+fn a_faulted_probe_does_not_let_setpin_replace_the_owners_pin() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    let mut rng = SeqRng(1);
+    ensure_seed(&dev(), &mut fs, &mut rng).unwrap();
+    let mut state = FidoState::new();
+    let plat = key_agreement(&mut fs, &mut rng, &mut state, PinProto::Two, 2);
+    let mut out = [0u8; 256];
+    run(
+        &mut fs,
+        &mut rng,
+        &mut state,
+        &plat.set_pin_req(PIN),
+        &mut out,
+    )
+    .unwrap();
+    let owner = medium
+        .value(EF_PIN)
+        .expect("the owner's PIN record is on the medium");
+
+    medium.stick(Some(EF_PIN));
+    let plat2 = key_agreement(&mut fs, &mut rng, &mut state, PinProto::Two, 2);
+    assert_eq!(
+        run(
+            &mut fs,
+            &mut rng,
+            &mut state,
+            &plat2.set_pin_req(NEW_PIN),
+            &mut out
+        ),
+        Err(CtapError::Other),
+        "setPIN over a PIN it could not read must fail, not install a new one"
+    );
+    assert_eq!(
+        medium.value(EF_PIN).as_deref(),
+        Some(&owner[..]),
+        "a faulted EF_PIN probe let setPIN replace the owner's PIN"
+    );
+}
+
+/// `local_pin_gate` returns `true` outright when no PIN of the scope is set — the
+/// hold gesture then stands alone — so a faulted probe reading as "no PIN" waived
+/// every destructive on-device action. Both scopes resolve to SET now.
+#[test]
+fn a_faulted_pin_probe_reads_as_pin_set_for_the_local_gates() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    assert!(
+        !pin_is_set(&mut fs),
+        "control: a fresh card has no clientPIN"
+    );
+    assert!(!device_pin_is_set(&mut fs), "nor a device PIN");
+    fs.put(EF_PIN, &[8, 4, 1]).unwrap();
+    fs.put(EF_DEVICE_PIN, &[8, 4, 1]).unwrap();
+
+    medium.stick(Some(EF_PIN));
+    assert!(
+        pin_is_set(&mut fs),
+        "a faulted EF_PIN probe waived the display's clientPIN gate"
+    );
+    medium.stick(Some(EF_DEVICE_PIN));
+    assert!(
+        device_pin_is_set(&mut fs),
+        "a faulted EF_DEVICE_PIN probe waived the display's device-PIN gate"
+    );
+}
+
+/// `min_pin_length` is the floor every set-PIN path enforces against, and it read
+/// `EF_MINPINLEN` with `Fs::read` — the same `None` for "no policy set" and for a
+/// record the flash could not serve, collapsing to the build's `MIN_PIN_LENGTH`. One
+/// faulted probe therefore stored a PIN the owner's policy forbids, and the stored
+/// verifier is what every later authentication uses. Both writers are driven: the
+/// panel's `store_local_pin` and the host setPIN, which reach the floor by different
+/// doors.
+#[test]
+fn a_faulted_min_pin_probe_does_not_store_a_pin_under_the_floor() {
+    // The panel's set-PIN. `PIN` is six code points — above every profile's
+    // `MIN_PIN_LENGTH`, so the collapsed floor is what admits it, not the length.
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    let mut rng = SeqRng(1);
+    ensure_seed(&dev(), &mut fs, &mut rng).unwrap();
+    fs.put(EF_MINPINLEN, &[16, 0]).unwrap();
+    assert!(
+        matches!(
+            store_local_pin(&dev(), &mut fs, PIN),
+            Err(SetPinError::TooShort { min: 16 })
+        ),
+        "control: the panel enforces the policy floor"
+    );
+    medium.stick_once(EF_MINPINLEN);
+    let r = store_local_pin(&dev(), &mut fs, PIN);
+    medium.stick(None);
+    assert!(
+        !pin_is_set(&mut fs),
+        "a faulted floor probe stored a panel PIN of {} code points under a floor of 16",
+        PIN.len()
+    );
+    // `Storage`, not `TooShort`: the floor is exactly what could not be read, so
+    // naming a number the pad would then show would be an invention.
+    assert!(
+        matches!(r, Err(SetPinError::Storage)),
+        "a set that could not read the floor it must enforce has to refuse, got {r:?}"
+    );
+
+    // The host setPIN reaches the same floor through `store_new_pin`.
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    let mut rng = SeqRng(1);
+    ensure_seed(&dev(), &mut fs, &mut rng).unwrap();
+    fs.put(EF_MINPINLEN, &[16, 0]).unwrap();
+    let mut state = FidoState::new();
+    let plat = key_agreement(&mut fs, &mut rng, &mut state, PinProto::Two, 2);
+    let mut out = [0u8; 256];
+    assert_eq!(
+        run(
+            &mut fs,
+            &mut rng,
+            &mut state,
+            &plat.set_pin_req(PIN),
+            &mut out
+        ),
+        Err(CtapError::PinPolicyViolation),
+        "control: the host setPIN enforces the policy floor"
+    );
+    medium.stick_once(EF_MINPINLEN);
+    let r = run(
+        &mut fs,
+        &mut rng,
+        &mut state,
+        &plat.set_pin_req(PIN),
+        &mut out,
+    );
+    medium.stick(None);
+    assert!(
+        !fs.has_data(EF_PIN),
+        "a faulted floor probe stored a host PIN of {} code points under a floor of 16",
+        PIN.len()
+    );
+    assert!(r.is_err(), "the host setPIN under the floor has to refuse");
+}
+
+/// While `EF_MINPINLEN[1]` is set, a correct PIN still does not buy a
+/// pinUvAuthToken — changePIN has to lift the flag first (CTAP 2.1 §6.5.5.7.1,
+/// ClientPin2-GetPinToken F-5). `force_change_pending` read the flag with `Fs::read`,
+/// and every caller spends its `false` to let something THROUGH, so a faulted probe
+/// waived the gate and handed out the token the flag exists to withhold.
+#[test]
+fn a_faulted_force_change_probe_does_not_waive_the_pending_change() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    let mut rng = SeqRng(1);
+    ensure_seed(&dev(), &mut fs, &mut rng).unwrap();
+    let mut state = FidoState::new();
+    let plat = key_agreement(&mut fs, &mut rng, &mut state, PinProto::Two, 2);
+    let mut out = [0u8; 256];
+    run(
+        &mut fs,
+        &mut rng,
+        &mut state,
+        &plat.set_pin_req(PIN),
+        &mut out,
+    )
+    .unwrap();
+    fs.put(EF_MINPINLEN, &[4, 1]).unwrap(); // forceChangePin pending
+
+    // Control: the correct PIN is refused while the flag stands, and no token is
+    // minted for the host.
+    state.paut.permissions = 0;
+    assert_eq!(
+        run(
+            &mut fs,
+            &mut rng,
+            &mut state,
+            &plat.get_token_req(PIN),
+            &mut out
+        ),
+        Err(CtapError::PinInvalid),
+        "control: a pending forced change withholds the token"
+    );
+
+    state.paut.permissions = 0;
+    medium.stick_once(EF_MINPINLEN);
+    let r = run(
+        &mut fs,
+        &mut rng,
+        &mut state,
+        &plat.get_token_req(PIN),
+        &mut out,
+    );
+    medium.stick(None);
+    assert_eq!(
+        state.paut.permissions, 0,
+        "a faulted probe issued a pinUvAuthToken while a forced PIN change was pending"
+    );
+    assert_eq!(
+        r,
+        Err(CtapError::PinInvalid),
+        "a flag the medium could not read must not be taken for no pending change"
+    );
+}
+
+/// The collapse `clear_force_change` keeps, measured rather than assumed: a faulted
+/// probe there leaves `EF_MINPINLEN` exactly as it was — flag still standing, floor
+/// and RP-id list untouched — and the whole cost is one more changePIN, onto a
+/// THIRD value, since §6.5.5.6 refuses the current one. It is the
+/// third EF_MINPINLEN read of the command (`force_change_pending`, then
+/// `store_new_pin`'s floor, then this one), so `stick_after(.., 2)` is what reaches it.
+///
+/// The bound in both directions is the point. Nothing opens: the surviving flag is
+/// the RESTRICTIVE answer, so the token stays withheld. And propagating the `Err`
+/// instead would report a FAILED changePIN over a new PIN that is already stored —
+/// the one outcome here that costs the owner more than a repeat.
+#[test]
+fn a_faulted_force_change_clear_costs_one_more_pin_change_and_nothing_else() {
+    // A third distinct PIN, from the vetted vocabulary: the repeat change must land
+    // on a value the pending-change rule accepts (§6.5.5.6 refuses the current one).
+    const THIRD_PIN: &[u8] = DEVICE_PIN;
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    let mut rng = SeqRng(1);
+    ensure_seed(&dev(), &mut fs, &mut rng).unwrap();
+    let mut state = FidoState::new();
+    let plat = key_agreement(&mut fs, &mut rng, &mut state, PinProto::Two, 2);
+    let mut out = [0u8; 256];
+    run(
+        &mut fs,
+        &mut rng,
+        &mut state,
+        &plat.set_pin_req(PIN),
+        &mut out,
+    )
+    .unwrap();
+    // [min, force, one RP-id hash]: the policy the absent arm would have to rebuild.
+    let mut policy = [0xC7u8; 2 + 32];
+    policy[0] = 4;
+    policy[1] = 1;
+    fs.put(EF_MINPINLEN, &policy).unwrap();
+    let pin_before = medium.value(EF_PIN).expect("the verifier is on the medium");
+
+    state.paut.permissions = 0;
+    assert_eq!(
+        run(
+            &mut fs,
+            &mut rng,
+            &mut state,
+            &plat.get_token_req(PIN),
+            &mut out
+        ),
+        Err(CtapError::PinInvalid),
+        "control: a pending forced change withholds the token"
+    );
+
+    medium.stick_after(EF_MINPINLEN, 2);
+    let r = run(
+        &mut fs,
+        &mut rng,
+        &mut state,
+        &plat.change_pin_req(PIN, NEW_PIN),
+        &mut out,
+    );
+    medium.stick(None);
+    assert_eq!(
+        medium.value(EF_MINPINLEN).as_deref(),
+        Some(&policy[..]),
+        "a faulted probe rewrote the minPINLength policy it could not read"
+    );
+    assert!(
+        r.is_ok(),
+        "the new PIN is stored by then, so the change must not report failure"
+    );
+    assert_ne!(
+        medium.value(EF_PIN),
+        Some(pin_before),
+        "and the new verifier really landed"
+    );
+
+    // Nothing opened: the flag survived, so the token is still withheld.
+    state.paut.permissions = 0;
+    assert_eq!(
+        run(
+            &mut fs,
+            &mut rng,
+            &mut state,
+            &plat.get_token_req(NEW_PIN),
+            &mut out
+        ),
+        Err(CtapError::PinInvalid),
+        "a surviving forced-change flag must still withhold the token"
+    );
+
+    // And the whole cost: ONE more changePIN clears it.
+    let plat = key_agreement(&mut fs, &mut rng, &mut state, PinProto::Two, 2);
+    run(
+        &mut fs,
+        &mut rng,
+        &mut state,
+        &plat.change_pin_req(NEW_PIN, THIRD_PIN),
+        &mut out,
+    )
+    .unwrap();
+    state.paut.permissions = 0;
+    assert!(
+        run(
+            &mut fs,
+            &mut rng,
+            &mut state,
+            &plat.get_token_req(THIRD_PIN),
+            &mut out
+        )
+        .is_ok(),
+        "one repeat change clears the flag — the cost is bounded there"
+    );
+    let mut after = [0u8; 2 + 32];
+    let n = fs.read(EF_MINPINLEN, &mut after).unwrap();
+    assert_eq!(
+        (after[0], after[1], &after[2..n]),
+        (4, 0, &policy[2..]),
+        "and it drops the flag alone, keeping the floor and the RP-id list"
+    );
+}
+
+/// `Fs::read` answers the record's FULL length, and `EF_MINPINLEN` is
+/// `[min, force, hash*]` under a cap that has moved: a record written by a build
+/// with a wider `MAX_MIN_PIN_RPIDS` reads back longer than this build's buffer.
+/// `&buf[..n]` then panicked — on the changePIN path, AFTER `store_new_pin` has
+/// committed the new PIN, so the host never sees a status word at all.
+///
+/// The answer asserted here is about the DATA: the stored record is untouched,
+/// every RP id still in it. Clamping instead would have written it back shortened.
+#[test]
+fn a_min_pin_record_wider_than_this_build_is_left_whole_rather_than_truncated() {
+    let mut fs = Fs::new(RamStorage::new());
+    let mut oversized = [0xABu8; 2 + 32 * (MAX_MIN_PIN_RPIDS + 1)];
+    oversized[0] = 6;
+    oversized[1] = 1; // forceChangePin set, so the clear has work to do
+    fs.put(EF_MINPINLEN, &oversized).unwrap();
+
+    assert!(clear_force_change(&mut fs).is_ok());
+
+    let mut back = [0u8; 2 + 32 * (MAX_MIN_PIN_RPIDS + 2)];
+    let n = fs.read(EF_MINPINLEN, &mut back).unwrap();
+    assert_eq!(n, oversized.len(), "the record kept every RP id it had");
+    assert_eq!(&back[..n], &oversized[..], "and kept them unchanged");
+}
+
+/// A `pcmr` request whose read of the grant faults must fail rather than mint: the
+/// read's `None` used to reach `ensure_ppuat` as "never minted", and the platform
+/// asking was handed a new token that revoked every other platform's grant.
+#[test]
+fn a_faulted_grant_read_does_not_hand_out_a_new_pcmr_token() {
+    let (backend, medium) = ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    let mut rng = SeqRng(1);
+    ensure_seed(&dev(), &mut fs, &mut rng).unwrap();
+    let mut state = FidoState::new();
+    let plat = key_agreement(&mut fs, &mut rng, &mut state, PinProto::Two, 2);
+    let mut out = [0u8; 256];
+    let pcmr = plat.get_token_perms_req(PIN, PERM_PCMR as u64);
+    run(
+        &mut fs,
+        &mut rng,
+        &mut state,
+        &plat.set_pin_req(PIN),
+        &mut out,
+    )
+    .unwrap();
+    let n = run(&mut fs, &mut rng, &mut state, &pcmr, &mut out).unwrap();
+    let ppuat = plat.decrypt_token(&out[..n]);
+    let stored = medium.value(crate::consts::EF_PAUTHTOKEN.get()).unwrap();
+
+    medium.stick_once(crate::consts::EF_PAUTHTOKEN.get());
+    let r = run(&mut fs, &mut rng, &mut state, &pcmr, &mut out);
+    assert_eq!(
+        medium.value(crate::consts::EF_PAUTHTOKEN.get()).as_deref(),
+        Some(&stored[..]),
+        "a faulted read minted a new persistent token over the live one"
+    );
+    assert!(
+        r.is_err(),
+        "a grant that could not be read was answered as issued"
+    );
+
+    let n = run(&mut fs, &mut rng, &mut state, &pcmr, &mut out).unwrap();
+    assert_eq!(plat.decrypt_token(&out[..n]), ppuat);
+}
+
+// The permission-domain sweep lives in its own file: it is a source obligation
+// of the formal programme (PLAT-MODEL-001), not another clientPIN case, and it
+// needs this module's fixture.
+#[path = "clientpin_perms_tests.rs"]
+mod perms;

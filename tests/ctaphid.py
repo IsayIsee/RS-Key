@@ -118,7 +118,8 @@ def write(dev, payload):
 
 def read(dev):
     # 20s: absorbs flash-GC stalls during long ops (reset / resident
-    # makeCredential) — the device sends one upfront keepalive, not a stream.
+    # makeCredential). The device streams a KEEPALIVE every
+    # `rsk_usb::ctaphid::KEEPALIVE_MS` while the worker runs — hence send_cbor's loop.
     return bytes(dev.read(REPORT_LEN, 20000))
 
 

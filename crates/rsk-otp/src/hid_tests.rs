@@ -330,3 +330,14 @@ fn the_scrub_reaches_the_response_body() {
     let mut out = [0u8; REPORT_SIZE];
     assert!(!hid.tx.next(&mut out));
 }
+
+/// A poll that lands before the worker seeds the real record reads what `new`
+/// holds, and USB is up by then. That placeholder must carry the firmware version
+/// every other interface reports, not a copy frozen at an older one.
+#[test]
+fn a_poll_before_the_first_seed_reports_the_firmware_version() {
+    let mut hid = OtpHid::new();
+    let (major, minor, patch) = VERSION;
+    let expected = status_frame([major, minor, patch, 0, 0, 0, 0]);
+    assert_eq!(get(&mut hid, false), expected);
+}

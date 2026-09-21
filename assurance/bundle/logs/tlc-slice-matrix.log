@@ -1,0 +1,97 @@
+warning: Git tree '/Users/maxmur/Code/RS-Key' has uncommitted changes
+rs-key devshell
+  rustc:    rustc 1.96.0 (ac68faa20 2026-05-25)
+  target:   thumbv8m.main-none-eabihf
+  picotool: picotool v2.2.0-a4 (Darwin, Clang-21.1.8, Release)
+
+Build:  cargo build --release -p firmware   # pick the target crate
+  (or:  nix build .#firmware                 # hermetic → result/firmware.uf2)
+PT:     scripts/pt.sh target/thumbv8m.main-none-eabihf/release/firmware fw-pt.elf   # fence the KV store
+UF2:    picotool uf2 convert fw-pt.elf -t elf firmware.uf2
+Flash:  hold BOOTSEL, plug in the RP2350, drag firmware.uf2 to the RP2350 drive
+Check:  ./scripts/check.sh        # fmt + clippy + test + audit + deny + gitleaks
+Fuzz:   nix develop .#fuzz -c cargo fuzz run <target>
+CLI:    rsk status | rsk backup … | rsk secure-boot … | rsk otp … (rsk --help)
+TUI:    rsk-tui                    # live device dashboard
+Docs:   ./scripts/docs.sh serve    # preview the docs site (build|check)
+tla-lint: ok -- 411 definitions across 20 modules
+Shipped.cfg                                GREEN                                  states=986836197 distinct=77563872 depth=58  1915s
+tla-lint: ok -- 411 definitions across 20 modules
+Solo_BugNoConsumeAfterUp.cfg               RED: NoAuthorizationBypass             states=52318     distinct=9869     depth=9   2s
+tla-lint: ok -- 411 definitions across 20 modules
+Mut_BugNoConsumeAfterUp.cfg                RED: NoAuthorizationBypass             states=53300     distinct=10057    depth=9   1s
+tla-lint: ok -- 411 definitions across 20 modules
+Solo_BugSoftLockLostOnWarmReset.cfg        RED: NoAuthorizationBypass             states=54978     distinct=10416    depth=9   1s
+tla-lint: ok -- 411 definitions across 20 modules
+Mut_BugSoftLockLostOnWarmReset.cfg         RED: NoAuthorizationBypass             states=59820     distinct=11090    depth=9   2s
+tla-lint: ok -- 411 definitions across 20 modules
+Solo_BugWarmResetReopensWindow.cfg         RED: NoAuthorizationBypass             states=530       distinct=179      depth=5   1s
+tla-lint: ok -- 411 definitions across 20 modules
+Mut_BugWarmResetReopensWindow.cfg          RED: NoAuthorizationBypass             states=563       distinct=194      depth=5   1s
+tla-lint: ok -- 411 definitions across 20 modules
+Solo_BugCmWalkIgnoresChannel.cfg           RED: NoAuthorizationBypass             states=17250     distinct=4053     depth=8   1s
+tla-lint: ok -- 411 definitions across 20 modules
+Mut_BugCmWalkIgnoresChannel.cfg            RED: NoAuthorizationBypass             states=16716     distinct=3949     depth=8   1s
+tla-lint: ok -- 411 definitions across 20 modules
+Solo_BugConsumeKeepsMcGa.cfg               RED: NoAuthorizationBypass             states=60032     distinct=11174    depth=9   1s
+tla-lint: ok -- 411 definitions across 20 modules
+Mut_BugConsumeKeepsMcGa.cfg                RED: NoAuthorizationBypass             states=51336     distinct=9740     depth=9   2s
+tla-lint: ok -- 411 definitions across 20 modules
+Solo_BugNoTouchRequired.cfg                RED: NoAuthorizationBypass             states=790       distinct=267      depth=5   0s
+tla-lint: ok -- 411 definitions across 20 modules
+Mut_BugNoTouchRequired.cfg                 RED: NoAuthorizationBypass             states=807       distinct=274      depth=5   0s
+tla-lint: ok -- 411 definitions across 20 modules
+Solo_BugSetPinOverExisting.cfg             RED: NoAuthorizationBypass             states=2443      distinct=719      depth=6   1s
+tla-lint: ok -- 411 definitions across 20 modules
+Mut_BugSetPinOverExisting.cfg              RED: NoAuthorizationBypass             states=2407      distinct=715      depth=6   1s
+tla-lint: ok -- 411 definitions across 20 modules
+Solo_BugHostPreemptsLocalWait.cfg          RED: NoAuthorizationBypass             states=89        distinct=40       depth=4   1s
+tla-lint: ok -- 411 definitions across 20 modules
+Mut_BugHostPreemptsLocalWait.cfg           RED: NoAuthorizationBypass             states=89        distinct=40       depth=4   1s
+tla-lint: ok -- 411 definitions across 20 modules
+Solo_BugLocalPinIgnoresBudget.cfg          RED: NoAuthorizationBypass             states=2395609   distinct=265928   depth=14  6s
+tla-lint: ok -- 411 definitions across 20 modules
+Mut_BugLocalPinIgnoresBudget.cfg           RED: NoAuthorizationBypass             states=2386742   distinct=265511   depth=14  6s
+tla-lint: ok -- 411 definitions across 20 modules
+Solo_BugUvNotRqdIgnoresRk.cfg              RED: NoAuthorizationBypass             states=2761      distinct=719      depth=6   0s
+tla-lint: ok -- 411 definitions across 20 modules
+Mut_BugUvNotRqdIgnoresRk.cfg               RED: NoAuthorizationBypass             states=2803      distinct=730      depth=6   1s
+tla-lint: ok -- 411 definitions across 20 modules
+Solo_BugTokenlessIgnoresAlwaysUv.cfg       RED: NoAuthorizationBypass             states=53753     distinct=9635     depth=9   2s
+tla-lint: ok -- 411 definitions across 20 modules
+Mut_BugTokenlessIgnoresAlwaysUv.cfg        RED: NoAuthorizationBypass             states=54134     distinct=9842     depth=9   1s
+tla-lint: ok -- 411 definitions across 20 modules
+TokenGate.cfg                              GREEN                                  states=875       distinct=44       depth=3   1s
+tla-lint: ok -- 411 definitions across 20 modules
+TokenGateOracle.cfg                        GREEN                                  states=506       distinct=22       depth=1   1s
+tla-lint: ok -- 411 definitions across 20 modules
+TokenGateDisagreement.cfg                  RED: RequiredGateAgreesWithRelation    states=?         distinct=?        depth=?   1s
+tla-lint: ok -- 411 definitions across 20 modules
+TokenGateMut_BugUnauthorizedEdge.cfg       RED: NoAuthorizationBypassA            states=?         distinct=?        depth=?   1s
+tla-lint: ok -- 411 definitions across 20 modules
+TokenRefinement.cfg                        GREEN                                  states=34038747  distinct=3472034  depth=44  190s
+tla-lint: ok -- 411 definitions across 20 modules
+TokenRefinementBadMap.cfg                  RED: Error: Action property line 130, col 17 to line 130, col 30 of module RSKeyTokenAbstract is violated. states=1483      distinct=497      depth=6   1s
+tla-lint: ok -- 411 definitions across 20 modules
+TokenRefinementOutcome.cfg                 GREEN                                  states=34038747  distinct=3472034  depth=44  212s
+tla-lint: ok -- 411 definitions across 20 modules
+TokenRefinementDeadToken.cfg               RED: Error: Action property R1oTokenOutcomes is violated. states=2         distinct=2        depth=2   1s
+tla-lint: ok -- 411 definitions across 20 modules
+TraceSecurity.cfg                          GREEN                                  states=77        distinct=75       depth=75  1s
+tla-lint: ok -- 411 definitions across 20 modules
+TraceSecurityBadBeta.cfg                   RED: R4aRawRefinesB                    states=21        distinct=20       depth=20  0s
+tla-lint: ok -- 411 definitions across 20 modules
+TraceSecurityBadAlpha.cfg                  RED: R4bAlphaMatchesGamma              states=22        distinct=21       depth=21  0s
+tla-lint: ok -- 411 definitions across 20 modules
+TraceSecurityBadAlphaNoR4b.cfg             GREEN                                  states=77        distinct=75       depth=75  0s
+tla-lint: ok -- 411 definitions across 20 modules
+TraceSecurityBadOutcome.cfg                RED: R4bEventConsensus                 states=11        distinct=10       depth=10  0s
+tla-lint: ok -- 411 definitions across 20 modules
+TraceSecurityBadUvNotRqd.cfg               RED: R4cGateAnswers                    states=45        distinct=44       depth=44  1s
+tla-lint: ok -- 411 definitions across 20 modules
+TraceSecurityBadResetWindow.cfg            RED: R4cGateAnswers                    states=76        distinct=75       depth=75  1s
+tla-lint: ok -- 411 definitions across 20 modules
+TraceSecurityBadAlwaysUvArm.cfg            RED: R4cGateAnswers                    states=52        distinct=51       depth=51  1s
+tla-lint: ok -- 411 definitions across 20 modules
+TraceSecurityBadPinSet.cfg                 RED: R4cGateAnswers                    states=13        distinct=12       depth=12  1s
+SLICE-TLC-EXIT=0

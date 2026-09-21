@@ -37,6 +37,13 @@ has paid for that twice. In particular:
 What it refuses: a scope constant with no row, a row naming no constant, and any
 safety-tier configuration assigning a scope BELOW its recorded minimum.
 
+And, since the rule above reads the minimum out of the same file the author
+edits, the minimum ITSELF. Measured: lowering `RSKeyStore Fids` from 2 to 1 in
+`formal/scopes.txt` and running this file is exit 0 — every configuration is
+still above the number, because the number moved. So [`MEASURED_MINIMA`] pins the
+rows that are above the degenerate scope, and each one names the configuration it
+is the minimum FOR, which is derived against the tree rather than trusted.
+
 Limits, so the row is not read as more than it is. The minimum is measured
 against the roster that exists -- it says the current mutants all fire, never
 that no defect needs more. Nothing here can know that a third channel would
@@ -60,6 +67,61 @@ SCOPES = FORMAL / "scopes.txt"
 # A constant is a mutation switch, not a scope, if it is named like one. The
 # generator spells every switch this way and `gen-configs.sh` is the only writer.
 SWITCH = re.compile(r"^(Bug|Fix|Mutate|Check)[A-Z]")
+
+#: The subset of those that is a DEFECT. Measured while writing the witness rule
+#: below: "arms a switch" is satisfied by `FixLate = TRUE`, and the shipped
+#: configuration arms every fix — so the rule would have accepted the config with
+#: no defect in it as the witness for a minimum, which is the vacuous witness it
+#: exists to refuse.
+DEFECT = re.compile(r"^Bug[A-Z]")
+
+#: Where a minimum stops being a measurement. A recorded 0 or 1 is the smallest
+#: scope at which the constant means anything -- `scopes.txt` says so of
+#: `MaxClock` and of the four single-element domains -- so lowering one is not a
+#: weakening anybody could make: there is nowhere below it to go. Every row AT OR
+#: ABOVE this is a number somebody measured, and the only kind this file's own
+#: rule can be silently weakened through.
+RATCHET_FLOOR = 2
+
+#: THE RATCHET, and the reason it duplicates a number that is already in the file
+#: one directory over. Everything else here is derived, on purpose; this cannot
+#: be. `scopes.txt` is the only record of a measured minimum, so a gate that reads
+#: only `scopes.txt` reports whatever `scopes.txt` says -- measured: lowering
+#: `RSKeyStore Fids` from 2 to 1 and running `python scripts/scope_gate.py` is
+#: exit 0, over a mutant (`BugMetaAddDropsOnFault`) that needs the second FID. A
+#: ratchet that lives in the file it ratchets is not one, so the number is
+#: recorded HERE as well, and moving it takes an edit in two places -- which is
+#: what "an explicit recorded disposition" means for a number no script can
+#: re-measure inside a gate run.
+#:
+#: The value is `(minimum, the configuration the minimum is for)`. The witness is
+#: not decoration: it is the artifact the number rests on, and it is derived
+#: against the tree below -- it must exist, arm a mutation switch, be in the
+#: safety tier, check the invariant `scopes.txt` names, and run this constant at
+#: no less than the recorded minimum. What it does NOT claim is the other half of
+#: the measurement, that the mutant goes GREEN one element down: that costs a TLC
+#: run and cannot be a gate row. `scopes.txt`'s header is where that reading is
+#: recorded, and it stays a claim about a measurement rather than a check.
+#:
+#: This is a floor standing ON its measurement (equality), not under it. The
+#: `floors.txt` convention -- a third of the observed count, so ordinary churn
+#: does not trip it -- is for a quantity that moves; a scope minimum is 0, 1 or 2
+#: here, and slack of one element IS the defect it exists to refuse.
+MEASURED_MINIMA = {
+    ("RSKeySecurityState", "Channels"): (2, "Solo_BugCmWalkIgnoresChannel.cfg"),
+    ("RSKeyStore", "Fids"): (2, "StoreSolo_BugMetaAddDropsOnFault.cfg"),
+    ("RSKeyTransport", "Channels"): (2, "TransSolo_BugContIgnoresChannel.cfg"),
+    # `Cap`'s 2 is the module's own precondition (`RSKeyTransport.tla:63`, a
+    # COMMENT and not an `ASSUME` -- said here because that is worth knowing), and
+    # what `scopes.txt` records is that the mutants fire there. The witness is the
+    # one that checks `NoBufferOverrun`, which is the invariant the row names.
+    ("RSKeyTransport", "Cap"): (2, "TransSolo_BugInitLenUnchecked.cfg"),
+    # The Yubico OTP replay position is indexed two different ways -- the use
+    # counter by RECORD, the session counter by SLOT -- so the swap defect needs
+    # a second slot to have somewhere to move a record to. Re-measured at one
+    # slot: the witness explores its whole space with no counterexample.
+    ("RSKeyAppletPolicies", "Slots"): (2, "PolicySolo_BugOtpSwapKeepsSession.cfg"),
+}
 
 
 def die(msg):
@@ -184,10 +246,23 @@ def assignments(cfg):
     return out
 
 
+#: A value this cannot put a number on. It is NOT `None`: a boolean is
+#: legitimately unsized and every guard skips it, so returning the same answer
+#: for both made an unrecognised spelling skip too. Measured, and it is one line
+#: in the generator: `Channels = 1..1` is a one-element TLA+ range, `size_of`
+#: returned `None`, and BOTH the witness rule and the per-configuration minimum
+#: rule are `if size is not None` -- so the singleton scope those rules exist to
+#: refuse passed at exit 0, with `config_gen_gate.py` regenerating it happily.
+UNSIZED = object()
+
+
 def size_of(raw):
     """The scalar a scope value is compared on: a set's cardinality, or the number.
 
     A boolean is not a size -- it returns None and the row is presence-only.
+    Anything else returns [`UNSIZED`], which every caller REPORTS: a scope the
+    gate cannot measure is not a scope the gate has checked, and the two must
+    not look alike.
     """
     if raw in ("TRUE", "FALSE"):
         return None
@@ -196,7 +271,7 @@ def size_of(raw):
         return 0 if not inner else len([p for p in inner.split(",") if p.strip()])
     if re.fullmatch(r"-?\d+", raw):
         return int(raw)
-    return None
+    return UNSIZED
 
 
 def safety_tier(formal=FORMAL):
@@ -237,6 +312,83 @@ def read_rows(scopes=SCOPES):
     return rows, problems
 
 
+def check_ratchet(rows, cfg_module, safety, measured, problems):
+    """The measured minima, held both ways, and each one's witness held to the tree.
+
+    Both directions, because either alone leaves the class open. A registered row
+    that has MOVED is the silent lowering this exists for; a row of `scopes.txt`
+    at or above [`RATCHET_FLOOR`] with no registration is the same weakening
+    arriving as a new row -- record a fresh minimum of 2 unregistered and nothing
+    would ever pin it.
+    """
+    by_name = {cfg.name: cfg for cfg in cfg_module}
+    for key, (want, witness) in sorted(measured.items()):
+        module, const = key
+        if key not in rows:
+            problems.append(
+                f"scope_gate.MEASURED_MINIMA records {module} {const}, which "
+                f"{SCOPES.name} no longer does — a ratchet over a row that is gone "
+                "holds nothing")
+            continue
+        got, invariant = rows[key]
+        if got != want:
+            problems.append(
+                f"{SCOPES.name} records {module} {const} at {got} where the measured "
+                f"minimum is {want} — move it in scope_gate.MEASURED_MINIMA in the "
+                "same diff, with what re-measured it, or the number is a scope "
+                "nobody stands behind")
+        cfg = by_name.get(witness)
+        if cfg is None:
+            problems.append(
+                f"{module} {const}: its witness {witness} is not a configuration of "
+                "this tree, so the minimum rests on nothing")
+            continue
+        if cfg_module[cfg] != module:
+            problems.append(
+                f"{module} {const}: its witness {witness} belongs to "
+                f"{cfg_module[cfg]}, which is not the module the row is about")
+            continue
+        if not any(DEFECT.match(name) and raw == "TRUE"
+                   for name, raw in assignments(cfg).items()):
+            problems.append(
+                f"{module} {const}: its witness {witness} arms no defect — "
+                "a scope minimum witnessed by a configuration with no defect in it "
+                "is witnessed by nothing")
+        if witness not in safety:
+            problems.append(
+                f"{module} {const}: its witness {witness} is not in the safety tier, "
+                "so nothing runs it and the minimum it stands on is unobserved")
+        if invariant != "-" and invariant not in referenced_by(cfg):
+            problems.append(
+                f"{module} {const}: its witness {witness} does not check {invariant}, "
+                "the invariant the minimum was measured against")
+        # A witness that does not assign the constant cannot reach here: owning a
+        # module means assigning EXACTLY its constants, so dropping the line
+        # takes the configuration out of `cfg_module` and the lookup above
+        # reports it first. Measured — the case written for this branch fell on
+        # the ownership rule instead.
+        raw = assignments(cfg).get(const)
+        if raw is None:
+            continue
+        size = size_of(raw)
+        if size is UNSIZED:
+            problems.append(
+                f"{module} {const}: its witness {witness} assigns {raw}, which "
+                "this cannot size -- an unreadable scope is not a scope above the "
+                f"{want} it is the witness for")
+        elif size is not None and size < want:
+            problems.append(
+                f"{module} {const}: its witness {witness} runs the constant at "
+                f"{size}, below the {want} it is the witness for")
+    for key, (got, _invariant) in sorted(rows.items()):
+        if got is not None and got >= RATCHET_FLOOR and key not in measured:
+            problems.append(
+                f"{SCOPES.name} records {key[0]} {key[1]} at {got}, above the "
+                f"degenerate {RATCHET_FLOOR - 1}, with no entry in "
+                "scope_gate.MEASURED_MINIMA — a minimum nothing pins can be lowered "
+                "again in one line")
+
+
 def owner_of(cfg, modules, const_sets, defs, formal):
     """The module a configuration belongs to, or None when it is not unique."""
     names = set(assignments(cfg))
@@ -258,7 +410,7 @@ def owner_of(cfg, modules, const_sets, defs, formal):
     return owners[0] if len(owners) == 1 else None
 
 
-def audit(formal=FORMAL, scopes=SCOPES, safety=None):
+def audit(formal=FORMAL, scopes=SCOPES, safety=None, measured=MEASURED_MINIMA):
     """Every way a configuration can be below the scope its own mutants need."""
     problems, spread = [], {}
     modules = sorted(p.stem for p in formal.glob("*.tla"))
@@ -297,6 +449,7 @@ def audit(formal=FORMAL, scopes=SCOPES, safety=None):
 
     if safety is None:
         safety = safety_tier(formal)
+    check_ratchet(rows, cfg_module, safety, measured, problems)
     for cfg, module in sorted(cfg_module.items(), key=lambda kv: kv[0].name):
         if cfg.name not in safety:
             continue
@@ -309,7 +462,18 @@ def audit(formal=FORMAL, scopes=SCOPES, safety=None):
             # channel on purpose and checks `OpAdvancesIsOneActivity`; holding it
             # to a minimum measured on `NoAuthorizationBypass` would be a red for
             # the wrong reason, and a gate that cries there gets deleted.
-            if floor is None or got is None or invariant not in checked:
+            if floor is None or invariant not in checked:
+                continue
+            if got is UNSIZED:
+                problems.append(
+                    f"{cfg.name}: {const} = {raw} cannot be sized, so nothing "
+                    f"held it to the {floor} that {invariant} was measured to "
+                    "need -- a spelling this parser does not read is a scope "
+                    "nobody checked")
+                continue
+            # A boolean is `None` here and stays exempt: it is presence-only,
+            # and a row that records a NUMBER for one is caught by its own rule.
+            if got is None:
                 continue
             if got < floor:
                 problems.append(
@@ -328,7 +492,8 @@ def main():
     held = len([c for c in cfg_module if c.name in safety])
     print(f"scope-gate: ok — {len(spread)} scope constants over "
           f"{len(set(cfg_module.values()))} modules, "
-          f"{held} safety configs above their minima")
+          f"{held} safety configs above their minima, "
+          f"{len(MEASURED_MINIMA)} minima pinned to a witness")
     for (module, const), values in sorted(spread.items()):
         if len(values) > 1:
             shown = ", ".join(f"{raw} ×{len(files)}" for raw, files in sorted(values.items()))

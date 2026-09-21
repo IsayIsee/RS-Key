@@ -20,7 +20,7 @@ use crate::credential::{CRED_REC_MAX, credential_load};
 use crate::ec::{MAX_DER_SIG, P256Key};
 use crate::journal;
 use crate::keyderiv::{KEY_HANDLE_LEN, derive_new, fido_load_key, verify_key};
-use crate::seed::{bump_sign_counter, get_sign_counter, load_att_key};
+use crate::seed::{bump_sign_counter, load_att_key};
 use crate::{Ctx, Rng};
 
 /// Dispatch a U2F APDU; writes the response body into `out`, returns `(SW, len)`.
@@ -313,7 +313,12 @@ fn cmd_authenticate<S: Storage, R: Rng>(
     };
 
     let flags = if tup { U2F_AUTH_FLAG_TUP } else { 0 };
-    let ctr = get_sign_counter(ctx.fs);
+    // Read AND advanced before anything is signed: a counter the flash could not serve
+    // is not 0 (that is the clone signal itself), and one it could not advance would be
+    // signed again by the next AUTHENTICATE.
+    let Ok(ctr) = bump_sign_counter(ctx.fs) else {
+        return (Sw::MEMORY_FAILURE, 0);
+    };
 
     // sign base: appId ‖ flags ‖ counter(BE) ‖ chal
     let mut base = [0u8; 32 + 1 + 4 + 32];
@@ -328,7 +333,6 @@ fn cmd_authenticate<S: Storage, R: Rng>(
     out[0] = flags;
     out[1..5].copy_from_slice(&ctr.to_be_bytes());
     out[5..5 + sl].copy_from_slice(&sig[..sl]);
-    let _ = bump_sign_counter(ctx.fs);
     // `owes` is whether this AUTHENTICATE actually collected a gesture: without one
     // (P1 = don't-enforce, alwaysUv off) it is ungated and drivable on demand, so a run
     // of those costs one ring entry rather than one each — see `journal::append_run`.

@@ -35,7 +35,7 @@ use crate::hmacsecret::{self, HmacSecretReq, SALT_AUTH_MAX, SALT_ENC_MAX};
 use crate::journal;
 use crate::keyderiv::{KEY_HANDLE_LEN, fido_load_key, verify_key};
 use crate::largeblobext::{self, GaInput};
-use crate::seed::{cred_sign_counter, get_sign_counter, set_cred_sign_counter};
+use crate::seed::{report_sign_counter, set_cred_sign_counter};
 use crate::state::{AssertionState, MAX_ASSERTION_CREDS, PERM_GA};
 use crate::{Ctx, Rng};
 
@@ -121,6 +121,15 @@ fn parse(data: &[u8]) -> Result<Request<'_>, CtapError> {
             _ => skip_value(&mut d)?,
         }
     }
+    // The ordered check above only fires when a LATER key arrives to be compared,
+    // so a request that simply STOPS before a mandatory one walked out of the loop
+    // unjudged — `{1: rpId}` with no key 2 at all. It reached the caller's guard and
+    // was answered there by the empty value it left behind, which read as the right
+    // answer only while that guard also said `MissingParameter`. It is the absence
+    // that is missing, not the length, so it is named here.
+    if expected <= 2 {
+        return Err(CtapError::MissingParameter);
+    }
     Ok(req)
 }
 
@@ -137,6 +146,23 @@ fn parse_extensions<'a>(d: &mut Decoder<'a>, req: &mut Request<'a>) -> Result<()
             "largeBlobKey" if !LARGE_BLOB_EXT => req.ext_large_blob_key = Some(cbor(d.bool())?),
             "largeBlob" if LARGE_BLOB_EXT => req.ext_large_blob = largeblobext::parse_ga(d)?,
             "hmac-secret" => req.hmac_secret = hmacsecret::parse(d)?,
+            // A name this device ADVERTISES is type-checked wherever it appears,
+            // including on the command it does not apply to; an unknown name is
+            // ignored at any type. That is the reference's rule, measured on a
+            // YubiKey 5.8.0 over both: `credProtect` takes a uint, `minPinLength` a
+            // bool and `hmac-secret-mc` a map or a boolean on getAssertion too, and
+            // each answers CBOR_UNEXPECTED_TYPE to anything else, while `zz-nope`
+            // is ignored as an int, a string or an array. Read for the type and
+            // dropped — none of the three decides anything here.
+            "credProtect" => {
+                let _: u32 = cbor(d.u32())?;
+            }
+            "minPinLength" => {
+                let _: bool = cbor(d.bool())?;
+            }
+            "hmac-secret-mc" => {
+                let _ = hmacsecret::parse(d)?;
+            }
             _ => skip_value(d)?,
         }
     }
@@ -268,8 +294,12 @@ pub fn get_assertion<S: Storage, R: Rng>(
     out: &mut [u8],
 ) -> CtapResult {
     let mut req = parse(data)?;
+    // Present but unusable — the twin of `make_credential`'s guard, and the same
+    // measured rule: an ABSENT key 1 or 2 is `MissingParameter` from `parse`'s
+    // ordered-key check above, so everything reaching here carries a value the
+    // fixed sizes reject. A YubiKey 5.8.0 answers `0x03` to all four shapes.
     if req.rp_id.is_empty() || req.client_data_hash.len() != 32 {
-        return Err(CtapError::MissingParameter);
+        return Err(CtapError::InvalidLength);
     }
     // Same rule as `make_credential`: whitespace paints no ink on the trusted
     // display, so it cannot be allowed to reach a ceremony (audit run-36). No
@@ -292,6 +322,12 @@ pub fn get_assertion<S: Storage, R: Rng>(
     if req.uv && !builtin_uv_enabled(ctx) {
         return Err(CtapError::InvalidOption);
     }
+    // …and moot on an `up:false` probe: built-in UV is a modal PIN entry, so one
+    // here turns a silent probe into a ceremony nobody asked for (#107). Dropped,
+    // not refused — omitting `uv` already gets this answer, and the UV flag stays 0.
+    if !req.up {
+        req.uv = false;
+    }
     // §6.2.2 step 2 ahead of every check below — where the oracle puts it: a
     // present-but-unsupported protocol outranks `options.rk`, an hmac-secret
     // missing its salts and the selection gesture. An absent one is
@@ -312,11 +348,11 @@ pub fn get_assertion<S: Storage, R: Rng>(
     {
         return Err(CtapError::MissingParameter);
     }
-    // CTAP 2.1 §12.5: hmac-secret is never served on an `up:false` probe. The
-    // output is per-credential secret material and the probe has no consent —
-    // `want_up` would skip the touch while `eval` still ran (audit run-32).
+    // hmac-secret is never served on an `up:false` probe — the output is
+    // per-credential secret material and the probe has no consent (audit run-32).
+    // §12.5 names UNSUPPORTED_OPTION; a YubiKey 5.8.0 answers UP_REQUIRED.
     if req.hmac_secret.present && !req.up {
-        return Err(CtapError::UnsupportedOption);
+        return Err(CtapError::UpRequired);
     }
 
     let rp_id_hash = sha256(req.rp_id.as_bytes());
@@ -747,7 +783,7 @@ fn get_assertion_inner<S: Storage, R: Rng>(
     // has no entry yet and seeds from the frozen global counter (never decreasing).
     // A non-resident credential keeps no on-device state and reports 0.
     let ctr = match best.slot {
-        Some(slot) => cred_sign_counter(ctx.fs, slot).unwrap_or_else(|| get_sign_counter(ctx.fs)),
+        Some(slot) => report_sign_counter(ctx.fs, slot).map_err(|_| CtapError::Other)?,
         None => 0,
     };
     let mut ad = [0u8; 37 + 320 + 32];
@@ -996,6 +1032,10 @@ fn next_assertion_response<S: Storage, R: Rng>(
         salt_auth[..sa].copy_from_slice(&g.hmac_salt_auth[..sa]);
         let req = HmacSecretReq {
             present: true,
+            // The replay only exists because the first assertion got past `eval`,
+            // which refuses an absent keyAgreement — so the stored coordinates are
+            // the ones that worked, not the zero default.
+            peer_present: true,
             proto: g.hmac_proto,
             peer_x: g.hmac_peer_x,
             peer_y: g.hmac_peer_y,
@@ -1026,7 +1066,7 @@ fn next_assertion_response<S: Storage, R: Rng>(
     // getNextAssertion only ever walks resident discovery, so every credential
     // here has an EF_CRED slot and its own signature counter (a legacy credential
     // seeds from the frozen global). See [`get_assertion_inner`].
-    let ctr = cred_sign_counter(ctx.fs, slot).unwrap_or_else(|| get_sign_counter(ctx.fs));
+    let ctr = report_sign_counter(ctx.fs, slot).map_err(|_| CtapError::Other)?;
     let mut ad = [0u8; 37 + 320];
     ad[..32].copy_from_slice(rp_id_hash);
     let up_flag = if up { FLAG_UP } else { 0 };

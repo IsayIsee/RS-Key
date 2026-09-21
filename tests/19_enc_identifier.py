@@ -13,7 +13,7 @@ actually receives is the one it can actually open, so this drives the real
 acquisition path — clientPIN **protocol two**, `getPinUvAuthTokenUsingPin-
 WithPermissions` with the `pcmr` permission (0x40) — and then decrypts.
 
-  1. reset + no token yet         -> 0x19 absent
+  1. reset, nobody holds a token  -> 0x19 present anyway, exactly 32 bytes
   2. PIN, then a pcmr token       -> 0x19 present, exactly 32 bytes
   3. two getInfo calls in a row   -> different bytes AND different IVs
   4. decrypt both under the token -> the same identifier, twice
@@ -63,12 +63,13 @@ def main():
     dev, cid = replug.reset(None, "a clean slate for encIdentifier")
     try:
         info = get_info(dev, cid)
-        assert ENC_IDENTIFIER not in info, (
-            "0x19 must be absent before any persistent token exists — it is keyed "
-            "by that token, so there is nothing to encrypt under"
+        blob = info.get(ENC_IDENTIFIER)
+        assert blob is not None and len(blob) == ENC_IDENTIFIER_LEN, (
+            "0x19 is published from provisioning: the reset mints the grant it is "
+            f"sealed under before any platform asks, got {blob!r}"
         )
         aaguid = info[0x03]
-        print("1. no persistent token yet: 0x19 absent, as it must be")
+        print("1. no platform holds a token yet, and 0x19 is already published")
 
         ka = client_pin(dev, cid, {1: 2, 2: 2})
         cose = decode(ka[1:])[1]

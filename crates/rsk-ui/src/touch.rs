@@ -19,8 +19,9 @@ const FINGER_DOWN: u8 = 0x06;
 ///
 /// Byte layout returned by the controller from 0xD000: `[0]` finger-1 status,
 /// `[1]` X high 8 bits, `[2]` Y high 8 bits, `[3]` X low 4 bits (upper nibble) |
-/// Y low 4 bits (lower nibble). Both axes are 12-bit. The coordinate is in the
-/// controller's own axes; `display.rs` applies any panel rotation/flip.
+/// Y low 4 bits (lower nibble). Both axes are 12-bit. The controller is configured
+/// at the panel resolution and reports the panel's own axes, so `display.rs` hands
+/// this straight on — there is no rotation or flip step anywhere.
 pub fn parse_cst328(report: &[u8]) -> Option<Point> {
     if report.len() < 4 || report[0] & 0x0F != FINGER_DOWN {
         return None;

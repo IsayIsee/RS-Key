@@ -11,10 +11,23 @@ use super::*;
 /// session keeps restarting at 0, hands out a pair it has already accepted.
 ///
 /// The hypothesis `stored <= USE_COUNTER_MAX` is the invariant itself, so this
-/// is its induction step. The base case is not Kani's to discharge: `cmd_config`
-/// writes a whole zeroed `SLOT_SIZE` record, so a fresh slot's counter is 0, and
-/// `cmd_update` copies the stored tail forward verbatim. Those two plus the two
-/// proved here are every writer of the first two tail bytes.
+/// is its induction step and only that: `cmd_configure` writes a whole zeroed
+/// record, which is the base case, and Kani never sees it.
+///
+/// Which sites persist those two bytes, and which of them these proofs reach, is
+/// derived from the tree into `assurance/otp_counter_writers.toml` rather than
+/// counted here. The sentence that stood in this place named four writers and
+/// called them every one; there are eight, and the two it missed — `cmd_swap`
+/// and `migrate_seal` — write the bytes twice each, per command and per boot.
+///
+/// What that scope stops proving, said plainly: nothing here bounds the six
+/// writers that do not step through `counter.rs`, nor the two paths inside the
+/// one it only partly reaches — `ticket::build`'s OATH-HOTP branch, and its
+/// 0 -> 1 promotion of an unused counter before `next_use_counter` is called.
+/// Unproved here is not unsound: a slot is HOTP or Yubico and cannot be updated
+/// across (`TKTFLAG_UPDATE_MASK` excludes `TKT_OATH_HOTP`), and the promotion
+/// moves forward. They need the store, not this solver; the ledger accounts for
+/// them instead of a sentence doing it silently.
 #[kani::proof]
 fn use_counter_climbs_and_stops_at_the_ceiling() {
     let stored: u16 = kani::any();
@@ -38,16 +51,17 @@ fn use_counter_climbs_and_stops_at_the_ceiling() {
     kani::cover!(boot_use_counter(stored).is_some());
 }
 
-/// One rule, two owners. On the press whose session wraps, the per-press writer
-/// must take exactly the step the boot writer takes from the same stored value,
-/// and stop exactly where it stops; on every other press the counter must not
-/// move at all. The two disagreed: `ticket::build` guarded the counter it had
+/// One rule, two owners of it — not two writers of the counter, which is a
+/// larger set (see above). On the press whose session wraps, the per-press
+/// writer must take exactly the step the boot writer takes from the same stored
+/// value, and stop exactly where it stops; on every other press the counter must
+/// not move at all. The two disagreed: `ticket::build` guarded the counter it had
 /// and then incremented (storing 0x8000, the reserved high bit), while
 /// `power_up_bump` guards the counter it is about to store. A stored 0x8000
 /// froze the boot bump permanently, leaving the session to restart at 0 every
 /// power-up and the `(use, session)` pair to repeat every 256 presses.
 #[kani::proof]
-fn both_writers_take_the_same_step() {
+fn the_two_stepped_writers_agree() {
     let stored: u16 = kani::any();
     let session: u8 = kani::any();
     kani::assume(stored <= USE_COUNTER_MAX);

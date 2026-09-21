@@ -15,7 +15,7 @@ and libfido2 bind the FIDO HID usage page, not the VID/PID, so everything on thi
 page works regardless of USB identity. The one exception is `ykman`, which gates
 on a "Yubico YubiKey" reader name and so needs the opt-in
 `VIDPID=Yubikey5` interop build ([build.md](../build.md)). The reported firmware
-version is `5.7.4`, which is what FIDO tooling reads back. It is a build constant,
+version is `5.8.0`, which is what FIDO tooling reads back. It is a build constant,
 not the RS-Key release.
 
 ## Touch is always required
@@ -123,6 +123,11 @@ counter to gauge how much you use the key elsewhere (WebAuthn §6.1.1). A non-re
 second-factor credential stores nothing on the device, so it reports 0. Legacy U2F
 keeps the single monotonic counter that protocol expects.
 
+A counter the flash cannot serve is refused rather than reported as 0: an assertion
+the device could not count is not one it signs, so a read fault costs you the login
+instead of the tripwire. So is a counter the flash cannot advance: the login fails
+instead of signing a number the next one would repeat.
+
 Upgrading an existing key is forward-safe for passkeys: each seeds its counter from
 the old global value on first use, so the reported number never counts backwards.
 
@@ -184,6 +189,9 @@ getInfo advertises seven extensions:
 | `largeBlob` (CTAP 2.3) | the blob itself, per credential, inside the assertion | 4046 B/credential; **replaces** the row above, `largeblob-ext` build only |
 | `minPinLength` | the device hands its PIN-length policy to the RP | |
 | `thirdPartyPayment` | the secure-payment-confirmation marker | |
+
+`hmac-secret` has a use outside the browser: it is what lets `age` encrypt to
+this device with no smart card involved. See [age.md](age.md).
 
 Enterprise attestation is supported but off until enabled. The `ep` option flips
 to true once an org key is installed. See [attestation.md](attestation.md).

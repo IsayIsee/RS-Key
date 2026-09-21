@@ -2,6 +2,7 @@
 // Copyright (C) 2026 RS-Key contributors
 
 use super::*;
+use crate::storage::faults::{Cut, RemoveStuck, TruncatedWalk};
 use crate::storage::ram::RamStorage;
 
 // A stand-in working-EF fid used by the plain put/read tests.
@@ -373,17 +374,153 @@ fn a_faulted_ef_meta_read_never_rebuilds_the_blob_from_empty() {
 
 #[test]
 fn requesting_a_rescrub_clears_the_hardened_marker() {
-    // `MarkerNeverLies` — SEC-BOOT-001 at the code level. Every lazy re-key must
-    // re-arm the at-rest lap, and run-35 found four of five sites skipping it.
-    // The model catches the removal (`BugRekeyKeepsTheMarker`); nothing here did,
-    // so the one place the re-arm actually happens was asserted by no test.
+    // `MarkerNeverLies` — SEC-BOOT-001 at the code level. Every lazy re-key or
+    // delete of a pre-OTP record must re-arm the at-rest lap, and run-35 found
+    // four of five re-key sites skipping it. The model catches the removal
+    // (`BugRekeyKeepsTheMarker`); nothing here did, so the re-arm was untested.
     let mut fs = fs();
     fs.put(crate::EF_HARDENED, b"\x01").unwrap();
     assert!(fs.has_data(crate::EF_HARDENED));
-    crate::request_rescrub(&mut fs);
+    crate::request_rescrub(&mut fs).expect("a healthy medium re-arms and says so");
     assert!(
         !fs.has_data(crate::EF_HARDENED),
         "a rescrub request must clear the marker, or the lap never runs again"
+    );
+}
+
+#[test]
+fn a_reset_between_a_re_key_and_its_rescrub_leaves_the_marker_lying() {
+    // Why every lazy re-key re-arms BEFORE it writes, and not after. The re-key and
+    // the `request_rescrub` under it are two separate appends with nothing between
+    // them, so a reset in that window keeps whichever one already landed. Only a
+    // medium that stops serving mid-command shows it: one that refuses a chosen fid
+    // refuses it under either order.
+    const REKEYED: u16 = 0xB100;
+
+    // Write first. The write lands, the reset eats the re-arm, and the marker now
+    // stands over the copy that write superseded — which is still sealed under the
+    // pre-OTP root the public chip serial derives. `run_at_rest_lap` gates on the
+    // marker alone, so no later boot ever scrubs it (that early return is
+    // `the_at_rest_lap_writes_its_marker_only_after_a_completed_scrub`).
+    let (cut, medium) = Cut::new();
+    let mut fs = Fs::new(cut);
+    fs.put(REKEYED, b"pre-otp").unwrap();
+    fs.put(crate::EF_HARDENED, b"\x01").unwrap();
+    assert!(
+        fs.has_data(crate::EF_HARDENED),
+        "fixture: the lap has latched"
+    );
+    medium.arm(1);
+    let _ = fs.put(REKEYED, b"otp");
+    assert!(
+        crate::request_rescrub(&mut fs).is_err(),
+        "the cut ate the re-arm, and this order is the one that cannot be told"
+    );
+    assert_eq!(
+        medium.value(REKEYED).as_deref(),
+        Some(&b"otp"[..]),
+        "fixture: the re-key never landed, so the reset fell outside the window"
+    );
+    assert!(
+        medium.value(crate::EF_HARDENED).is_some(),
+        "fixture: the marker was cleared, so this is not the state under test"
+    );
+
+    // Re-arm first. The same reset eats the WRITE instead: the marker is gone, the
+    // next boot laps, and what it laps over is the record still in force. That is
+    // the whole cost of the order — one idempotent lap over nothing.
+    let (cut, medium) = Cut::new();
+    let mut fs = Fs::new(cut);
+    fs.put(REKEYED, b"pre-otp").unwrap();
+    fs.put(crate::EF_HARDENED, b"\x01").unwrap();
+    medium.arm(1);
+    crate::request_rescrub(&mut fs).expect("the re-arm is what the cut let through");
+    let _ = fs.put(REKEYED, b"otp");
+    assert_eq!(
+        medium.value(REKEYED).as_deref(),
+        Some(&b"pre-otp"[..]),
+        "fixture: the write landed too, so the reset fell outside the window"
+    );
+    assert!(
+        medium.value(crate::EF_HARDENED).is_none(),
+        "the re-arm must land before the write, or the marker outlives what it promises"
+    );
+}
+
+/// A `Storage` whose compaction lap fails on demand, counting the laps it ran. A
+/// backend that always compacts cannot tell "the marker lands after a completed
+/// scrub" from "the marker lands regardless", which is the whole of the order.
+struct TearableCompact {
+    inner: RamStorage,
+    tears: bool,
+    laps: u32,
+}
+impl TearableCompact {
+    fn new(tears: bool) -> Self {
+        Self {
+            inner: RamStorage::new(),
+            tears,
+            laps: 0,
+        }
+    }
+}
+impl Storage for TearableCompact {
+    fn read(&mut self, fid: u16, buf: &mut [u8]) -> Option<usize> {
+        self.inner.read(fid, buf)
+    }
+    fn write(&mut self, fid: u16, data: &[u8]) -> Result<()> {
+        self.inner.write(fid, data)
+    }
+    fn remove(&mut self, fid: u16) -> Result<()> {
+        self.inner.remove(fid)
+    }
+    fn size(&mut self, fid: u16) -> Option<usize> {
+        self.inner.size(fid)
+    }
+    fn for_each_key(&mut self, f: &mut dyn FnMut(u16)) -> bool {
+        self.inner.for_each_key(f)
+    }
+    fn compact(&mut self) -> Result<()> {
+        self.laps += 1;
+        if self.tears {
+            Err(Error::MemoryFatal)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn the_at_rest_lap_writes_its_marker_only_after_a_completed_scrub() {
+    // `MarkerNeverLies` — SEC-BOOT-001 at the code level. The order lived in
+    // `firmware/`, which no host test reaches, so `BugMarkerBeforeScrub` had no code
+    // twin: a torn lap that sets the marker anyway is never re-run, and the weak
+    // copies it left ride under it forever.
+    let mut torn = Fs::new(TearableCompact::new(true));
+    crate::run_at_rest_lap(&mut torn);
+    let mut medium = torn.into_storage();
+    assert_eq!(medium.laps, 1, "an absent marker did not run the lap");
+    // Past `Fs`'s present cache: the marker's absence has to be true of the MEDIUM,
+    // since a cache-level check passes over a write that never happened.
+    assert!(
+        !medium.exists(crate::EF_HARDENED),
+        "a torn lap claimed completion, so no later boot ever scrubs what it left"
+    );
+
+    // A completed lap does claim it, and the marker then gates the next boot's stall.
+    let mut done = Fs::new(TearableCompact::new(false));
+    crate::run_at_rest_lap(&mut done);
+    assert!(
+        done.into_storage().exists(crate::EF_HARDENED),
+        "a completed lap left no marker, so every boot pays the stall again"
+    );
+    let mut again = Fs::new(TearableCompact::new(false));
+    crate::run_at_rest_lap(&mut again);
+    crate::run_at_rest_lap(&mut again);
+    assert_eq!(
+        again.into_storage().laps,
+        1,
+        "the marker did not gate the second boot"
     );
 }
 
@@ -444,15 +581,20 @@ fn an_empty_record_is_not_data() {
 
 #[test]
 fn a_factory_wipe_clears_more_keys_than_one_batch_holds() {
-    // `factory_wipe` deletes in 64-key batches. Nothing drove it past the first
-    // one, so the bound that keeps `batch[n]` in range was untested — and the
-    // mutation that breaks it is an out-of-bounds index, not a wrong answer.
+    // `factory_wipe` deletes in [`WIPE_BATCH`] batches. Nothing drove it past the
+    // first one, so the bound that keeps `batch[n]` in range was untested — and
+    // the mutation that breaks it is an out-of-bounds index, not a wrong answer.
+    //
+    // Sized OFF the batch, not off a copy of it: a widened batch would otherwise
+    // swallow the whole fill in one pass and leave this green over the untested
+    // wrap it exists to cross.
+    const FILL: u16 = 2 * WIPE_BATCH as u16 + 22;
     let mut fs = fs();
-    for i in 0..150u16 {
+    for i in 0..FILL {
         fs.put(0xCC00 + i, b"x").unwrap();
     }
     fs.factory_wipe(|_| false, |_| false, |_| false).unwrap();
-    for i in 0..150u16 {
+    for i in 0..FILL {
         assert!(
             !fs.has_data(0xCC00 + i),
             "0x{:04X} survived the wipe",
@@ -762,6 +904,117 @@ fn factory_wipe_removes_the_gate_records_last() {
     }
 }
 
+/// The device-wide wipe is a tombstone sweep like the four applet ones, so it owes
+/// the at-rest lap the same re-arm — and the `compact()` at its tail is what makes
+/// that look unnecessary. It is not: the lap sits behind every `?` above it, and
+/// neither caller reboots on a failure (`worker.rs` folds to `.is_ok()` and skips
+/// the reboot; `rsk-display`'s `pin.rs` paints "wipe failed" and returns), so a
+/// wipe that dies mid-sweep leaves the marker latched over the tombstones it had
+/// already written and no later boot ever laps over them.
+#[test]
+fn a_factory_wipe_that_dies_mid_sweep_re_armed_the_lap_first() {
+    // The verifier a card reset supersedes without re-keying it — FIDO's EF_PIN,
+    // OpenPGP's PW1 — still sealed under the chip-serial root at the tombstone.
+    const VERIFIER: u16 = 0x1080;
+
+    let (cut, medium) = Cut::new();
+    let mut fs = Fs::new(cut);
+    fs.put(VERIFIER, b"pre-otp verifier").unwrap();
+    fs.put(crate::EF_HARDENED, b"\x01").unwrap();
+    assert!(
+        fs.has_data(crate::EF_HARDENED),
+        "fixture: the lap has latched"
+    );
+    medium.clear_ops();
+
+    // One mutation, then the medium dies: whichever append the wipe makes first is
+    // the only one that lands. Ordering the verifier `first` keeps that append
+    // deterministic — `for_each_key` yields in ring order, phases do not.
+    medium.arm(1);
+    assert_eq!(
+        fs.factory_wipe(|_| false, |fid| fid == VERIFIER, |_| false),
+        Err(Error::MemoryFatal),
+        "fixture: the cut must kill the wipe, or the tail `compact()` runs and \
+         there is no error path under test"
+    );
+    assert!(
+        medium.value(crate::EF_HARDENED).is_none(),
+        "the wipe returned Err with the marker still latched, so `run_at_rest_lap` \
+         gates itself off forever and every copy this wipe superseded stays \
+         readable in a flash dump — {:?}",
+        medium.ops()
+    );
+}
+
+/// The success path's half of the same rule: `EF_HARDENED` is in neither the
+/// preserve set nor `first`/`last`, so the sweep drops it in phase 1 in flash-ring
+/// order — after an arbitrary prefix of tombstones. A cut in that window is the
+/// state `request_rescrub`'s own doc calls the one order cannot cover.
+#[test]
+fn a_factory_wipe_re_arms_the_lap_before_it_supersedes_anything() {
+    const VERIFIER: u16 = 0x1080;
+    const GATE: u16 = 0xD180;
+
+    let (cut, medium) = Cut::new();
+    let mut fs = Fs::new(cut);
+    fs.put(VERIFIER, b"pre-otp verifier").unwrap();
+    fs.put(GATE, b"retry counter").unwrap();
+    fs.put(crate::EF_HARDENED, b"\x01").unwrap();
+    // The fixture's own writes are supersessions of `VERIFIER` too, and they sit
+    // ahead of anything the wipe does.
+    medium.clear_ops();
+
+    fs.factory_wipe(|_| false, |fid| fid == VERIFIER, |fid| fid == GATE)
+        .expect("a healthy medium wipes");
+    medium.assert_re_armed_before(VERIFIER, |_| false, "factory wipe");
+}
+
+/// Best-effort, and this is the direction that separates the wipe from every gated
+/// re-key site: a refused re-arm leaves a marker standing, a refused WIPE leaves
+/// the secrets themselves live. `request_rescrub` answers rather than swallowing
+/// (0x09BE), so the swallow has to be here, at the call.
+#[test]
+fn a_refused_re_arm_does_not_stop_a_factory_wipe() {
+    const VERIFIER: u16 = 0x1080;
+
+    let (stuck, medium) = RemoveStuck::new();
+    let mut fs = Fs::new(stuck);
+    fs.put(VERIFIER, b"pre-otp verifier").unwrap();
+    fs.put(crate::EF_HARDENED, b"\x01").unwrap();
+    // Single-shot: the one refusal a retry recovers from, and the only one that
+    // tells a swallowed re-arm from a gating one — a persistent refusal stops the
+    // sweep's own phase-1 removal of EF_HARDENED and fails the wipe either way.
+    medium.refuse_once(crate::EF_HARDENED);
+
+    // `first`, so the verifier's removal cannot land after EF_HARDENED's: phases
+    // are ordered, `for_each_key` inside one is not.
+    let wiped = fs.factory_wipe(|_| false, |fid| fid == VERIFIER, |_| false);
+    assert!(
+        !medium.live(VERIFIER),
+        "the refused re-arm stopped the wipe before it erased anything, so every \
+         secret is still on the medium — the one direction a wipe must not fail in"
+    );
+    assert_eq!(
+        wiped,
+        Ok(()),
+        "a refusal of `remove(EF_HARDENED)` became the wipe's own answer, and the \
+         device reported `wipe failed` over a medium it had in fact cleared"
+    );
+    assert!(
+        !medium.live(crate::EF_HARDENED),
+        "the sweep's own phase-1 removal is this re-arm's retry, and it did not run"
+    );
+    // The headline, read at the wipe rather than at `request_rescrub`: the `Ok` above
+    // is correct AND it is the whole report, so the refusal the wipe swallowed to
+    // give it has to leave by `Fs::rescrub_refused` or by nothing. A wipe does not
+    // repair flash, so it does not clear this either.
+    assert!(
+        fs.rescrub_refused(),
+        "the wipe answered success over a re-arm the medium refused, and left no \
+         trace of the refusal anywhere on the device"
+    );
+}
+
 /// `Storage` whose `remove` starts failing after `budget` successes.
 struct CountedRemove {
     inner: RamStorage,
@@ -859,9 +1112,8 @@ fn a_failed_read_is_never_memoised_as_an_absence() {
 
 /// Audit run-36: `Storage::compact` writes its scrub filler straight through the
 /// backend, never through `Fs`, so `Fs::scan` counted it as a dynamic file — and the
-/// dynamic set is sized at exactly `MAX_DYNAMIC_FILES`, with the over-cap push
-/// discarded by a `let _ =` whose `debug_assert!` is compiled out of the release
-/// image. At the cap plus a leftover filler one live key silently lost its
+/// dynamic set is sized at exactly `MAX_DYNAMIC_FILES`, so the over-cap push is
+/// discarded. At the cap plus a leftover filler one live key silently lost its
 /// registration and every later `put` to it returned `NoMemory`.
 #[test]
 fn the_scrub_filler_never_costs_a_dynamic_slot() {
@@ -1072,5 +1324,474 @@ fn an_unfaulted_delete_takes_the_value_and_the_record() {
     assert!(
         ram.borrow_mut().read(EF_META, &mut buf).is_none(),
         "the last record was dropped, so EF_META goes with it"
+    );
+}
+
+/// The third deleter owes the same answer, and it used to hide it: `force_delete`
+/// spelled the drop `let _ = self.meta_delete(fid)` and then reported `Ok(())`,
+/// which is `BugDeleteHidesFaultedDrop` — `NoSilentOrphan`'s mutant — standing in
+/// the shipped tree at the one deleter all four applet reset sweeps go through.
+/// The audit's second half is that `rsk-piv`'s wipe reaches metadata-carrying fids
+/// through it, so MOVE was never "the one path" that does.
+#[test]
+fn a_faulted_metadata_drop_is_reported_by_force_delete_too() {
+    let (mut fs, ram, armed) = armed_fs();
+    fs.put(SLOT, b"sealed key material").unwrap();
+    fs.meta_add(SLOT, &[0xAA, 0x01, 0x02, 0x03]).unwrap();
+
+    armed.set(true);
+    let answered = fs.force_delete(SLOT);
+    armed.set(false);
+
+    assert!(
+        matches!(answered, Err(Error::MemoryFatal)),
+        "a force_delete that could not drop the record answered {answered:?}"
+    );
+    let mut buf = [0u8; 32];
+    assert!(
+        ram.borrow_mut().read(SLOT, &mut buf).is_none(),
+        "the value must go even when the record could not be dropped"
+    );
+    assert!(
+        ram.borrow_mut().read(EF_META, &mut buf).is_some(),
+        "the record is what the error is about — it stands"
+    );
+}
+
+/// `force_delete`'s control: nothing armed, so the same sequence answers `Ok(())`
+/// and both halves go — the unconditional backend `remove` is unchanged.
+#[test]
+fn an_unfaulted_force_delete_takes_the_value_and_the_record() {
+    let (mut fs, ram, _armed) = armed_fs();
+    fs.put(SLOT, b"sealed key material").unwrap();
+    fs.meta_add(SLOT, &[0xAA, 0x01, 0x02, 0x03]).unwrap();
+
+    assert_eq!(fs.force_delete(SLOT), Ok(()));
+
+    let mut buf = [0u8; 32];
+    assert!(ram.borrow_mut().read(SLOT, &mut buf).is_none());
+    assert!(
+        ram.borrow_mut().read(EF_META, &mut buf).is_none(),
+        "the last record was dropped, so EF_META goes with it"
+    );
+}
+
+/// What `force_delete` folds, and why the fold cannot be the only shape on offer:
+/// the value went, the record could not be dropped, and those pull a reset sweep in
+/// opposite directions. With one answer for both, the four applet sweeps `?`-ed a
+/// faulted read of the SHARED EF_META blob out of their loops after a single file —
+/// at the same fid on every retry, so no retry made progress (0x0987, measured on
+/// `authenticatorReset`).
+#[test]
+fn force_delete_halves_keeps_the_value_and_the_record_apart() {
+    let (mut fs, ram, armed) = armed_fs();
+    fs.put(SLOT, b"sealed key material").unwrap();
+    fs.meta_add(SLOT, &[0xAA, 0x01, 0x02, 0x03]).unwrap();
+
+    armed.set(true);
+    let gone = fs.force_delete_halves(SLOT);
+    armed.set(false);
+
+    assert_eq!(
+        (gone.value, gone.record),
+        (Ok(()), Err(Error::MemoryFatal)),
+        "the removal is unconditional, so only the record half may fail here"
+    );
+    let mut buf = [0u8; 32];
+    assert!(
+        ram.borrow_mut().read(SLOT, &mut buf).is_none(),
+        "the value must go even when the record could not be dropped"
+    );
+    assert!(
+        ram.borrow_mut().read(EF_META, &mut buf).is_some(),
+        "the record is what the error is about — it stands"
+    );
+}
+
+/// The three answers, kept apart. `Storage::read`/`size` collapse "no such record"
+/// and "that read failed" into one `None`, and an absent record is how this
+/// firmware spells *not provisioned* — so the collapsing probes must keep behaving
+/// exactly as before, and the `try_*` ones must separate the two. Both halves
+/// matter: a fix that answered `Err` for a genuine absence would stop an
+/// unprovisioned card from ever provisioning.
+#[test]
+fn a_failed_probe_is_an_error_and_an_absence_is_still_an_absence() {
+    use crate::storage::faults::ProbeStuck;
+    const LIVE: u16 = 0x1081;
+    const NEVER: u16 = 0x1082;
+    let (backend, medium) = ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.put(LIVE, b"the owner's verifier").unwrap();
+    fs.meta_add(LIVE, &[0x03, 0x00, 0x02]).unwrap();
+
+    // A record that was never written: absent, and cheaply so. This is the arm
+    // first-use provisioning rides on.
+    assert_eq!(fs.try_has_data(NEVER), Ok(false));
+    assert_eq!(fs.try_read(NEVER, &mut [0u8; 8]), Ok(None));
+    assert_eq!(fs.try_meta_find(NEVER, &mut [0u8; 8]), Ok(None));
+
+    // The same answers for a live record the medium refuses — with the fault kept.
+    medium.stick(Some(LIVE));
+    assert_eq!(fs.try_has_data(LIVE), Err(Error::MemoryFatal));
+    assert_eq!(fs.try_read(LIVE, &mut [0u8; 8]), Err(Error::MemoryFatal));
+    assert!(!fs.has_data(LIVE), "the collapsing probe is unchanged");
+    assert_eq!(fs.read(LIVE, &mut [0u8; 8]), None);
+    medium.stick(Some(EF_META));
+    assert_eq!(
+        fs.try_meta_find(LIVE, &mut [0u8; 8]),
+        Err(Error::MemoryFatal)
+    );
+    assert_eq!(fs.meta_find(LIVE, &mut [0u8; 8]), None);
+
+    // And none of it was memoised: the medium recovers, the record is back.
+    medium.stick(None);
+    assert!(fs.try_has_data(LIVE).unwrap());
+    assert_eq!(fs.try_meta_find(LIVE, &mut [0u8; 8]).unwrap(), Some(3));
+}
+
+/// A boot [`scan`](Fs::scan) cut short by a read fault leaves the FIDs it never
+/// reached UNKNOWN, and a clear `present` bit means "unknown" as readily as
+/// "empty". `present_slots` is the one reader with no backend to fall through to,
+/// and `credential_store` writes the first slot it is told is free WITHOUT
+/// re-reading it — so a truncated walk turned a live credential's slot into a
+/// free one. The range reads occupied now, which costs capacity, not records.
+#[test]
+fn a_truncated_scan_leaves_no_slot_reading_free() {
+    use crate::storage::faults::TruncatedWalk;
+    const BASE: u16 = 0x2000;
+    let mut fs = Fs::new(TruncatedWalk::new());
+    fs.put(BASE + 1, b"a live credential record").unwrap();
+
+    // A reboot: the same medium, a fresh cache, and a walk that yields nothing.
+    let mut fs = Fs::new(fs.into_storage());
+    fs.scan();
+    let mut slots = [false; 4];
+    fs.present_slots(BASE, &mut slots);
+    assert_eq!(
+        slots, [true; 4],
+        "a walk that enumerated nothing decided nothing — no slot here is free"
+    );
+    assert_eq!(
+        fs.read(BASE + 1, &mut [0u8; 32]),
+        Some(24),
+        "and the record the walk missed is still readable per key"
+    );
+
+    // A COMPLETE walk over the same records is bit-for-bit the raw present index.
+    let mut fs = Fs::new(RamStorage::new());
+    fs.put(BASE + 1, b"a live credential record").unwrap();
+    fs.scan();
+    let mut slots = [false; 4];
+    fs.present_slots(BASE, &mut slots);
+    assert_eq!(slots, [false, true, false, false]);
+}
+
+/// [`Fs::scan`] latches `scan_truncated` and [`Fs::factory_wipe`] resets the caches
+/// it describes — but not that flag. So a card whose boot walk hit ONE transient
+/// fault reported every slot occupied for the rest of the power cycle, factory reset
+/// included: `credential_store` and OATH's `free_slot` answer FULL over a store that
+/// is provably empty. The doc comment's own defence — "a fresh `Fs` that has not
+/// scanned still reports free — its store is empty" — is exactly this case.
+#[test]
+fn a_factory_wipe_clears_the_truncated_scan_flag() {
+    use crate::storage::faults::ProbeStuck;
+    const BASE: u16 = 0x2000;
+    let (backend, medium) = ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.put(BASE + 1, b"a live credential record").unwrap();
+
+    // A reboot whose walk is cut short by a transient read fault.
+    let mut fs = Fs::new(fs.into_storage());
+    medium.truncate_walk(true);
+    fs.scan();
+    let mut slots = [false; 4];
+    fs.present_slots(BASE, &mut slots);
+    assert_eq!(
+        slots, [true; 4],
+        "control: a walk that enumerated nothing leaves no slot free"
+    );
+
+    // The medium recovers and the card is factory-reset.
+    medium.truncate_walk(false);
+    fs.factory_wipe(|_| false, |_| false, |_| false).unwrap();
+    let mut seen = 0;
+    fs.for_each_key(&mut |_| seen += 1);
+    assert_eq!(seen, 0, "the store really is empty");
+    fs.present_slots(BASE, &mut slots);
+    assert_eq!(
+        slots, [false; 4],
+        "a just-wiped store reported every slot occupied"
+    );
+}
+
+/// A RAM medium whose `for_each_key` yields in ASCENDING fid order. `RamStorage`
+/// walks a `HashMap`, so WHICH key falls off the end of a full dynamic set is
+/// whatever that run's hasher decided — which would make the test below flaky about
+/// the one fid it is entirely about.
+struct OrderedKeys(RamStorage);
+impl Storage for OrderedKeys {
+    fn read(&mut self, fid: u16, buf: &mut [u8]) -> Option<usize> {
+        self.0.read(fid, buf)
+    }
+    fn write(&mut self, fid: u16, data: &[u8]) -> Result<()> {
+        self.0.write(fid, data)
+    }
+    fn remove(&mut self, fid: u16) -> Result<()> {
+        self.0.remove(fid)
+    }
+    fn size(&mut self, fid: u16) -> Option<usize> {
+        self.0.size(fid)
+    }
+    fn for_each_key(&mut self, f: &mut dyn FnMut(u16)) -> bool {
+        let mut fids = std::vec::Vec::new();
+        let complete = self.0.for_each_key(&mut |fid| fids.push(fid));
+        fids.sort_unstable();
+        for fid in fids {
+            f(fid);
+        }
+        complete
+    }
+}
+
+/// What a boot scan over MORE dynamic-eligible keys than [`MAX_DYNAMIC_FILES`]
+/// actually costs the key whose registration is dropped. `Fs` carried an `over_cap`
+/// flag for this, set here and read by nothing — so it recorded no more than the
+/// `debug_assert!` it replaced. These four answers are the record: the key still
+/// reads, the budget reports zero, a `put` to it is refused while a REGISTERED key
+/// still writes, and a factory wipe still takes it. Only a key written outside `Fs`
+/// can be in this state — `put` refuses a new file at the cap (see
+/// `the_scrub_filler_never_costs_a_dynamic_slot` for the one historical way in).
+#[test]
+fn a_key_past_the_dynamic_cap_reads_refuses_writes_and_still_wipes() {
+    const BASE: u16 = 0x2000;
+    // The ascending walk's last key, so it is the push that finds the set full.
+    const OVER: u16 = BASE + MAX_DYNAMIC_FILES as u16;
+
+    let mut ram = RamStorage::new();
+    for i in 0..=MAX_DYNAMIC_FILES as u16 {
+        ram.write(BASE + i, &[0xAA]).unwrap();
+    }
+    let mut fs = Fs::new(OrderedKeys(ram));
+    fs.scan();
+
+    // `scan` sets present/decided for every enumerated key BEFORE it reaches the
+    // push, so losing the registration must not cost the value: an unregistered key
+    // marked absent instead would read `None` here without touching the backend.
+    let mut buf = [0u8; 4];
+    assert_eq!(
+        fs.read(OVER, &mut buf),
+        Some(1),
+        "the key that lost its registration stopped reading"
+    );
+    assert_eq!(buf[0], 0xAA, "and it must read back its own value");
+
+    assert_eq!(
+        fs.free_dynamic(),
+        0,
+        "an over-subscribed budget must report no headroom"
+    );
+
+    // The refusal is about REGISTRATION, not a store-wide stop: without the
+    // `register &&` half of `put`'s guard the second half of this pair goes too, and
+    // the cap would refuse writes to keys it had already accepted.
+    assert_eq!(
+        fs.put(OVER, &[0xBB]),
+        Err(Error::NoMemory),
+        "an unregistered key's put should have been refused"
+    );
+    fs.put(BASE, &[0xBB])
+        .expect("a registered key must still write at the cap");
+
+    // The wipe takes its key set from the backend, not from the registry the key is
+    // missing from — a reset that walked `dynamic` would leave it on the medium.
+    fs.factory_wipe(|_| false, |_| false, |_| false).unwrap();
+    assert!(
+        !fs.has_data(OVER),
+        "an unregistered key survived the factory wipe"
+    );
+}
+
+#[test]
+fn a_healthy_device_reports_no_refused_re_arm() {
+    // Written first, because it is the whole false-positive argument for
+    // `Fs::rescrub_refused`. The obvious surface — read EF_HARDENED on demand —
+    // reports trouble on every healthy key: latched is the STEADY STATE of an
+    // OTP-provisioned device past its first lap. The latch is a fact about a
+    // transition instead, and this is that transition on a medium that serves it.
+    let mut fs = fs();
+    fs.put(KEY_DEV, b"pre-otp").unwrap();
+    crate::run_at_rest_lap(&mut fs);
+    assert!(
+        fs.has_data(crate::EF_HARDENED),
+        "fixture: the lap completed and the marker is latched, as on every \
+         provisioned key"
+    );
+    assert!(
+        !fs.rescrub_refused(),
+        "a completed lap is not a refused re-arm"
+    );
+
+    // An ordinary wipe. `factory_wipe` re-arms at its head, best-effort, and this
+    // medium serves it — no medium fault happened, so none may be reported.
+    fs.factory_wipe(|_| false, |_| false, |_| false).unwrap();
+    assert!(
+        !fs.rescrub_refused(),
+        "a healthy wipe reported the medium as refusing a re-arm, which would make \
+         the signal fire on every shipped key and mean nothing"
+    );
+    assert!(
+        !fs.has_data(crate::EF_HARDENED),
+        "fixture: the head re-arm really did clear the marker"
+    );
+}
+
+#[test]
+fn a_marker_probe_that_cannot_answer_is_a_refusal_too() {
+    // The other arm of `request_rescrub`'s `Err`, and the one the tests missed: the
+    // removal may land and the READ-BACK still fault, and a re-arm nobody could
+    // confirm is not a re-arm that landed. Narrowing the latch to the marker-still-
+    // there arm left this whole shape reported as a healthy device.
+    use crate::storage::faults::ProbeStuck;
+    let (backend, medium) = ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.put(crate::EF_HARDENED, b"\x01").unwrap();
+    // Rebuilt without a `scan`, as a boot that never enumerated leaves it: the
+    // present bit is UNDECIDED, so `delete` skips the backend and the read-back is
+    // the only thing that can answer — and it is exactly what faults.
+    let mut fs = Fs::new(fs.into_storage());
+    medium.stick(Some(crate::EF_HARDENED));
+
+    assert_eq!(
+        crate::request_rescrub(&mut fs),
+        Err(Error::MemoryFatal),
+        "fixture: the probe faulted rather than reading the marker back"
+    );
+    assert!(
+        fs.rescrub_refused(),
+        "a re-arm whose read-back could not answer was reported as one that landed"
+    );
+}
+
+#[test]
+fn a_single_shot_refusal_the_retry_recovered_still_reports() {
+    // The judgement this latch turns on, argued rather than assumed. `refuse_once`
+    // is the arm the wipe sites' retry recovers: the marker leaves the medium, so
+    // the lap WILL run and nothing lies. Setting the latch anyway is what makes it
+    // honest — it says the medium refused a re-arm this power cycle, and it did.
+    // Clearing it on the retry would narrow it to "the LAST re-arm failed", and a
+    // wipe is exactly that shape: head refused, retry served, host told nothing.
+    let (stuck, medium) = RemoveStuck::new();
+    let mut fs = Fs::new(stuck);
+    fs.put(crate::EF_HARDENED, b"\x01").unwrap();
+    medium.refuse_once(crate::EF_HARDENED);
+
+    assert!(
+        crate::request_rescrub(&mut fs).is_err(),
+        "fixture: the single-shot fault fired on the head re-arm"
+    );
+    assert!(
+        crate::request_rescrub(&mut fs).is_ok(),
+        "fixture: and the retry recovered it, which is what makes this the arm the \
+         answer alone cannot distinguish from a healthy device"
+    );
+    assert!(
+        !fs.has_data(crate::EF_HARDENED),
+        "fixture: the lap is genuinely re-armed — this is NOT a marker that lies"
+    );
+    assert!(
+        fs.rescrub_refused(),
+        "a recovered retry cleared the latch, so a medium that refused is now \
+         indistinguishable from one that never did"
+    );
+}
+
+#[test]
+fn a_refused_re_arm_is_reported_and_not_swallowed() {
+    // F1: the write order alone covers a power cut and nothing else. A medium that
+    // refuses `remove(EF_HARDENED)` and serves everything around it reaches the SAME
+    // end state — the marker latched over a copy the caller is about to supersede —
+    // with no reset in it, so `request_rescrub` must answer instead of `let _ =`.
+    let (stuck, medium) = RemoveStuck::new();
+    let mut fs = Fs::new(stuck);
+    fs.put(crate::EF_HARDENED, b"\x01").unwrap();
+    assert!(
+        fs.has_data(crate::EF_HARDENED),
+        "fixture: the lap has latched"
+    );
+    medium.refuse(Some(crate::EF_HARDENED));
+
+    assert!(
+        crate::request_rescrub(&mut fs).is_err(),
+        "the medium refused the re-arm, so the lap will NOT run and the caller must \
+         not go on to supersede a pre-OTP copy"
+    );
+    assert!(
+        medium.live(crate::EF_HARDENED),
+        "fixture: the refusal really left the marker on the medium",
+    );
+    assert!(
+        fs.has_data(crate::EF_HARDENED),
+        "fixture: and the lap's own gate still reads it as done",
+    );
+    // The answer is the gated sites' half. The wipe paths discard it on purpose —
+    // refusing there would leave the secrets live — so a refusal nothing latches
+    // is a refusal nothing can ever report, and the wipe answers the host success.
+    assert!(
+        fs.rescrub_refused(),
+        "a persistently stuck medium left no trace of the refusal outside the \
+         return value the wipe paths throw away"
+    );
+
+    // The control, and not a no-op: the same medium with the fault cleared re-arms,
+    // says so, and the marker leaves the medium.
+    medium.refuse(None);
+    assert!(
+        crate::request_rescrub(&mut fs).is_ok(),
+        "a healthy medium must still report the re-arm as landed"
+    );
+    assert!(!medium.live(crate::EF_HARDENED));
+    assert!(
+        fs.rescrub_refused(),
+        "the latch is per POWER CYCLE, not per call: a later healthy re-arm does \
+         not un-refuse the one this medium already refused"
+    );
+}
+
+#[test]
+fn a_re_arm_the_present_cache_skipped_is_not_reported_as_landed() {
+    // `Fs::delete` skips the backend `remove` when the present bit is clear and then
+    // answers `Ok` — and a read-fault-truncated `scan` leaves that bit clear over a
+    // live marker (the `if complete` guard on the decided-fill). So `delete`'s own
+    // result is not sufficient either: the re-arm is judged by reading the marker
+    // back through the gate `run_at_rest_lap` uses.
+    let mut walk = TruncatedWalk::new();
+    walk.write(crate::EF_HARDENED, b"\x01").unwrap();
+    let mut fs = Fs::new(walk);
+    fs.scan();
+    assert!(
+        fs.delete(crate::EF_HARDENED).is_ok(),
+        "fixture: this is the swallow's input — the delete answers Ok here"
+    );
+
+    assert!(
+        crate::request_rescrub(&mut fs).is_err(),
+        "the backend removal never ran, so the marker is still there and the lap \
+         will not run — reporting that re-arm as landed is the swallow one layer down"
+    );
+    assert!(
+        fs.has_data(crate::EF_HARDENED),
+        "fixture: the marker really was live — the probe that refused read it off \
+         the medium, past the cleared present bit"
+    );
+    // That probe settled the bit, so the retry reaches the backend the first skipped.
+    assert!(
+        crate::request_rescrub(&mut fs).is_ok(),
+        "the failed re-arm settled the cache, so a retry must actually re-arm"
+    );
+    assert!(!fs.has_data(crate::EF_HARDENED));
+    assert!(
+        fs.rescrub_refused(),
+        "the swallow one layer down again: a cache-skipped re-arm the retry \
+         recovered is still a re-arm this power cycle could not be shown to land"
     );
 }

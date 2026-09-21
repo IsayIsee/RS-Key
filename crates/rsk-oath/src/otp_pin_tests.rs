@@ -50,7 +50,7 @@ fn verify(app: &mut OathApplet, fs: &mut Fs<RamStorage>, pin: &[u8]) -> Sw {
     .0
 }
 
-fn change(app: &mut OathApplet, fs: &mut Fs<RamStorage>, old: &[u8], new: &[u8]) -> Sw {
+fn change<S: Storage>(app: &mut OathApplet, fs: &mut Fs<S>, old: &[u8], new: &[u8]) -> Sw {
     let mut d = tlv(TAG_PASSWORD, old);
     d.extend(tlv(TAG_NEW_PASSWORD, new));
     run(app, fs, &apdu(INS_CHANGE_PIN, 0, 0, &d)).0
@@ -217,4 +217,245 @@ fn a_successful_change_does_not_open_the_safe() {
     assert!(!safe_open(&mut app, &mut fs), "CHANGE opened the safe");
     assert_eq!(verify(&mut app, &mut fs, b"5678"), Sw::OK);
     assert!(safe_open(&mut app, &mut fs), "the new PIN opens it");
+}
+
+/// A PIN set before the OTP burn is stored under the chip-serial root, and CHANGE
+/// re-keys it to the OTP one. That is a lazy re-key after the boot lap has latched,
+/// so the copy it supersedes stays offline-brute-forceable in the flash ring until
+/// something re-arms the lap — the rule audit run-35 wrote, which the sibling
+/// VERIFY already keeps and this command did not.
+#[test]
+fn a_change_after_the_otp_burn_rearms_the_at_rest_lap() {
+    let (mut fs, medium) = new_cut_fs();
+    let rng = RefCell::new(CountRng(7));
+    let touch = RefCell::new(AlwaysConfirm);
+
+    // Pre-burn: SET PIN stores v1 under the NO-OTP (chip-serial) kbase.
+    {
+        let mut app = OathApplet::new(SERIAL, [0x22; 32], None, &rng, &touch);
+        assert_eq!(
+            run(
+                &mut app,
+                &mut fs,
+                &apdu(INS_SET_PIN, 0, 0, &tlv(TAG_PASSWORD, b"1234"))
+            )
+            .0,
+            Sw::OK
+        );
+    }
+    let nootp = Device {
+        serial_hash: &[0x22; 32],
+        serial_id: &SERIAL,
+        otp_key: None,
+    };
+    let mut rec = [0u8; OTP_PIN_REC_V1];
+    assert_eq!(fs.read(EF_OTP_PIN, &mut rec), Some(OTP_PIN_REC_V1));
+    assert_eq!(
+        &rec[2..],
+        &nootp.pin_derive_verifier(b"1234")[..],
+        "the record CHANGE is about to supersede is chip-serial-rooted",
+    );
+
+    // The one-shot at-rest lap has already run on this device, so the CHANGE
+    // below supersedes that copy AFTER the only pass that could reclaim it.
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    assert!(
+        fs.has_data(rsk_fs::EF_HARDENED),
+        "fixture: the lap has latched"
+    );
+
+    // CHANGE spends its retry by rewriting the record with the SAME verifier, so
+    // "still weak" is every write that leaves the verifier bytes alone.
+    let before = medium
+        .value(EF_OTP_PIN)
+        .expect("fixture: EF_OTP_PIN is on the medium");
+    medium.clear_ops();
+    let mut app = OathApplet::new(SERIAL, [0x22; 32], Some(test_mkek), &rng, &touch);
+    assert_eq!(change(&mut app, &mut fs, b"1234", b"5678"), Sw::OK);
+    medium.assert_re_armed_before(
+        EF_OTP_PIN,
+        |v| v.len() == before.len() && v[2..] == before[2..],
+        "CHANGE OTP PIN",
+    );
+    assert!(
+        !fs.has_data(rsk_fs::EF_HARDENED),
+        "CHANGE re-keyed the verifier off the chip-serial root and must re-arm \
+         the at-rest lap: the marker is still latched",
+    );
+
+    // …and it really did re-key: the standing record is the OTP-arm one.
+    let otp = Device {
+        otp_key: Some(&TEST_MKEK),
+        ..nootp
+    };
+    assert_eq!(fs.read(EF_OTP_PIN, &mut rec), Some(OTP_PIN_REC_V1));
+    assert_eq!(
+        &rec[2..],
+        &otp.pin_derive_verifier(b"5678")[..],
+        "the new verifier is stored under the OTP arm",
+    );
+}
+
+/// F1: the re-arm's own failure. A medium that refuses `remove(EF_HARDENED)` and
+/// serves every other mutation reaches the end state the write ORDER exists to keep
+/// out — the marker latched over a superseded chip-serial-rooted verifier — with no
+/// reset anywhere in it, so ordering alone cannot be the whole fix. The re-key is
+/// conditional on the re-arm now, and this command already answers `6581` when its
+/// write does not land.
+#[test]
+fn a_change_whose_re_arm_the_medium_refuses_does_not_re_key() {
+    let (stuck, medium) = RemoveStuck::new();
+    let mut fs = Fs::new(stuck);
+    fs.scan();
+    let rng = RefCell::new(CountRng(7));
+    let touch = RefCell::new(AlwaysConfirm);
+
+    {
+        let mut app = OathApplet::new(SERIAL, [0x22; 32], None, &rng, &touch);
+        assert_eq!(
+            run(
+                &mut app,
+                &mut fs,
+                &apdu(INS_SET_PIN, 0, 0, &tlv(TAG_PASSWORD, b"1234"))
+            )
+            .0,
+            Sw::OK
+        );
+    }
+    let nootp = Device {
+        serial_hash: &[0x22; 32],
+        serial_id: &SERIAL,
+        otp_key: None,
+    };
+    let mut rec = [0u8; OTP_PIN_REC_V1];
+    assert_eq!(fs.read(EF_OTP_PIN, &mut rec), Some(OTP_PIN_REC_V1));
+    assert_eq!(
+        &rec[2..],
+        &nootp.pin_derive_verifier(b"1234")[..],
+        "fixture: the record CHANGE would supersede is chip-serial-rooted",
+    );
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    assert!(
+        fs.has_data(rsk_fs::EF_HARDENED),
+        "fixture: the lap has latched"
+    );
+    medium.refuse(Some(rsk_fs::EF_HARDENED));
+
+    let mut app = OathApplet::new(SERIAL, [0x22; 32], Some(test_mkek), &rng, &touch);
+    let sw = change(&mut app, &mut fs, b"1234", b"5678");
+    assert!(
+        medium.live(rsk_fs::EF_HARDENED),
+        "fixture: the medium really refused, so the marker is still on it"
+    );
+    assert_eq!(
+        sw,
+        Sw::MEMORY_FAILURE,
+        "the lap will not run, so the re-key must not happen and the command must \
+         say so — a 9000 here is the marker latched over a superseded chip-serial \
+         copy, permanently and with no reset in it",
+    );
+    assert_eq!(fs.read(EF_OTP_PIN, &mut rec), Some(OTP_PIN_REC_V1));
+    assert_eq!(
+        &rec[2..],
+        &nootp.pin_derive_verifier(b"1234")[..],
+        "the refused re-arm must leave the pre-existing verifier in force, not a \
+         re-keyed one the lap can no longer reach",
+    );
+
+    // The control, and not a no-op: clear the fault and the same CHANGE re-keys,
+    // clears the marker, and answers 9000.
+    medium.refuse(None);
+    assert_eq!(change(&mut app, &mut fs, b"1234", b"5678"), Sw::OK);
+    assert!(!fs.has_data(rsk_fs::EF_HARDENED));
+    let otp = Device {
+        otp_key: Some(&TEST_MKEK),
+        ..nootp
+    };
+    assert_eq!(fs.read(EF_OTP_PIN, &mut rec), Some(OTP_PIN_REC_V1));
+    assert_eq!(&rec[2..], &otp.pin_derive_verifier(b"5678")[..]);
+}
+
+/// The OTP-PIN gate is `has_data(EF_OTP_PIN)`, and `Fs::has_data` answers the same
+/// `false` for "the owner never set one" and for a probe the flash could not
+/// serve. On a code-less applet `select()` leaves `validated` true unconditionally,
+/// so that probe is the whole gate: one faulted read handed the stored password to
+/// an unauthenticated host. It is refused now.
+#[test]
+fn a_faulted_probe_does_not_open_the_otp_pin_gate() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    let rng = RefCell::new(CountRng(7));
+    let touch = RefCell::new(AlwaysConfirm);
+    let mut app = OathApplet::new(SERIAL, [0x22; 32], None, &rng, &touch);
+    select(&mut app, &mut fs);
+    let mut cred = put_data(b"bank", 0x21, 6, SECRET_SHA1, false, None);
+    cred.extend(tlv(TAG_PWS_PASSWORD, b"s3cr3t"));
+    assert_eq!(put(&mut app, &mut fs, &cred), Sw::OK);
+    assert_eq!(
+        run(
+            &mut app,
+            &mut fs,
+            &apdu(INS_SET_PIN, 0, 0, &tlv(TAG_PASSWORD, b"1234"))
+        )
+        .0,
+        Sw::OK
+    );
+
+    // A fresh connection that presents nothing, with EF_OTP_PIN's reads faulting.
+    let mut fs = Fs::new(fs.into_storage());
+    fs.scan();
+    medium.stick(Some(EF_OTP_PIN));
+    let mut app = OathApplet::new(SERIAL, [0x22; 32], None, &rng, &touch);
+    select(&mut app, &mut fs);
+    let (sw, body) = run(
+        &mut app,
+        &mut fs,
+        &apdu(INS_GET_CREDENTIAL, 0, 0, &tlv(TAG_NAME, b"bank")),
+    );
+    assert_ne!(
+        sw,
+        Sw::OK,
+        "a faulted EF_OTP_PIN probe opened the gate the owner's PIN closed"
+    );
+    assert!(
+        !body.windows(6).any(|w| w == b"s3cr3t"),
+        "and served the stored password with it"
+    );
+
+    // The other half of the same reading: `SET OTP PIN` mints the unlock secret on
+    // `!has_data(EF_OTP_PIN)`, so a faulted probe let the operator at the port
+    // overwrite the PIN the owner set (`select` leaves `validated` true on a
+    // code-less applet, and the touch is the only other gate).
+    assert_eq!(
+        run(
+            &mut app,
+            &mut fs,
+            &apdu(INS_SET_PIN, 0, 0, &tlv(TAG_PASSWORD, b"9999"))
+        )
+        .0,
+        Sw::MEMORY_FAILURE,
+        "a faulted EF_OTP_PIN probe let SET OTP PIN replace the owner's PIN"
+    );
+
+    // The gate still lets a PIN-less store through once the medium recovers.
+    medium.stick(None);
+    assert_eq!(
+        run(
+            &mut app,
+            &mut fs,
+            &apdu(INS_VERIFY_PIN, 0, 0, &tlv(TAG_PASSWORD, b"1234"))
+        )
+        .0,
+        Sw::OK
+    );
+    assert_eq!(
+        run(
+            &mut app,
+            &mut fs,
+            &apdu(INS_GET_CREDENTIAL, 0, 0, &tlv(TAG_NAME, b"bank"))
+        )
+        .0,
+        Sw::OK
+    );
 }

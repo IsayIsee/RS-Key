@@ -38,7 +38,7 @@ fn make_fs() -> Fs<RamStorage> {
     fs
 }
 
-fn run(app: &mut OpenpgpApplet, fs: &mut Fs<RamStorage>, raw: &[u8]) -> (Vec<u8>, Sw) {
+fn run<S: Storage>(app: &mut OpenpgpApplet, fs: &mut Fs<S>, raw: &[u8]) -> (Vec<u8>, Sw) {
     let apdu = Apdu::parse(raw).unwrap();
     let mut buf = [0u8; SCRATCH];
     let mut res = ResBuf::new(&mut buf);
@@ -491,13 +491,13 @@ const ATTR_P256: &[u8] = &[0x13, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07]
 const ATTR_P256_ECDH: &[u8] = &[0x12, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07];
 const ATTR_ED25519: &[u8] = &[0x16, 0x2b, 0x06, 0x01, 0x04, 0x01, 0xda, 0x47, 0x0f, 0x01];
 
-fn verify_pin(app: &mut OpenpgpApplet, fs: &mut Fs<RamStorage>, mode: u8, pin: &[u8]) {
+fn verify_pin<S: Storage>(app: &mut OpenpgpApplet, fs: &mut Fs<S>, mode: u8, pin: &[u8]) {
     let mut a = vec![0x00, consts::INS_VERIFY, 0x00, mode, pin.len() as u8];
     a.extend_from_slice(pin);
     assert_eq!(run(app, fs, &a).1, Sw::OK, "VERIFY mode {mode:#x}");
 }
 
-fn put(app: &mut OpenpgpApplet, fs: &mut Fs<RamStorage>, p1: u8, p2: u8, data: &[u8]) -> Sw {
+fn put<S: Storage>(app: &mut OpenpgpApplet, fs: &mut Fs<S>, p1: u8, p2: u8, data: &[u8]) -> Sw {
     let mut a = vec![0x00, consts::INS_PUT_DATA, p1, p2, data.len() as u8];
     a.extend_from_slice(data);
     run(app, fs, &a).1
@@ -673,7 +673,7 @@ impl crate::UserPresence for Fixed {
 }
 
 // Import a P-256 SIG key + verify PW1, then enable the SIG UIF (touch) DO.
-fn setup_uif_sig(app: &mut OpenpgpApplet, fs: &mut Fs<RamStorage>) {
+fn setup_uif_sig<S: Storage>(app: &mut OpenpgpApplet, fs: &mut Fs<S>) {
     verify_pin(app, fs, consts::PW3_MODE83, consts::PW3_DEFAULT);
     assert_eq!(put(app, fs, 0x00, 0xC1, ATTR_P256), Sw::OK);
     assert_eq!(run(app, fs, &ec_import(0xB6, &[0x11u8; 32])).1, Sw::OK);
@@ -681,7 +681,7 @@ fn setup_uif_sig(app: &mut OpenpgpApplet, fs: &mut Fs<RamStorage>) {
     fs.put(consts::EF_UIF_SIG, &[0x01, 0x20]).unwrap(); // UIF on
 }
 
-fn pso_cds(app: &mut OpenpgpApplet, fs: &mut Fs<RamStorage>) -> (Vec<u8>, Sw) {
+fn pso_cds<S: Storage>(app: &mut OpenpgpApplet, fs: &mut Fs<S>) -> (Vec<u8>, Sw) {
     let mut a = vec![0x00, consts::INS_PSO, 0x9E, 0x9A, 0x20];
     a.extend_from_slice(&[0x42u8; 32]);
     run(app, fs, &a)
@@ -2839,4 +2839,283 @@ fn put_data_c4_refuses_a_user_status() {
     );
     verify_pin(&mut app, &mut fs, consts::PW3_MODE83, consts::PW3_DEFAULT);
     assert_eq!(put(&mut app, &mut fs, 0x00, 0xC4, &[0x00]), Sw::OK);
+}
+
+/// `check_uif` is the touch gate itself, and it decides on a `Fs::read` that
+/// answers the same `None` for "no UIF configured" and "I could not read it". A
+/// faulted probe therefore ran the private-key operation with no touch at all —
+/// the gate the owner set, waived by one flash fault.
+#[test]
+fn a_faulted_uif_probe_does_not_waive_the_touch_gate() {
+    let rng = RefCell::new(CountRng(7));
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    scan_files(&dev(), &mut fs, &mut CountRng(0)).unwrap();
+    // Every touch declined: with the gate up the signature must be refused.
+    let presence = RefCell::new(Fixed(crate::Presence::Timeout));
+    let mut app = OpenpgpApplet::new(SERIAL_ID, SERIAL_HASH, None, &rng, &presence);
+    setup_uif_sig(&mut app, &mut fs);
+    assert_eq!(
+        pso_cds(&mut app, &mut fs).1,
+        Sw::SECURE_MESSAGE_EXEC_ERROR,
+        "control: the touch gate refuses a declined signature"
+    );
+
+    verify_pin(&mut app, &mut fs, consts::PW1_MODE81, consts::PW1_DEFAULT);
+    medium.stick(Some(consts::EF_UIF_SIG));
+    assert_eq!(
+        pso_cds(&mut app, &mut fs).1,
+        Sw::SECURE_MESSAGE_EXEC_ERROR,
+        "a faulted EF_UIF_SIG probe signed with the touch gate skipped"
+    );
+}
+
+/// OpenPGP 3.4 §4.4.3.6: UIF `02` is "permanently enabled … not changeable with
+/// PUT DATA", clearable only by a factory reset. Its guard read the stored value
+/// with `Fs::read`, so an unreadable record skipped the guard and the generic
+/// writer lowered a touch requirement that is meant to survive an admin-PIN
+/// compromise — irreversibly, short of TERMINATE DF.
+#[test]
+fn a_faulted_uif_probe_does_not_lower_a_permanent_touch_requirement() {
+    let rng = RefCell::new(CountRng(7));
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    scan_files(&dev(), &mut fs, &mut CountRng(0)).unwrap();
+    let presence = RefCell::new(Fixed(crate::Presence::Confirmed));
+    let mut app = OpenpgpApplet::new(SERIAL_ID, SERIAL_HASH, None, &rng, &presence);
+    verify_pin(&mut app, &mut fs, consts::PW3_MODE83, consts::PW3_DEFAULT);
+    assert_eq!(put(&mut app, &mut fs, 0x00, 0xD6, &[0x02, 0x20]), Sw::OK);
+    assert_eq!(
+        put(&mut app, &mut fs, 0x00, 0xD6, &[0x00, 0x20]),
+        Sw::CONDITIONS_NOT_SATISFIED,
+        "control: PW3 cannot lower a permanently enabled UIF"
+    );
+
+    medium.stick(Some(consts::EF_UIF_SIG));
+    let sw = put(&mut app, &mut fs, 0x00, 0xD6, &[0x00, 0x20]);
+    medium.stick(None);
+    let mut cur = [0u8; 2];
+    assert_eq!(
+        fs.read(consts::EF_UIF_SIG, &mut cur).map(|n| cur[..n][0]),
+        Some(consts::UIF_PERMANENT),
+        "a faulted probe lowered a permanently enabled UIF"
+    );
+    assert_eq!(
+        sw,
+        Sw::MEMORY_FAILURE,
+        "a write that could not read the value it must not lower has to refuse"
+    );
+}
+
+/// OpenPGP 3.4 §7.2.10: DO `C4`'s first byte at `0x00` is "PW1 valid for ONE
+/// PSO:CDS", and `inc_sig_count` is the only place that spends it. It read the flag
+/// with `Fs::read`, which answers the same `None` for "no PW status stored" and for
+/// one the flash could not serve — and that arm LEAVES PW1 STANDING. So one faulted
+/// probe turned a one-shot PIN entry into an unlimited signing session for whoever
+/// is on the wire after the owner's one legitimate signature.
+///
+/// Aimed at `EF_PW_PRIV` alone: the statement immediately below reads `EF_SIG_COUNT`
+/// and already refuses, so a whole-backend fault would be caught by the neighbour
+/// and prove nothing about this line.
+#[test]
+fn a_faulted_pw_status_probe_does_not_extend_a_one_shot_pin() {
+    let rng = RefCell::new(CountRng(7));
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    scan_files(&dev(), &mut fs, &mut CountRng(0)).unwrap();
+    let presence = RefCell::new(crate::AlwaysConfirm);
+    let mut app = OpenpgpApplet::new(SERIAL_ID, SERIAL_HASH, None, &rng, &presence);
+    verify_pin(&mut app, &mut fs, consts::PW3_MODE83, consts::PW3_DEFAULT);
+    assert_eq!(put(&mut app, &mut fs, 0x00, 0xC1, ATTR_P256), Sw::OK);
+    assert_eq!(
+        run(&mut app, &mut fs, &ec_import(0xB6, &[0x11u8; 32])).1,
+        Sw::OK
+    );
+    assert_eq!(put(&mut app, &mut fs, 0x00, 0xC4, &[0x00]), Sw::OK);
+    let mut sign = vec![0x00, consts::INS_PSO, 0x9E, 0x9A, 32];
+    sign.extend_from_slice(&[0x42u8; 32]);
+    let count = |fs: &mut Fs<_>| {
+        let mut c = [0u8; 3];
+        fs.read(consts::EF_SIG_COUNT, &mut c).unwrap();
+        ((c[0] as u32) << 16) | ((c[1] as u32) << 8) | c[2] as u32
+    };
+
+    // Control: one PIN entry buys exactly one signature.
+    verify_pin(&mut app, &mut fs, consts::PW1_MODE81, consts::PW1_DEFAULT);
+    assert_eq!(run(&mut app, &mut fs, &sign).1, Sw::OK);
+    assert_eq!(
+        run(&mut app, &mut fs, &sign).1,
+        Sw::SECURITY_STATUS_NOT_SATISFIED,
+        "control: the one-shot PW status spends PW1 at the signature"
+    );
+    assert_eq!(count(&mut fs), 1, "control: one PIN entry, one signature");
+
+    // The same PIN entry, with the flag's probe faulted once as the first signature
+    // spends it.
+    verify_pin(&mut app, &mut fs, consts::PW1_MODE81, consts::PW1_DEFAULT);
+    medium.stick_once(consts::EF_PW_PRIV);
+    assert_eq!(run(&mut app, &mut fs, &sign).1, Sw::OK);
+    let (sig, sw) = run(&mut app, &mut fs, &sign);
+    medium.stick(None);
+    assert!(
+        sig.is_empty(),
+        "a faulted PW-status probe produced a SECOND signature ({} bytes) on one PIN entry",
+        sig.len()
+    );
+    assert_eq!(
+        count(&mut fs),
+        2,
+        "the card signed more times than the PIN entries authorised"
+    );
+    assert_eq!(
+        sw,
+        Sw::SECURITY_STATUS_NOT_SATISFIED,
+        "the second signature on a one-shot PIN entry has to be refused"
+    );
+}
+
+/// `keygen_tail` seeds the card's AES key (`D5`) when the DEC slot is generated and
+/// `EF_AES_KEY` is empty. It asked with `fs.has_key`, which answers the same `false`
+/// for an absent slot and for one the flash could not read — so a faulted probe minted
+/// a fresh key and `store_aes_key` put it over the live one. `D5` is card-level
+/// (§7.2.12 gives PSO:ENCIPHER no key reference at all), so everything ever enciphered
+/// under it becomes undecryptable, and the GENERATE that did it discards
+/// `store_aes_key`'s result and answers `9000`.
+#[test]
+fn a_faulted_aes_key_probe_does_not_reseed_the_live_key() {
+    let rng = RefCell::new(LcgRng(31));
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    scan_files(&dev(), &mut fs, &mut CountRng(0)).unwrap();
+    let presence = RefCell::new(crate::AlwaysConfirm);
+    let mut app = OpenpgpApplet::new(SERIAL_ID, SERIAL_HASH, None, &rng, &presence);
+    verify_pin(&mut app, &mut fs, consts::PW3_MODE83, consts::PW3_DEFAULT);
+    assert_eq!(put(&mut app, &mut fs, 0x00, 0xD5, &[0x11u8; 32]), Sw::OK);
+    assert_eq!(put(&mut app, &mut fs, 0x00, 0xC2, ATTR_P256_ECDH), Sw::OK);
+    verify_pin(&mut app, &mut fs, consts::PW1_MODE82, consts::PW1_DEFAULT);
+
+    // The owner's ciphertext, made under the key that is standing now.
+    let pt = [0xABu8; 32];
+    let mut a = vec![0x00, consts::INS_PSO, 0x86, 0x80, pt.len() as u8];
+    a.extend_from_slice(&pt);
+    let (cg, sw) = run(&mut app, &mut fs, &a);
+    assert_eq!(sw, Sw::OK);
+    let mut dec = vec![0x00, consts::INS_PSO, 0x80, 0x86, cg.len() as u8];
+    dec.extend_from_slice(&cg);
+    let before = medium
+        .value(consts::EF_AES_KEY.get())
+        .expect("the owner's AES key is stored");
+
+    let genkey = [0x00, consts::INS_KEYPAIR_GEN, 0x80, 0x00, 0x02, 0xB8, 0x00];
+    // Control: a standing D5 key survives a DEC generate on a healthy medium.
+    assert_eq!(run(&mut app, &mut fs, &genkey).1, Sw::OK);
+    assert_eq!(
+        medium.value(consts::EF_AES_KEY.get()),
+        Some(before.clone()),
+        "control: the seed never replaces a standing key"
+    );
+
+    medium.stick_once(consts::EF_AES_KEY.get());
+    assert_eq!(run(&mut app, &mut fs, &genkey).1, Sw::OK);
+    medium.stick(None);
+    assert_eq!(
+        medium.value(consts::EF_AES_KEY.get()),
+        Some(before),
+        "a faulted probe re-seeded the live AES key"
+    );
+    assert_eq!(
+        run(&mut app, &mut fs, &dec),
+        (pt.to_vec(), Sw::OK),
+        "ciphertext made under the owner's AES key no longer decrypts"
+    );
+}
+
+/// `read_advertised_algo` resolves the slot's algorithm attribute and GENERATE mints
+/// and SEALS whatever it says. Its `_` arm covered three different states at once: a
+/// slot with no attribute configured (which must get `DEFAULT_ALGO` — the documented
+/// path), an empty record, and a probe the flash could not answer. Collapsing the
+/// third into the first made GENERATE mint RSA-2048 where the owner had configured
+/// Ed25519, and store it as the slot's key.
+///
+/// The three arms are asserted at the function, because only there can "absent" and
+/// "faulted" be told apart at all, and then the destructive one is driven through the
+/// real GENERATE.
+#[test]
+fn a_faulted_algo_probe_does_not_generate_the_default_algorithm() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    scan_files(&dev(), &mut fs, &mut CountRng(0)).unwrap();
+    let mut buf = [0u8; 16];
+    let priv_fid = consts::algo_tag_to_priv(consts::EF_ALGO_SIG);
+
+    // No attribute configured — the documented default, and the arm the fix must not
+    // take away. `init` writes no algorithm attribute, so this is a fresh card.
+    assert_eq!(
+        crate::keypairgen::read_advertised_algo(&mut fs, consts::EF_PK_SIG, &mut buf),
+        Ok(consts::DEFAULT_ALGO),
+        "a slot with no attribute must still resolve to the default"
+    );
+    // An empty record is the same "nothing configured".
+    fs.put(priv_fid, &[]).unwrap();
+    assert_eq!(
+        crate::keypairgen::read_advertised_algo(&mut fs, consts::EF_PK_SIG, &mut buf),
+        Ok(consts::DEFAULT_ALGO),
+        "an empty attribute record must still resolve to the default"
+    );
+    // A configured one resolves to itself…
+    fs.put(priv_fid, ATTR_ED25519).unwrap();
+    assert_eq!(
+        crate::keypairgen::read_advertised_algo(&mut fs, consts::EF_PK_SIG, &mut buf),
+        Ok(ATTR_ED25519),
+        "control: a configured attribute resolves to itself"
+    );
+    // …and a probe that failed is none of the three.
+    medium.stick_once(priv_fid);
+    let faulted = crate::keypairgen::read_advertised_algo(&mut fs, consts::EF_PK_SIG, &mut buf);
+    medium.stick(None);
+    assert_eq!(
+        faulted,
+        Err(Sw::MEMORY_FAILURE),
+        "a failed probe resolved to the default algorithm"
+    );
+
+    // End to end: the owner configured Ed25519 and a GENERATE must not mint the
+    // default under it.
+    let rng = RefCell::new(LcgRng(11));
+    let presence = RefCell::new(crate::AlwaysConfirm);
+    let mut app = OpenpgpApplet::new(SERIAL_ID, SERIAL_HASH, None, &rng, &presence);
+    verify_pin(&mut app, &mut fs, consts::PW3_MODE83, consts::PW3_DEFAULT);
+    assert_eq!(put(&mut app, &mut fs, 0x00, 0xC1, ATTR_ED25519), Sw::OK);
+    let genkey = [0x00, consts::INS_KEYPAIR_GEN, 0x80, 0x00, 0x02, 0xB6, 0x00];
+    let (do_, sw) = run(&mut app, &mut fs, &genkey);
+    assert_eq!(sw, Sw::OK);
+    assert_eq!(
+        ec_point(&do_).len(),
+        32,
+        "control: the configured Ed25519 attribute mints a 32-byte point"
+    );
+    // Retire the slot so the generate below is the same command in the same state.
+    assert_eq!(put(&mut app, &mut fs, 0x00, 0xC1, ATTR_P256), Sw::OK);
+    assert_eq!(put(&mut app, &mut fs, 0x00, 0xC1, ATTR_ED25519), Sw::OK);
+    assert!(!fs.has_data(consts::EF_PB_SIG));
+
+    medium.stick_once(priv_fid);
+    let sw = run(&mut app, &mut fs, &genkey).1;
+    medium.stick(None);
+    assert_eq!(
+        medium.value(consts::EF_PB_SIG),
+        None,
+        "a faulted attribute probe generated and stored a key for the DEFAULT algorithm \
+         where the owner configured Ed25519"
+    );
+    assert_eq!(
+        sw,
+        Sw::MEMORY_FAILURE,
+        "a GENERATE that could not read the algorithm it must honour has to refuse"
+    );
 }

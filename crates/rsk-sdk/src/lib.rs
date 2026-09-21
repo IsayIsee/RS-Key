@@ -11,7 +11,7 @@
 //!
 //! Plus the device identity every applet echoes but none owns —
 //! [`FIRMWARE_VERSION`] and [`serial4`]. They are here for the same reason the
-//! seams are: four applets report each of them for four unrelated reasons, so
+//! seams are: several applets report each of them for unrelated reasons, so
 //! whichever applet reported it first is the wrong home.
 
 pub mod apdu;
@@ -45,10 +45,10 @@ const fn env_u8(s: &str) -> u8 {
 }
 
 /// Reported device firmware version `(major, minor, patch)` — the single source
-/// for the management DeviceInfo, FIDO getInfo (0x0E) and the OATH/OTP/PIV
-/// version fields. Defaults to 5.7.4 (a current YubiKey 5); override at build
-/// time with `FW_VERSION=X.Y.Z`. The OpenPGP card/applet versions are separate
-/// protocol numbers and are unaffected.
+/// for CTAPHID INIT/VERSION, FIDO getInfo (0x0E), the management DeviceInfo,
+/// the OATH/OTP/PIV version fields and OpenPGP's vendor VERSION (INS 0xF1).
+/// Defaults to 5.8.0 (a current YubiKey 5), overridden at build time by
+/// `FW_VERSION=X.Y.Z`; the OpenPGP card version (3.4) is a separate number.
 pub const FIRMWARE_VERSION: (u8, u8, u8) = (
     env_u8(env!("PK_FW_VERSION_MAJOR")),
     env_u8(env!("PK_FW_VERSION_MINOR")),

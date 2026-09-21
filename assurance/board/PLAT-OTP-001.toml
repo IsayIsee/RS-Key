@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 RS-Key contributors
+#
+# Irreversible by construction: AGENTS.md puts fuse writes with the
+# maintainer and nowhere else, and a burned row cannot be unburned. The
+# expected value is on record here BEFORE anyone burns anything.
+
+assumption = "PLAT-OTP-001"
+method = "A partial MKEK provisioning on a THROWAWAY board: burn part of the key rows, leave the rest unburned, and ask the firmware to derive. tests/90_otp_mkek_migration.py is deliberately NOT this measurement — it validates the migration on a FAKE_MKEK/FAKE_DEVK build without touching a fuse, so it exercises the kbase path and not read permissions, lock state or chaffing."
+boot_config = "A board that will never be used for anything else, with secure boot off so the image can be replaced afterwards; the fuses cannot be."
+expected = "A half-written key row is REFUSED, not read as a key. PASS = the derivation fails closed and the device reports unprovisioned. FAIL = a derivation succeeds on partial material, which is the FAKE_MKEK failure mode a real board would mimic silently."
+outcome = "planned"
+board = ""
+stepping = ""
+firmware_sha256 = ""
+first_boot_capture = ""
+actual = ""

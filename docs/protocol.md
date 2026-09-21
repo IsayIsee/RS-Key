@@ -122,30 +122,32 @@ Authenticator send. A host that stops at the first frame still sees a valid
 (shorter) list.
 
 Seven OATH rules a host has to expect, all matching a YubiKey 5.7.4. `PUT`
-(`0x01`) is strict about the credential body — KEY TLV 16..=66 bytes, digits
-6/7/8, type `0x10`/`0x20`, algorithm 1/2/3, name 1..=64 bytes, the initial moving
-factor on HOTP only and exactly 4 bytes, the PROPERTY byte as the bare `78 vv`
-pair, the four YKOATH tags in that order, no duplicate, no unknown tag and no
-trailing byte. Anything else is `6A80` with **nothing stored**, so a rejected
-`PUT` leaves an existing credential of that name working. (RS-Key also stores the
-password-safe fields `0x83`/`0x84`/`0x85`, ≤255 bytes each, which may sit
-anywhere in the body.) `SET CODE` (`0x03`) holds its key to the same measured
-rule: the `73` TLV is one algorithm byte plus **14..=64 bytes** of key material,
-or empty to remove the access code — anything else is `6A80` and whatever code
-was installed is left exactly as it was. Its proof travels over an **exactly
-8-byte** `74` challenge (`os.urandom(8)`, as ykman sends it); any other width is
-`6A80`, and removing a code needs no challenge at all. `VALIDATE` (`0xA3`) then
-refuses a proof that does not match with `6A80` as well; `6984` from it means
-something else entirely — no access code is installed to match against. And
-PROPERTIES bit 0, *only increasing*, is enforced: a TOTP credential carrying it
-computes only for a challenge strictly greater than the highest one it has served,
-comparing the raw challenge bytes zero-extended on the right — plain numeric `>`
-for the usual 8-byte counter. A challenge at or below that mark is `6A80`, and
-in `CALCULATE ALL` one such credential fails the whole command with an empty
-body. The one exception is a credential a build before this rule stored: its
-body can leave no room for the mark, and `CALCULATE ALL` then reports it with
-`77` (no response) and computes the rest of the store rather than failing — its
-own `CALCULATE` still answers `6A80`.
+(`0x01`) is strict about the credential body — KEY TLV 16..=66 bytes (a secret
+shorter than 14 bytes is refused, not padded: zero-pad it first, as ykman does,
+and the codes do not change), digits 6/7/8, type `0x10`/`0x20`, algorithm 1/2/3,
+name 1..=64 bytes, the initial moving factor on HOTP only and exactly 4 bytes,
+the PROPERTY byte as the bare `78 vv` pair, the four YKOATH tags in that order,
+no duplicate, no unknown tag and no trailing byte. Anything else is `6A80` with
+**nothing stored**, so a rejected `PUT` leaves an existing credential of that
+name working. (RS-Key also stores the password-safe fields `0x83`/`0x84`/`0x85`,
+≤255 bytes each, which may sit anywhere in the body.) `SET CODE` (`0x03`) holds
+its key to the same measured rule: the `73` TLV is one algorithm byte plus
+**14..=64 bytes** of key material, or empty to remove the access code — anything
+else is `6A80` and whatever code was installed is left exactly as it was. Its
+proof travels over an **exactly 8-byte** `74` challenge (`os.urandom(8)`, as
+ykman sends it); any other width is `6A80`, and removing a code needs no
+challenge at all. `VALIDATE` (`0xA3`) then refuses a proof that does not match
+with `6A80` as well; `6984` from it means something else entirely — no access
+code is installed to match against. And PROPERTIES bit 0, *only increasing*, is
+enforced: a TOTP credential carrying it computes only for a challenge strictly
+greater than the highest one it has served, comparing the raw challenge bytes
+zero-extended on the right — plain numeric `>` for the usual 8-byte counter. A
+challenge at or below that mark is `6A80`, and in `CALCULATE ALL` one such
+credential fails the whole command with an empty body. The one exception is a
+credential a build before this rule stored: its body can leave no room for the
+mark, and `CALCULATE ALL` then reports it with `77` (no response) and computes
+the rest of the store rather than failing — its own `CALCULATE` still answers
+`6A80`.
 
 The fourth is the challenge itself. `CALCULATE` (`0xA2`) and `CALCULATE ALL`
 (`0xA4`) take an opaque byte string of **0..=64 bytes** in the `74` TLV and HMAC
@@ -265,7 +267,7 @@ Source: `crates/rsk-sdk/src/sw.rs`.
 |---|---|---|
 | `9000` | OK | success |
 | `6400` | EXEC_ERROR | execution error (internal) |
-| `6581` | MEMORY_FAILURE | flash write failed |
+| `6581` | MEMORY_FAILURE | flash access failed — a write, or a read whose answer the command must not guess (`1E/01` READ phy, `1C/01` WRITE phy, WRITE CONFIG's merge) |
 | `6700` | WRONG_LENGTH | bad `Lc`/`Le` for this command |
 | `6883` | LAST_CHAIN_EXPECTED | an APDU arrived that neither continues nor closes the open command chain |
 | `6982` | SECURITY_STATUS_NOT_SATISFIED | auth/precondition missing |
@@ -340,11 +342,11 @@ YubiKey's reader name. Reference: `RSK_READER_TOKENS` in
 
 | Field | Value | Where |
 |---|---|---|
-| firmwareVersion | `5.7.4` → `0x00050704` | CTAP getInfo `0x0E`; Management/OTP DeviceInfo `TAG_VERSION`; Management SELECT (`"5.7.4"` ASCII) |
+| firmwareVersion | `5.8.0` → `0x00050800` | CTAP getInfo `0x0E`; Management/OTP DeviceInfo `TAG_VERSION`; Management SELECT (`"5.8.0"` ASCII) |
 | `bcdDevice` | `0x0780` (build counter, increments per firmware change) | USB device descriptor (`firmware/src/main.rs` `device_release`) |
 | AAGUID | `2479c7bf-6b30-5683-9ec8-0e8171a918b7` | CTAP getInfo `0x03`; one value across every VID/PID flavor of a build, overridable at build time with `AAGUID=<uuid>` |
 
-The firmware version is overridable at build time (`FW_VERSION=X.Y.Z`); `5.7.4`
+The firmware version is overridable at build time (`FW_VERSION=X.Y.Z`); `5.8.0`
 mirrors a current YubiKey 5 so Yubico tooling is satisfied under the Yubico VID.
 
 ---
@@ -364,7 +366,10 @@ planning for: OpenPGP is selected by the 6-byte AID below, **not** by the 16-byt
 value it reports in DO `4F` (that one carries the device serial and is longer, so
 it is not a prefix — a real YubiKey refuses it too); and a prefix short enough to
 match several applets resolves by registration order, which is the order of the
-table below, so probe with the full AID unless you mean to.
+table below, so probe with the full AID unless you mean to. OATH and OTP are
+registered by their full 8-byte instance AIDs, as a YubiKey registers them:
+Yubico's Android SDK selects by all 8 bytes, while ykman sends the 7-byte prefix,
+and both select (`0x09D4`+; from `0x088C` to `0x09D3` only the 7-byte form did).
 
 **Where that SELECT works.** The recipe above is CCID's (§1.1), and two of the ten
 rows below are not CCID applets: **the FIDO2 backup id and the standalone U2F AID
@@ -384,8 +389,8 @@ all ten AIDs, and recorded in the **Transport** column.
 | FIDO2 (backup id) | `B0 00 00 06 47 2F 00 01` | none — unregistered | RS-Key | — |
 | U2F (standalone id) | `A0 00 00 05 27 10 02` | none — unregistered; U2F rides the FIDO2 AID | Standard (CTAP1/U2F) | — |
 | **Management** | `A0 00 00 05 27 47 11 17` | CCID | Yubico-compatible | **yes — §6** |
-| OATH | `A0 00 00 05 27 21 01` | CCID | Yubico OATH | data only |
-| OTP | `A0 00 00 05 27 20 01` | CCID | Yubico OTP | data only |
+| OATH | `A0 00 00 05 27 21 01 01` | CCID | Yubico OATH | data only |
+| OTP | `A0 00 00 05 27 20 01 01` | CCID | Yubico OTP | data only |
 | PIV | `A0 00 00 03 08 00 00 10 00 01 00` | CCID | NIST SP 800-73 | data only |
 | OpenPGP | `D2 76 00 01 24 01` | CCID | OpenPGP card 3.x | data only |
 | **Rescue** | `A0 58 3F C1 9B 7E 4F 21` | CCID | **RS-Key-specific** | **yes — §7** |
@@ -429,17 +434,20 @@ needs only the identifiers above. RS-Key implements:
   from the *Begin* if it stalls. The same 30 s applies **between the fragments of a
   `largeBlobs` set**; there an abandoned transfer answers `CTAP2_ERR_INVALID_SEQ`
   and the previously stored array is left intact. `maxMsgSize` = `7609`.
-  `transportsForReset` (`0x1A`) is `["usb"]` — identical to `transports`
-  (`0x09`), because the FIDO applet is on USB-HID only and a reset is reachable
-  exactly where the applet is; it is an array of `AuthenticatorTransport`
-  strings, not a bit field. `pinComplexityPolicy` (`0x1B`) is `true` only on a
+  `transportsForReset` (`0x1A`) is `["usb", "smart-card"]` — identical to
+  `transports` (`0x09`), because a reset is reachable exactly where the applet is,
+  and §5.2 routes the FIDO AID onto CCID as well as CTAPHID. It is an array of
+  `AuthenticatorTransport` strings, not a bit field. There is no `nfc`: no radio. `pinComplexityPolicy` (`0x1B`) is `true` only on a
   build that refuses a PIN beyond the length floor — the `strong-pin` and
   `fips-profile` images block a repeated code point and a ±1 run; the default
   build answers `false`, and the optional `pinComplexityPolicyURL` (`0x1C`) is
   never emitted. `longTouchForReset` (`0x18`) is `false`: a reset takes the same
   touch as any other presence check — CTAP 2.3 cut the long-touch hold from 2.2's
   10 s to 5 s, and RS-Key implements neither gesture. `encIdentifier` (`0x19`) is
-  present **only once a persistent pinUvAuthToken has been issued**, and carries
+  present **from provisioning** — boot, `authenticatorReset` and a seed
+  `BACKUP_LOAD` mint the persistent pinUvAuthToken it is keyed by; setting or
+  changing the PIN, or forcing a change, revokes that grant until the next boot or
+  `pcmr` request, and a soft-locked key omits it — and carries
   `iv ‖ AES-128-CBC(k, id)` — 32 bytes — where `id` is a 128-bit device identifier
   and `k = HKDF-SHA-256(salt = 32 zero bytes, IKM = that token, info =
   "encIdentifier", L = 16)`. **The IV is regenerated on every getInfo**, so the
@@ -456,7 +464,10 @@ needs only the identifiers above. RS-Key implements:
   nothing. The tag is **stored**, not counted in RAM, so a power cycle does not reset
   it — and it is written *ahead of* the change it describes, so what a torn write
   leaves is a tag that over-reports (one wasted re-enumeration) rather than one that
-  under-reports (a stale cache). `authenticatorReset` clears it back to zero along
+  under-reports (a stale cache). A tag the flash cannot serve **omits the member**
+  rather than publishing the zero one: zero is what a fresh device carries, so a
+  platform can be holding it, while an absent member matches no cached tag at all
+  and costs only the walk. `authenticatorReset` clears it back to zero along
   with the credentials it summarises.
   **makeCredential accepts `attestationFormatsPreference` (request
   `0x0B`)**: a list of exactly `["none"]` is answered with `fmt:"none"` and an
@@ -617,8 +628,8 @@ applications are enabled. Source: `crates/rsk-mgmt/src/lib.rs` for the command
 surface, `crates/rsk-devconf/src/lib.rs` for the `EF_DEV_CONF` record it reads
 and writes.
 
-**SELECT** returns the firmware version as an ASCII string, e.g. `35 2E 37 2E 34`
-(`"5.7.4"`).
+**SELECT** returns the firmware version as an ASCII string, e.g. `35 2E 38 2E 30`
+(`"5.8.0"`).
 
 | INS | Name | Request | Response |
 |---|---|---|---|
@@ -718,7 +729,7 @@ attestation key, and the one-way OTP fuses. Source:
 
 **SELECT response** (identity): `MCU(1) | PRODUCT(1) | SDK_MAJOR(1) | SDK_MINOR(1) | serial(8)`
 = `01 02 08 06 <8-byte chip serial>`. (`MCU 1` = RP2350, `PRODUCT 2` = FIDO,
-`SDK 8.6` is the applet SDK version, distinct from the `5.7.4` firmware version.)
+`SDK 8.6` is the applet SDK version, distinct from the `5.8.0` firmware version.)
 Use this as the **capability/version handshake**: a non-`9000` here means the
 firmware predates the rescue applet.
 
@@ -730,7 +741,7 @@ firmware predates the rescue applet.
 | `1C` | `01` | `00` | phy TLV blob (§7.1) | — | WRITE phy record |
 | `1C` | `02` | `01` | `YYYY(BE2) Mon Day Wday Hour Min Sec` (8 B) | — | SET RTC (civil; Wday ignored) |
 | `1C` | `02` | `02` | epoch seconds (BE4) | — | SET RTC (Unix) |
-| `1E` | `01` | `00` | — | phy TLV blob (§7.1) | READ phy record |
+| `1E` | `01` | `00` | — | phy TLV blob (§7.1) | READ phy record; `6581` if the record cannot be read (never the never-written default — the host RMWs on this answer) |
 | `1E` | `02` | `00` | — | `free ‖ used ‖ kv_total ‖ nfiles ‖ flash_size` (5×BE4 = 20 B) | READ flash usage |
 | `1E` | `03` | `00` | — | `enabled(1) ‖ locked(1) ‖ bootkey_slot(1)` (`FF` = none) | READ secure-boot status |
 | `1E` | `04` | `01` | — | `YYYY(BE2) Mon Day Wday Hour Min Sec` (8 B) | READ RTC (civil); `6985` if unset |
@@ -1001,7 +1012,7 @@ Keys 3/4 are present only when a PIN is set (see gating).
 | `02` | BACKUP_EXPORT | — | `{1: blob(60)}` | MSE + touch + PIN-token; refused if sealed |
 | `03` | BACKUP_LOAD | `{1: blob(60)}` | — | MSE + touch + PIN-token; refused if soft-locked. With **no PIN set** it additionally takes a distinct "Replace device seed?" confirmation — the PIN-token half is waived in that state, and a LOAD re-keys every existing credential |
 | `04` | BACKUP_FINALIZE | — | — | touch + PIN-token when a PIN is set (no MSE) |
-| `05` | BACKUP_STATE | — | `{1: sealed, 2: has_seed, 3: locked, 4: unlocked}` | **ungated** |
+| `05` | BACKUP_STATE | — | `{1: sealed, 2: has_seed, 3: locked, 4: unlocked, 5: rescrub_refused}` | **ungated** |
 | `06` | UNLOCK | `{1: blob(60)}` | — | MSE (the lock key *is* the auth) |
 | `07` | AUDIT_READ | — | journal window | PIN-token; **touch** if no PIN |
 | `08` | AUDIT_CHECKPOINT | `{1: nonce ≤32}` | DEVK signature over chain head ‖ nonce | PIN-token + touch |
@@ -1009,8 +1020,36 @@ Keys 3/4 are present only when a PIN is set (see gating).
 | `0A` | ATT_CLEAR | — | — | MSE + touch + PIN-token |
 | `0B` | ATT_STATE | — | `{1: present, 2: sha256(chain)?}` | **ungated** |
 | `0C` | CONFIG_WRITE | `{1: target(uint), 2: blob(bstr)}` — target `0`=DEV_CONF, `1`=PHY, `2`=LED | — | **ungated by default**; touch + PIN-token under `strict-config`; no MSE. A write that changes nothing is a no-op: no flash write, no journal entry, and for PHY no reboot latch |
-| `0D` | CONFIG_READ | `{1: target(uint)}` — target `1`=PHY, `2`=LED | `{1: blob(bstr)[, 2: {phy_tag: uint}]}` | **ungated** |
+| `0D` | CONFIG_READ | `{1: target(uint)}` — target `1`=PHY, `2`=LED | `{1: blob(bstr)[, 2: {phy_tag: uint}]}` | **ungated**; `CTAP2_ERR_OTHER` if the record cannot be read — an empty blob means *absent*, never *unreadable*, because the host read-modify-writes on this answer |
 | `0E` | AUDIT_CONFIG | `{1: op(uint)}` — `0`=disable, `1`=enable, `2`=status | `{1: enabled(bool)}` | set: PIN-token + touch; status (`2`): **ungated** |
+
+> ### `rescrub_refused` (`BACKUP_STATE` key 5, bcdDevice ≥ `0x09C5`)
+> **Flash health for this power cycle, and nothing more.** After the one-shot
+> at-rest hardening lap has run, any command that supersedes a record still sealed
+> to the pre-OTP root must re-arm that lap by clearing its marker. The wipe paths —
+> `authenticatorReset` and the applet factory resets — take that re-arm
+> best-effort and go on regardless, because refusing there would mean leaving the
+> secrets live, and they answer `0x00` whatever the flash said. Key 5 is `true` when
+> a re-arm this power cycle could not be shown to have landed, so a stuck medium is
+> reported somewhere other than in the answer to a reset that did succeed.
+>
+> It does **not** say the hardening marker is wrong, or that hardening failed. Away
+> from the wipe paths the re-arm *gates* the write that follows it, so a refusal
+> stops that write: nothing is superseded, and the command either errors or skips a
+> lazy migration and leaves the older record in force. Read key 5 as "this device's
+> flash refused a write it was asked for", and nothing stronger.
+>
+> Coverage is lost in one arm only, a wipe whose refusal was **persistent**. A wipe
+> tries more than once — ahead of its sweep and again after it — and a refusal the
+> retry recovers still sets key 5 even though the marker is then gone and the next
+> boot laps as it should. When no attempt lands, the marker stays latched over the
+> records the wipe superseded, no later boot ever laps, and those copies stay
+> recoverable from a physical flash dump while the reset answered `0x00`. Key 5 does
+> not say which arm it is, and repeating the reset does not recover what that one
+> already exposed, so a device that keeps reporting it has a failing medium and
+> should be retired rather than trusted at rest. It is RAM state, so it clears on
+> the next power cycle whether or not the flash recovered, and an older build simply
+> omits the key.
 
 > ### Device configuration over FIDO (`CONFIG_WRITE 0x0C`)
 > The pcscd-free twin of the CCID device-config writes (§6 WRITE CONFIG and the
@@ -1167,7 +1206,7 @@ All bytes hex; `→` shows the response (status word omitted when `9000`).
 ```
 SELECT  00 A4 04 00 08 A0 00 00 05 27 47 11 17 00
 READ    00 1D 00 00 00
-→  <len> 01 02 023B 02 04 <serial> 04 01 01 05 03 050704 03 02 023B 08 01 80 0A 01 00
+→  <len> 01 02 023B 02 04 <serial> 04 01 01 05 03 050800 03 02 023B 08 01 80 0A 01 00
 ```
 
 **Read the phy record (Rescue):**
@@ -1211,15 +1250,16 @@ SET     00 10 40 11        # P1=0x40 brightness, P2 = color 1 | status 1<<4 = 0x
    hardware-config path. Send `authenticatorConfig` (CTAP `0x0D`) with subCommand
    `vendorPrototype` (`0xFF`) and subCommandParams `{1: vendorCommandId(u64),
    3: value(uint)}`, gated by an `acfg` pinUvAuthToken (no touch). getInfo's
-   `authenticatorConfigCommands` (`0x1F`) lists `0xFF` and
-   `vendorPrototypeConfigCommands` (`0x15`) enumerates the IDs below, so the arm
-   and its commands are both detectable without probing — §6.11.3 ties the two,
-   so a build that hides one hides both. That array is the whole vendor arm, not
-   only its hardware half — `0x0e6841934e719be7` is the enterprise-attestation RP
-   list (§5), which takes an rpId array at key 4 and writes no hardware; treat an
-   unrecognised id as one you do not drive. The phy IDs, the ones PicoForge
-   writes, set the phy record and take effect on the
-   next boot: `PhysicalVidPid 0x6fcb19b0cbe3acfa` (value `(vid<<16)|pid`),
+   `authenticatorConfigCommands` (`0x1F`) lists `0xFF`, and
+   `vendorPrototypeConfigCommands` (`0x15`) is present, so the arm is detectable
+   without probing — §6.11.3 ties the two, so a build that hides one hides both.
+   From `0x09D5` that array is **empty**: the IDs are 64-bit, and Yubico's Android
+   SDK rejects a getInfo carrying one (issue #111), so they are listed here instead.
+   The arm is more than its hardware half: `0x03e43f56b34285e2` / `0x1831a40f04a25ed9`
+   enable and disable the soft-lock, and `0x0e6841934e719be7` is the
+   enterprise-attestation RP list (§5), which takes an rpId array at key 4 and
+   writes no hardware. The phy IDs, the ones PicoForge writes, set the phy record
+   and take effect on the next boot: `PhysicalVidPid 0x6fcb19b0cbe3acfa` (value `(vid<<16)|pid`),
    `PhysicalLedGpio 0x7b392a394de9f948`, `PhysicalLedBrightness 0x76a85945985d02fd`,
    `PhysicalOptions 0x269f3b09eceb805f` (bitmask `0x2` dimmable / `0x4`
    disable-power-reset / `0x8` led-steady — all three are honoured: dimmable gates

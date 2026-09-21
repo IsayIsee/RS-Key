@@ -143,6 +143,23 @@
       # JVM, and cannot carry a heap setting.
       export TLA2TOOLS_JAR="${pkgs.tlaplus}/share/java/tla2tools.jar"
 
+      # `nix develop` hands every invocation a fresh $TMPDIR under /tmp and never
+      # removes it: 159 had accumulated here, each one whatever a hand-run left
+      # in it. `check.sh` traps its own `mktemp` sites and its pytest rows pin
+      # `--basetemp`, but neither reaches a bare `nix develop -c ...`.
+      #
+      # A `trap ... EXIT` in this hook does NOT fix it -- measured, not assumed:
+      # the command runs in a child process, `trap -p EXIT` inside it prints
+      # nothing, and the directory survives. So the shell moves TMPDIR under the
+      # cache root `check.sh` already owns and bounds it by age instead. Seven
+      # days is longer than any run here by orders of magnitude, so the sweep
+      # cannot reach a live invocation -- which is what lets it be safe while
+      # two `nix develop` shells are open at once.
+      export TMPDIR="''${XDG_CACHE_HOME:-$HOME/.cache}/rs-key/tmp"
+      export TMP="$TMPDIR" TEMP="$TMPDIR" TEMPDIR="$TMPDIR"
+      mkdir -p "$TMPDIR"
+      find "$TMPDIR" -mindepth 1 -maxdepth 1 -mtime +7 -exec rm -rf {} + 2>/dev/null || true
+
       # Install repo git hooks (idempotent; symlinked so edits take effect).
       if [ -d .git ] && [ -f scripts/hooks/pre-commit ]; then
         ln -sf ../../scripts/hooks/pre-commit .git/hooks/pre-commit

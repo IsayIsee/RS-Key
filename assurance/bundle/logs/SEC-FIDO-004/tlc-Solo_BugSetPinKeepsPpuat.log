@@ -1,0 +1,487 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 104 and seed -7970534132043852824 with 2 workers on 18 cores with 3641MB heap and 64MB offheap memory (Mac OS X 27.0 aarch64, Azul Systems, Inc. 1.8.0_492 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Users/maxmur/Code/RS-Key/formal/RSKeySecurityState.tla
+Parsing file /private/var/folders/gg/lgcg496924x384yd58t3b9180000gn/T/Naturals.tla
+Parsing file /private/var/folders/gg/lgcg496924x384yd58t3b9180000gn/T/FiniteSets.tla
+Parsing file /private/var/folders/gg/lgcg496924x384yd58t3b9180000gn/T/TLC.tla
+Parsing file /private/var/folders/gg/lgcg496924x384yd58t3b9180000gn/T/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module RSKeySecurityState
+Starting... (2026-08-30 02:01:51)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-08-30 02:01:51.
+Progress(13) at 2026-08-30 02:01:54: 1,302,581 states generated (1,302,581 s/min), 158,119 distinct states found (158,119 ds/min), 72,351 states left on queue.
+Error: Invariant NoTokenAfterInvalidation is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ lock = [soft |-> FALSE, mism |-> 0, policyMism |-> 0]
+/\ walk = [open |-> FALSE, chan |-> "nochan"]
+/\ sys = [warmBoot |-> FALSE, clock |-> 0]
+/\ pres = [ scope |-> "none",
+  cancelReq |-> FALSE,
+  cancelBy |-> "none",
+  granted |-> "none",
+  pressing |-> FALSE,
+  spent |-> FALSE,
+  usedBy |-> "none" ]
+/\ store = [seed |-> TRUE, cred |-> {}, rpent |-> {}]
+/\ viol = {}
+/\ plat = [held |-> FALSE, verifies |-> FALSE, revoked |-> FALSE]
+/\ snap = [ pin |-> FALSE,
+  seen |-> FALSE,
+  auv |-> FALSE,
+  surv |-> {},
+  seed |-> FALSE,
+  sealed |-> FALSE ]
+/\ upSpent = FALSE
+/\ op = [kind |-> "none", t |-> "none", rp |-> "norp", step |-> 0]
+/\ pin = [set |-> FALSE, retries |-> 8, everSet |-> FALSE]
+/\ ram = FALSE
+/\ tok = [rp |-> "norp", live |-> FALSE, perms |-> {}]
+/\ gate = [ ppuat |-> FALSE,
+  ppuatStale |-> FALSE,
+  alwaysUv |-> FALSE,
+  backupSealed |-> FALSE,
+  forceChange |-> FALSE ]
+
+State 2: <PressDown line 369, col 5 to line 372, col 41 of module RSKeySecurityState>
+/\ lock = [soft |-> FALSE, mism |-> 0, policyMism |-> 0]
+/\ walk = [open |-> FALSE, chan |-> "nochan"]
+/\ sys = [warmBoot |-> FALSE, clock |-> 0]
+/\ pres = [ scope |-> "none",
+  cancelReq |-> FALSE,
+  cancelBy |-> "none",
+  granted |-> "none",
+  pressing |-> TRUE,
+  spent |-> FALSE,
+  usedBy |-> "none" ]
+/\ store = [seed |-> TRUE, cred |-> {}, rpent |-> {}]
+/\ viol = {}
+/\ plat = [held |-> FALSE, verifies |-> FALSE, revoked |-> FALSE]
+/\ snap = [ pin |-> FALSE,
+  seen |-> FALSE,
+  auv |-> FALSE,
+  surv |-> {},
+  seed |-> FALSE,
+  sealed |-> FALSE ]
+/\ upSpent = FALSE
+/\ op = [kind |-> "none", t |-> "none", rp |-> "norp", step |-> 0]
+/\ pin = [set |-> FALSE, retries |-> 8, everSet |-> FALSE]
+/\ ram = FALSE
+/\ tok = [rp |-> "norp", live |-> FALSE, perms |-> {}]
+/\ gate = [ ppuat |-> FALSE,
+  ppuatStale |-> FALSE,
+  alwaysUv |-> FALSE,
+  backupSealed |-> FALSE,
+  forceChange |-> FALSE ]
+
+State 3: <SetPinStart line 815, col 5 to line 821, col 35 of module RSKeySecurityState>
+/\ lock = [soft |-> FALSE, mism |-> 0, policyMism |-> 0]
+/\ walk = [open |-> FALSE, chan |-> "nochan"]
+/\ sys = [warmBoot |-> FALSE, clock |-> 0]
+/\ pres = [ scope |-> "none",
+  cancelReq |-> FALSE,
+  cancelBy |-> "none",
+  granted |-> "none",
+  pressing |-> TRUE,
+  spent |-> FALSE,
+  usedBy |-> "none" ]
+/\ store = [seed |-> TRUE, cred |-> {}, rpent |-> {}]
+/\ viol = {}
+/\ plat = [held |-> FALSE, verifies |-> FALSE, revoked |-> FALSE]
+/\ snap = [ pin |-> FALSE,
+  seen |-> FALSE,
+  auv |-> FALSE,
+  surv |-> {},
+  seed |-> FALSE,
+  sealed |-> FALSE ]
+/\ upSpent = FALSE
+/\ op = [kind |-> "setpin", t |-> "fido", rp |-> "norp", step |-> 0]
+/\ pin = [set |-> FALSE, retries |-> 8, everSet |-> FALSE]
+/\ ram = FALSE
+/\ tok = [rp |-> "norp", live |-> FALSE, perms |-> {}]
+/\ gate = [ ppuat |-> FALSE,
+  ppuatStale |-> FALSE,
+  alwaysUv |-> FALSE,
+  backupSealed |-> FALSE,
+  forceChange |-> FALSE ]
+
+State 4: <SetPinClearPpuat line 833, col 5 to line 840, col 41 of module RSKeySecurityState>
+/\ lock = [soft |-> FALSE, mism |-> 0, policyMism |-> 0]
+/\ walk = [open |-> FALSE, chan |-> "nochan"]
+/\ sys = [warmBoot |-> FALSE, clock |-> 0]
+/\ pres = [ scope |-> "none",
+  cancelReq |-> FALSE,
+  cancelBy |-> "none",
+  granted |-> "none",
+  pressing |-> TRUE,
+  spent |-> FALSE,
+  usedBy |-> "none" ]
+/\ store = [seed |-> TRUE, cred |-> {}, rpent |-> {}]
+/\ viol = {}
+/\ plat = [held |-> FALSE, verifies |-> FALSE, revoked |-> FALSE]
+/\ snap = [ pin |-> FALSE,
+  seen |-> FALSE,
+  auv |-> FALSE,
+  surv |-> {},
+  seed |-> FALSE,
+  sealed |-> FALSE ]
+/\ upSpent = FALSE
+/\ op = [kind |-> "setpin", t |-> "fido", rp |-> "norp", step |-> 1]
+/\ pin = [set |-> FALSE, retries |-> 8, everSet |-> FALSE]
+/\ ram = FALSE
+/\ tok = [rp |-> "norp", live |-> FALSE, perms |-> {}]
+/\ gate = [ ppuat |-> FALSE,
+  ppuatStale |-> TRUE,
+  alwaysUv |-> FALSE,
+  backupSealed |-> FALSE,
+  forceChange |-> FALSE ]
+
+State 5: <SetPinWrite line 843, col 5 to line 855, col 76 of module RSKeySecurityState>
+/\ lock = [soft |-> FALSE, mism |-> 0, policyMism |-> 0]
+/\ walk = [open |-> FALSE, chan |-> "nochan"]
+/\ sys = [warmBoot |-> FALSE, clock |-> 0]
+/\ pres = [ scope |-> "none",
+  cancelReq |-> FALSE,
+  cancelBy |-> "none",
+  granted |-> "none",
+  pressing |-> TRUE,
+  spent |-> FALSE,
+  usedBy |-> "none" ]
+/\ store = [seed |-> TRUE, cred |-> {}, rpent |-> {}]
+/\ viol = {}
+/\ plat = [held |-> FALSE, verifies |-> FALSE, revoked |-> FALSE]
+/\ snap = [ pin |-> FALSE,
+  seen |-> FALSE,
+  auv |-> FALSE,
+  surv |-> {},
+  seed |-> FALSE,
+  sealed |-> FALSE ]
+/\ upSpent = FALSE
+/\ op = [kind |-> "none", t |-> "none", rp |-> "norp", step |-> 0]
+/\ pin = [set |-> TRUE, retries |-> 8, everSet |-> TRUE]
+/\ ram = FALSE
+/\ tok = [rp |-> "norp", live |-> FALSE, perms |-> {}]
+/\ gate = [ ppuat |-> FALSE,
+  ppuatStale |-> TRUE,
+  alwaysUv |-> FALSE,
+  backupSealed |-> FALSE,
+  forceChange |-> FALSE ]
+
+State 6: <MintPpuat line 727, col 5 to line 731, col 26 of module RSKeySecurityState>
+/\ lock = [soft |-> FALSE, mism |-> 0, policyMism |-> 0]
+/\ walk = [open |-> FALSE, chan |-> "nochan"]
+/\ sys = [warmBoot |-> FALSE, clock |-> 0]
+/\ pres = [ scope |-> "none",
+  cancelReq |-> FALSE,
+  cancelBy |-> "none",
+  granted |-> "none",
+  pressing |-> TRUE,
+  spent |-> FALSE,
+  usedBy |-> "none" ]
+/\ store = [seed |-> TRUE, cred |-> {}, rpent |-> {}]
+/\ viol = {}
+/\ plat = [held |-> FALSE, verifies |-> FALSE, revoked |-> FALSE]
+/\ snap = [ pin |-> FALSE,
+  seen |-> FALSE,
+  auv |-> FALSE,
+  surv |-> {},
+  seed |-> FALSE,
+  sealed |-> FALSE ]
+/\ upSpent = FALSE
+/\ op = [kind |-> "none", t |-> "none", rp |-> "norp", step |-> 0]
+/\ pin = [set |-> TRUE, retries |-> 8, everSet |-> TRUE]
+/\ ram = FALSE
+/\ tok = [rp |-> "norp", live |-> FALSE, perms |-> {}]
+/\ gate = [ ppuat |-> TRUE,
+  ppuatStale |-> FALSE,
+  alwaysUv |-> FALSE,
+  backupSealed |-> FALSE,
+  forceChange |-> FALSE ]
+
+State 7: <ResetStart line 1272, col 5 to line 1281, col 35 of module RSKeySecurityState>
+/\ lock = [soft |-> FALSE, mism |-> 0, policyMism |-> 0]
+/\ walk = [open |-> FALSE, chan |-> "nochan"]
+/\ sys = [warmBoot |-> FALSE, clock |-> 0]
+/\ pres = [ scope |-> "fido",
+  cancelReq |-> FALSE,
+  cancelBy |-> "none",
+  granted |-> "none",
+  pressing |-> TRUE,
+  spent |-> FALSE,
+  usedBy |-> "none" ]
+/\ store = [seed |-> TRUE, cred |-> {}, rpent |-> {}]
+/\ viol = {}
+/\ plat = [held |-> FALSE, verifies |-> FALSE, revoked |-> FALSE]
+/\ snap = [ pin |-> FALSE,
+  seen |-> FALSE,
+  auv |-> FALSE,
+  surv |-> {},
+  seed |-> FALSE,
+  sealed |-> FALSE ]
+/\ upSpent = FALSE
+/\ op = [kind |-> "reset", t |-> "fido", rp |-> "norp", step |-> 0]
+/\ pin = [set |-> TRUE, retries |-> 8, everSet |-> TRUE]
+/\ ram = FALSE
+/\ tok = [rp |-> "norp", live |-> FALSE, perms |-> {}]
+/\ gate = [ ppuat |-> TRUE,
+  ppuatStale |-> FALSE,
+  alwaysUv |-> FALSE,
+  backupSealed |-> FALSE,
+  forceChange |-> FALSE ]
+
+State 8: <TouchConfirm line 419, col 5 to line 434, col 35 of module RSKeySecurityState>
+/\ lock = [soft |-> FALSE, mism |-> 0, policyMism |-> 0]
+/\ walk = [open |-> FALSE, chan |-> "nochan"]
+/\ sys = [warmBoot |-> FALSE, clock |-> 0]
+/\ pres = [ scope |-> "fido",
+  cancelReq |-> FALSE,
+  cancelBy |-> "none",
+  granted |-> "confirm",
+  pressing |-> FALSE,
+  spent |-> FALSE,
+  usedBy |-> "none" ]
+/\ store = [seed |-> TRUE, cred |-> {}, rpent |-> {}]
+/\ viol = {}
+/\ plat = [held |-> FALSE, verifies |-> FALSE, revoked |-> FALSE]
+/\ snap = [ pin |-> FALSE,
+  seen |-> FALSE,
+  auv |-> FALSE,
+  surv |-> {},
+  seed |-> FALSE,
+  sealed |-> FALSE ]
+/\ upSpent = FALSE
+/\ op = [kind |-> "reset", t |-> "fido", rp |-> "norp", step |-> 0]
+/\ pin = [set |-> TRUE, retries |-> 8, everSet |-> TRUE]
+/\ ram = FALSE
+/\ tok = [rp |-> "norp", live |-> FALSE, perms |-> {}]
+/\ gate = [ ppuat |-> TRUE,
+  ppuatStale |-> FALSE,
+  alwaysUv |-> FALSE,
+  backupSealed |-> FALSE,
+  forceChange |-> FALSE ]
+
+State 9: <ResetConfirmed line 1301, col 5 to line 1342, col 49 of module RSKeySecurityState>
+/\ lock = [soft |-> FALSE, mism |-> 0, policyMism |-> 0]
+/\ walk = [open |-> FALSE, chan |-> "nochan"]
+/\ sys = [warmBoot |-> FALSE, clock |-> 0]
+/\ pres = [ scope |-> "fido",
+  cancelReq |-> FALSE,
+  cancelBy |-> "none",
+  granted |-> "confirm",
+  pressing |-> FALSE,
+  spent |-> FALSE,
+  usedBy |-> "none" ]
+/\ store = [seed |-> TRUE, cred |-> {}, rpent |-> {}]
+/\ viol = {}
+/\ plat = [held |-> FALSE, verifies |-> FALSE, revoked |-> TRUE]
+/\ snap = [ pin |-> TRUE,
+  seen |-> TRUE,
+  auv |-> FALSE,
+  surv |-> {},
+  seed |-> TRUE,
+  sealed |-> FALSE ]
+/\ upSpent = FALSE
+/\ op = [kind |-> "reset", t |-> "fido", rp |-> "norp", step |-> 1]
+/\ pin = [set |-> TRUE, retries |-> 8, everSet |-> TRUE]
+/\ ram = FALSE
+/\ tok = [rp |-> "norp", live |-> FALSE, perms |-> {}]
+/\ gate = [ ppuat |-> TRUE,
+  ppuatStale |-> FALSE,
+  alwaysUv |-> FALSE,
+  backupSealed |-> FALSE,
+  forceChange |-> FALSE ]
+
+State 10: <ResetSweepSecrets line 1380, col 5 to line 1420, col 26 of module RSKeySecurityState>
+/\ lock = [soft |-> FALSE, mism |-> 0, policyMism |-> 0]
+/\ walk = [open |-> FALSE, chan |-> "nochan"]
+/\ sys = [warmBoot |-> FALSE, clock |-> 0]
+/\ pres = [ scope |-> "fido",
+  cancelReq |-> FALSE,
+  cancelBy |-> "none",
+  granted |-> "confirm",
+  pressing |-> FALSE,
+  spent |-> FALSE,
+  usedBy |-> "none" ]
+/\ store = [seed |-> FALSE, cred |-> {}, rpent |-> {}]
+/\ viol = {}
+/\ plat = [held |-> FALSE, verifies |-> FALSE, revoked |-> TRUE]
+/\ snap = [ pin |-> TRUE,
+  seen |-> TRUE,
+  auv |-> FALSE,
+  surv |-> {},
+  seed |-> FALSE,
+  sealed |-> FALSE ]
+/\ upSpent = FALSE
+/\ op = [kind |-> "reset", t |-> "fido", rp |-> "norp", step |-> 1]
+/\ pin = [set |-> TRUE, retries |-> 8, everSet |-> TRUE]
+/\ ram = FALSE
+/\ tok = [rp |-> "norp", live |-> FALSE, perms |-> {}]
+/\ gate = [ ppuat |-> TRUE,
+  ppuatStale |-> FALSE,
+  alwaysUv |-> FALSE,
+  backupSealed |-> FALSE,
+  forceChange |-> FALSE ]
+
+State 11: <ResetSweepSecrets line 1380, col 5 to line 1420, col 26 of module RSKeySecurityState>
+/\ lock = [soft |-> FALSE, mism |-> 0, policyMism |-> 0]
+/\ walk = [open |-> FALSE, chan |-> "nochan"]
+/\ sys = [warmBoot |-> FALSE, clock |-> 0]
+/\ pres = [ scope |-> "fido",
+  cancelReq |-> FALSE,
+  cancelBy |-> "none",
+  granted |-> "confirm",
+  pressing |-> FALSE,
+  spent |-> FALSE,
+  usedBy |-> "none" ]
+/\ store = [seed |-> FALSE, cred |-> {}, rpent |-> {}]
+/\ viol = {}
+/\ plat = [held |-> FALSE, verifies |-> FALSE, revoked |-> TRUE]
+/\ snap = [ pin |-> TRUE,
+  seen |-> TRUE,
+  auv |-> FALSE,
+  surv |-> {},
+  seed |-> FALSE,
+  sealed |-> FALSE ]
+/\ upSpent = FALSE
+/\ op = [kind |-> "reset", t |-> "fido", rp |-> "norp", step |-> 2]
+/\ pin = [set |-> TRUE, retries |-> 8, everSet |-> TRUE]
+/\ ram = FALSE
+/\ tok = [rp |-> "norp", live |-> FALSE, perms |-> {}]
+/\ gate = [ ppuat |-> TRUE,
+  ppuatStale |-> FALSE,
+  alwaysUv |-> FALSE,
+  backupSealed |-> FALSE,
+  forceChange |-> FALSE ]
+
+State 12: <ResetSweepGates line 1434, col 5 to line 1457, col 32 of module RSKeySecurityState>
+/\ lock = [soft |-> FALSE, mism |-> 0, policyMism |-> 0]
+/\ walk = [open |-> FALSE, chan |-> "nochan"]
+/\ sys = [warmBoot |-> FALSE, clock |-> 0]
+/\ pres = [ scope |-> "fido",
+  cancelReq |-> FALSE,
+  cancelBy |-> "none",
+  granted |-> "confirm",
+  pressing |-> FALSE,
+  spent |-> FALSE,
+  usedBy |-> "none" ]
+/\ store = [seed |-> FALSE, cred |-> {}, rpent |-> {}]
+/\ viol = {}
+/\ plat = [held |-> FALSE, verifies |-> FALSE, revoked |-> TRUE]
+/\ snap = [ pin |-> TRUE,
+  seen |-> TRUE,
+  auv |-> FALSE,
+  surv |-> {},
+  seed |-> FALSE,
+  sealed |-> FALSE ]
+/\ upSpent = FALSE
+/\ op = [kind |-> "reset", t |-> "fido", rp |-> "norp", step |-> 2]
+/\ pin = [set |-> FALSE, retries |-> 8, everSet |-> FALSE]
+/\ ram = FALSE
+/\ tok = [rp |-> "norp", live |-> FALSE, perms |-> {}]
+/\ gate = [ ppuat |-> TRUE,
+  ppuatStale |-> FALSE,
+  alwaysUv |-> FALSE,
+  backupSealed |-> FALSE,
+  forceChange |-> FALSE ]
+
+State 13: <ResetAborts line 1485, col 5 to line 1489, col 41 of module RSKeySecurityState>
+/\ lock = [soft |-> FALSE, mism |-> 0, policyMism |-> 0]
+/\ walk = [open |-> FALSE, chan |-> "nochan"]
+/\ sys = [warmBoot |-> FALSE, clock |-> 0]
+/\ pres = [ scope |-> "none",
+  cancelReq |-> FALSE,
+  cancelBy |-> "none",
+  granted |-> "none",
+  pressing |-> FALSE,
+  spent |-> FALSE,
+  usedBy |-> "none" ]
+/\ store = [seed |-> FALSE, cred |-> {}, rpent |-> {}]
+/\ viol = {}
+/\ plat = [held |-> FALSE, verifies |-> FALSE, revoked |-> TRUE]
+/\ snap = [ pin |-> TRUE,
+  seen |-> TRUE,
+  auv |-> FALSE,
+  surv |-> {},
+  seed |-> FALSE,
+  sealed |-> FALSE ]
+/\ upSpent = FALSE
+/\ op = [kind |-> "none", t |-> "none", rp |-> "norp", step |-> 0]
+/\ pin = [set |-> FALSE, retries |-> 8, everSet |-> FALSE]
+/\ ram = FALSE
+/\ tok = [rp |-> "norp", live |-> FALSE, perms |-> {}]
+/\ gate = [ ppuat |-> TRUE,
+  ppuatStale |-> FALSE,
+  alwaysUv |-> FALSE,
+  backupSealed |-> FALSE,
+  forceChange |-> FALSE ]
+
+State 14: <SetPinStart line 815, col 5 to line 821, col 35 of module RSKeySecurityState>
+/\ lock = [soft |-> FALSE, mism |-> 0, policyMism |-> 0]
+/\ walk = [open |-> FALSE, chan |-> "nochan"]
+/\ sys = [warmBoot |-> FALSE, clock |-> 0]
+/\ pres = [ scope |-> "none",
+  cancelReq |-> FALSE,
+  cancelBy |-> "none",
+  granted |-> "none",
+  pressing |-> FALSE,
+  spent |-> FALSE,
+  usedBy |-> "none" ]
+/\ store = [seed |-> FALSE, cred |-> {}, rpent |-> {}]
+/\ viol = {}
+/\ plat = [held |-> FALSE, verifies |-> FALSE, revoked |-> TRUE]
+/\ snap = [ pin |-> TRUE,
+  seen |-> TRUE,
+  auv |-> FALSE,
+  surv |-> {},
+  seed |-> FALSE,
+  sealed |-> FALSE ]
+/\ upSpent = FALSE
+/\ op = [kind |-> "setpin", t |-> "fido", rp |-> "norp", step |-> 0]
+/\ pin = [set |-> FALSE, retries |-> 8, everSet |-> FALSE]
+/\ ram = FALSE
+/\ tok = [rp |-> "norp", live |-> FALSE, perms |-> {}]
+/\ gate = [ ppuat |-> TRUE,
+  ppuatStale |-> FALSE,
+  alwaysUv |-> FALSE,
+  backupSealed |-> FALSE,
+  forceChange |-> FALSE ]
+
+State 15: <SetPinClearPpuat line 833, col 5 to line 840, col 41 of module RSKeySecurityState>
+/\ lock = [soft |-> FALSE, mism |-> 0, policyMism |-> 0]
+/\ walk = [open |-> FALSE, chan |-> "nochan"]
+/\ sys = [warmBoot |-> FALSE, clock |-> 0]
+/\ pres = [ scope |-> "none",
+  cancelReq |-> FALSE,
+  cancelBy |-> "none",
+  granted |-> "none",
+  pressing |-> FALSE,
+  spent |-> FALSE,
+  usedBy |-> "none" ]
+/\ store = [seed |-> FALSE, cred |-> {}, rpent |-> {}]
+/\ viol = {}
+/\ plat = [held |-> FALSE, verifies |-> FALSE, revoked |-> TRUE]
+/\ snap = [ pin |-> TRUE,
+  seen |-> TRUE,
+  auv |-> FALSE,
+  surv |-> {},
+  seed |-> FALSE,
+  sealed |-> FALSE ]
+/\ upSpent = FALSE
+/\ op = [kind |-> "setpin", t |-> "fido", rp |-> "norp", step |-> 1]
+/\ pin = [set |-> FALSE, retries |-> 8, everSet |-> FALSE]
+/\ ram = FALSE
+/\ tok = [rp |-> "norp", live |-> FALSE, perms |-> {}]
+/\ gate = [ ppuat |-> TRUE,
+  ppuatStale |-> TRUE,
+  alwaysUv |-> FALSE,
+  backupSealed |-> FALSE,
+  forceChange |-> FALSE ]
+
+5521139 states generated, 599634 distinct states found, 236867 states left on queue.
+The depth of the complete state graph search is 15.
+The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 28 and the 95th percentile is 5).
+Finished in 11s at (2026-08-30 02:02:02)

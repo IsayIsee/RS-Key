@@ -1,0 +1,976 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 RS-Key contributors
+#
+# The half of the property × build-configuration matrix no derivation can
+# produce: what each cell's disposition IS. The axes are NOT here — columns come
+# out of nix/firmware.nix, firmware/Cargo.toml and firmware/boards/, rows out of
+# assurance/properties.toml, and scripts/matrix_gate.py derives both on every
+# run. A roster written down twice is a roster that rots; assurance/crates.toml's
+# header records the draft that enumerated crates from memory and missed four.
+#
+# Why the file exists at all: every claim this project makes reads as being about
+# "the firmware", and the firmware is nineteen flake packages, a handful of cargo
+# features no package expresses, and six board presets under both. A property
+# proved on the default build is otherwise silently asserted about images where
+# the thing it is about does not exist — the four `no-touch` packages remove the
+# physical-consent gate the P0-launch authorization properties are ABOUT.
+#
+# The five dispositions (roadmap §6 stage 0 п.2):
+#   covered       the registry's evidence was produced on this configuration.
+#                 That first sentence is the CLAIM; the rest is how it is
+#                 spelled, and reading the spelling alone is how this word goes
+#                 wrong. On any column but the default build the cell names the
+#                 `check.sh` rows that produced it, and the gate re-derives BOTH
+#                 halves: that those rows really build THIS image — same cargo
+#                 features, same knobs — and that they RAN some of the evidence
+#                 the registry derives for the property. The registry stores no
+#                 evidence field (properties.toml's own header says why), so the
+#                 second half is `assurance_gate`'s derivation: a Kani harness,
+#                 a fuzz target, a `tests/*.py`. A crate's own unit tests are in
+#                 none of those classes, which is why `cargo test -p rsk-fido
+#                 --features fips-profile` cannot carry the word — and the gate
+#                 ran without that half long enough for 80 `gap` cells to sit
+#                 one edit away from `covered` on eight rows of exactly that
+#                 shape. Two things a named row cannot be: one whose `-p` and
+#                 `--features` are inert because its program is not cargo (a
+#                 `python tests/emu.py … -p rsk-fido --features fips-profile` row
+#                 carried four cells to `covered`), and a `cargo test` filtered
+#                 on a name no `#[test]` answers to — `running 0 tests`, rc 0.
+#                 There is no prose spelling: `covered` asserts more than
+#                 `equivalent` does, and it used to assert it on nothing
+#   equivalent    it compiles the property's code as another column does;
+#                 `same_as` names that column and `basis` must be
+#                 `same-cargo-features`, which the gate CHECKS against the
+#                 derived per-crate feature closure. There is deliberately no
+#                 second way to spell an equivalence: "the names look similar"
+#                 is exactly how a false one gets written. One column carries at
+#                 most ONE `equivalent` cell — the KEY IS THE COLUMN, and it was
+#                 the pair (column, `same_as`): closure sameness is an
+#                 equivalence relation, so a second cell had only to name a
+#                 different identical-closure column to mint a new key, and a
+#                 second `firmware-16mb` cell pointing at `waveshare-one` (which
+#                 chains to the same `firmware`) added 5 cells at EXIT=0. A
+#                 second cell is one cell split in two whatever it names, and the
+#                 halves are free to argue opposite things
+#   conditional   claimed only under a stated condition
+#   out-of-scope  the claim is not made here — the code is absent, or the gate
+#                 the property is about is compiled out. The compiled-out half
+#                 names `feature` and the `cfg` site(s), and the site has to sit
+#                 in the property's OWN owners. Where it sits in `firmware`
+#                 instead — the glue, which carries 1 of the 40 rows — the cell
+#                 also names the `hook` that site implements for them, and the
+#                 gate derives both ends: the feature must gate code INSIDE that
+#                 `impl <hook> for …`, and every owner crate must name the hook.
+#                 `firmware` was in every property's radius unconditionally, and
+#                 that admitted the touch button as the CTAPHID reassembler's
+#                 gate: SEC-TRANS-001/002/003 across the nine columns whose
+#                 feature has a `firmware/` site, 27 cells, EXIT=0
+#   gap           undecided. A cell nobody names is one of these, and the
+#                 column then owes a [[question]] below. A matrix full of honest
+#                 gaps is the deliverable; invented equivalences are the failure
+#
+# A [[cell]] names explicit lists on both axes and never a wildcard, so a new
+# column or a new property is NOT swept into an old judgement — it arrives as
+# `gap` cells and a docs/assurance-matrix.md that no longer matches its
+# generator, which is the check.sh row going red.
+#
+# The rule that would retire most of this file, MEASURED and not taken: an
+# `equivalent` derived over the OWNER crates' closure instead of the whole
+# workspace's — a cell clears wherever the crates carrying the property's tag
+# compile as they do on the default build, whatever else moved. Measured here on
+# 2026-09-02, against this ledger: it clears 733 of the 954 `gap` cells, and it
+# reaches every one of the 28 columns that carry a gap; the shipped rule, run
+# over the whole workspace, clears 190 of the same 954. 77% of the matrix on one
+# derivation, which would be the largest weakening this row could take, so it is
+# a programme decision and not a gate edit.
+# Why not taken: roadmap §8A п.3 lets a CONCRETE equivalence proof stand in
+# for a repeated one, and a closure comparison is not one. It cannot see a
+# property whose own evidence is itself feature-conditional, and it cannot see a
+# violation that arrives from composition OUTSIDE the owner crate — the glue that
+# wires the applets is `firmware`, whose closure the rule discards by
+# construction, and `firmware` is exactly where no-touch's presence gate lives.
+# What would settle it is per row and not per rule: for a given property, an
+# argument that its statement is closed under everything the column changes
+# outside its owners — which SEC-STORE-* cannot make on a column that moves the
+# flash geometry, and SEC-TRANS-001..003 might make on one that does not.
+
+# ---- Tranches ---------------------------------------------------------------
+#
+# Roadmap §5. Held TOTAL over assurance/properties.toml by the gate: a property
+# in no tranche is a row the matrix would silently have no opinion on. The rows
+# of the matrix are p0-launch + p0b — the P0 family; p1 and out-of-queue are
+# carried only so the classification is exhaustive.
+
+[tranche]
+# §5.1 — the three blocking vertical slices.
+p0-launch = [
+  "SEC-FIDO-001", "SEC-FIDO-002", "SEC-FIDO-003", "SEC-FIDO-007", "SEC-FIDO-008",
+  "SEC-FIDO-004", "SEC-FIDO-005", "SEC-FIDO-006",
+  "SEC-FIDO-006A", "SEC-FIDO-006B", "SEC-FIDO-006C",
+  "SEC-STORE-001", "SEC-STORE-002", "SEC-STORE-003",
+  "SEC-STORE-004", "SEC-STORE-005", "SEC-STORE-006",
+]
+# §5.2 — the next security-critical queue.
+p0b = [
+  "SEC-LAT-001", "SEC-LAT-002", "SEC-LAT-003",
+  "SEC-POL-001", "SEC-POL-002", "SEC-POL-003",
+  "SEC-POL-004", "SEC-POL-005", "SEC-POL-006",
+  "SEC-SEAM-001", "SEC-SEAM-002", "SEC-SEAM-003", "SEC-SEAM-006",
+  "SEC-ADM-002", "SEC-ADM-004",
+  "SEC-DISP-001", "SEC-DISP-002", "SEC-DISP-003",
+  "SEC-BOOT-001", "SEC-BOOT-002",
+  "SEC-TRANS-001", "SEC-TRANS-002", "SEC-TRANS-003",
+]
+# §5.3 — conformance and availability, after the P0 family.
+p1 = [
+  "SEC-ADM-001", "SEC-ADM-003",
+  "SEC-SEAM-004", "SEC-SEAM-005",
+  "SEC-FIDO-009", "SEC-FIDO-L01", "SEC-FIDO-L02", "SEC-FIDO-L03",
+]
+# §5.5 — the rows that are a different AXIS, not a lower priority: correspondence
+# obligations, which are the WAY a property earns evidence, and the two rulings.
+out-of-queue = [
+  "SEC-REF-001", "SEC-REF-002", "SEC-REF-003", "SEC-REF-004",
+  "SEC-REF-005", "SEC-REF-006",
+  "SEC-TRACE-001", "SEC-TRACE-002", "SEC-TRACE-004",
+  "SEC-RISK-001", "SEC-RISK-002",
+]
+
+# ---- Dispositions -----------------------------------------------------------
+#
+# Order: the default build first, then the classes that are DERIVABLE (an absent
+# crate, an identical feature closure, a gate compiled out), then nothing. What
+# is left is `gap`, on purpose: a judgement nobody has made is not improved by
+# writing a word in the cell.
+#
+# An `equivalent` cell names exactly ONE column, because its `knob_delta` is per
+# column and the gate re-derives it: with the VALUES, so moving a board's
+# `flash.size_mb` from 4 to 16 reddens the cell rather than leaving a name list
+# that still matches.
+#
+# Why the board and geometry columns stop where they do, and it is measured
+# rather than recalled: 190 `gap` cells over seven columns sit on a column whose
+# derived feature closure is IDENTICAL to a column already disposed for that row,
+# so the gate would take an `equivalent` on any of them with no run of any kind.
+# None is closable, because the knob delta is what an equivalence still has to
+# survive, and the four arguments this file already makes cap every one of those
+# columns at exactly what is placed:
+#   geometry     `flash.size_mb`/`flash.kvmain_kb` (flake: `flashSize`/`kvmain`)
+#                off `firmware/build.rs`'s `DEFAULT_FLASH_SIZE` 4 MB /
+#                `DEFAULT_KVMAIN` 1408 K reaches the store, and lets through only
+#                the six in-RAM SEAM/TRANS statements
+#   presence     a GPIO source instead of BOOTSEL reaches the four rows whose
+#                statement QUANTIFIES OVER a presence decision, and nothing else.
+#                It used to be read as reaching the four reset clauses too, on
+#                the grounds that a reset is only ever reached through a touch —
+#                a REACHABILITY argument this file applies nowhere else, and
+#                cannot apply evenly: SEC-FIDO-003's own statement names `reset`
+#                among the invalidations it quantifies over, and it has been
+#                `equivalent` on this column since the cell was written, so the
+#                argument would have taken that row out too. The four clauses are
+#                about what a torn PREFIX of the reset leaves, and the presence
+#                gate is upstream of the first sweep
+#   LED, vidpid, display.*   reach no P0-family statement at all
+# `waveshare-one` earns all 40 because every knob it sets is the value `build.rs`
+# already resolves to, and `abrobot-4m` earns 36 because only its presence source
+# moves. Every other identical-closure column is at its cap. NO derivation can
+# check any of that — nothing static sees a smaller KV region — so it stays prose,
+# and the rule the gate CAN hold is the one above it: one `equivalent` cell per
+# COLUMN, which is what stops a second cell appended below a refusal from quietly
+# contradicting it. Widening an existing cell's `properties` is the way past it,
+# and that is the point — it puts the new rows beside the `why` that refuses the
+# rest, where a reader sees both halves of the judgement at once.
+
+[[cell]]
+# The image every piece of evidence in the registry was measured on.
+properties = [
+  "SEC-FIDO-001", "SEC-FIDO-002", "SEC-FIDO-003", "SEC-FIDO-004",
+  "SEC-FIDO-005", "SEC-FIDO-006", "SEC-FIDO-006A", "SEC-FIDO-006B",
+  "SEC-FIDO-006C", "SEC-FIDO-007", "SEC-FIDO-008", "SEC-STORE-001",
+  "SEC-STORE-002", "SEC-STORE-003", "SEC-STORE-004", "SEC-STORE-005",
+  "SEC-STORE-006", "SEC-LAT-001", "SEC-LAT-002", "SEC-LAT-003",
+  "SEC-POL-001", "SEC-POL-002", "SEC-POL-003", "SEC-POL-004", "SEC-POL-005",
+  "SEC-POL-006", "SEC-SEAM-001", "SEC-SEAM-002", "SEC-SEAM-003",
+  "SEC-SEAM-006", "SEC-ADM-002", "SEC-ADM-004", "SEC-BOOT-001",
+  "SEC-BOOT-002", "SEC-TRANS-001", "SEC-TRANS-002", "SEC-TRANS-003",
+]
+columns = ["firmware"]
+disposition = "covered"
+basis = "default-build"
+why = """
+The registry's evidence is this column's evidence: the models, Kani harnesses \
+and host tests behind these 37 statements are produced with no \
+`firmware/Cargo.toml` feature and no build knob, which is what makes this image \
+theirs, and `assurance/bundle/SEC-FIDO-001.toml` records the column by name. \
+Said that narrowly because the sentence it replaces — "every `formal/*.cfg`, \
+every Kani harness and every host test `scripts/check.sh` runs" — is refuted \
+three ways by the tree it is about: 5 of the 216 `formal/*.cfg` pin \
+`AlwaysUvShipped = TRUE`, which `assurance/assumptions.toml` calls the arm the \
+shipped image is NOT about; `scripts/kani.sh` appends `--features kani-soft` to \
+every proof run; and 11 `run_tests` rows carry a cargo feature, 10 of them a \
+`firmware` one. None of the three moves the disposition — those cfgs and rows \
+are evidence about the columns they name, and `kani-soft` is declared by the \
+`crates/` members and swaps a SHA backend Kani cannot model, so no column \
+derives from it — but all three had the strongest word in the vocabulary \
+resting on a sentence its own tree refutes, which is what a basis is supposed \
+to stop one record type over. It is still the one column where `covered` needs \
+no argument beyond the derivation, and the one whose evidence says nothing \
+about the other thirty."""
+
+[[cell]]
+# The trusted-display flow is `dep:`-gated; a key without a screen compiles none
+# of it. `check.sh`'s "display code absent from default image" row asserts the
+# same thing about the shipped ELF, from the other side.
+properties = [
+  "SEC-DISP-001", "SEC-DISP-002", "SEC-DISP-003",
+]
+columns = [
+  "firmware", "firmware-no-touch", "firmware-fips", "firmware-pqc",
+  "firmware-fips-pqc", "firmware-no-touch-pqc", "firmware-no-touch-fips",
+  "firmware-no-touch-fips-pqc", "firmware-strong-pin",
+  "firmware-strong-pin-pqc", "firmware-always-uv", "firmware-always-uv-pqc",
+  "firmware-strict-up", "firmware-strict-up-pqc", "firmware-pico",
+  "firmware-2mb", "firmware-16mb", "firmware-strict-config", "keygen-bench",
+  "core1-stats", "bench", "fido-conformance", "ea-conformance-rpid",
+  "largeblob-ext", "abrobot-16m", "abrobot-4m", "seeed-xiao", "tenstar-usb",
+  "waveshare-one", "waveshare-touch-lcd",
+]
+disposition = "out-of-scope"
+basis = "crate-absent"
+why = """
+`rsk-display` owns the ceremony and `rsk-ui` the screen model, and both are \
+`dep:`-gated behind `--features display`. The feature resolution the gate \
+re-runs puts neither crate in any of these builds, so there is no ceremony to \
+make a claim about. Note what this does NOT say: `waveshare-touch-lcd` is the \
+trusted-display BOARD and still lands here, because a board preset sets knobs \
+and never a cargo feature — the panel pins are compiled as inert constants."""
+
+[[cell]]
+# A pinned USB identity, and nothing else.
+properties = [
+  "SEC-FIDO-001", "SEC-FIDO-002", "SEC-FIDO-003", "SEC-FIDO-004",
+  "SEC-FIDO-005", "SEC-FIDO-006", "SEC-FIDO-006A", "SEC-FIDO-006B",
+  "SEC-FIDO-006C", "SEC-FIDO-007", "SEC-FIDO-008", "SEC-STORE-001",
+  "SEC-STORE-002", "SEC-STORE-003", "SEC-STORE-004", "SEC-STORE-005",
+  "SEC-STORE-006", "SEC-LAT-001", "SEC-LAT-002", "SEC-LAT-003",
+  "SEC-POL-001", "SEC-POL-002", "SEC-POL-003", "SEC-POL-004", "SEC-POL-005",
+  "SEC-POL-006", "SEC-SEAM-001", "SEC-SEAM-002", "SEC-SEAM-003",
+  "SEC-SEAM-006", "SEC-ADM-002", "SEC-ADM-004", "SEC-BOOT-001",
+  "SEC-BOOT-002", "SEC-TRANS-001", "SEC-TRANS-002", "SEC-TRANS-003",
+]
+columns = ["firmware-pico"]
+same_as = "firmware"
+knob_delta = [
+  "vidpid=Pico",
+]
+disposition = "equivalent"
+basis = "same-cargo-features"
+why = """
+Identical per-crate cargo-feature closure — the gate re-derives it rather than \
+taking this sentence's word — so the whole delta is the one knob above, which \
+`firmware/build.rs` resolves to the pair `0x2E8A:0x10FD`; the descriptor \
+strings swap only on the Yubico VID. No P0-family statement is about the \
+reported identity: the CTAPHID rules key off channel ids, and the `USB_ENABLED` \
+mask SEC-ADM-004 is about is a persisted record, not a descriptor. The one \
+consequence that is not purely cosmetic is that the OpenPGP AID vendor follows \
+the effective VID — and no row here depends on it, because `SEC-SEAM-001` \
+selects on the RID prefix. `build.rs` says the rest in as many words: the USB \
+identity is cosmetic, never a security control."""
+
+[[cell]]
+# The default image under a board name.
+properties = [
+  "SEC-FIDO-001", "SEC-FIDO-002", "SEC-FIDO-003", "SEC-FIDO-004",
+  "SEC-FIDO-005", "SEC-FIDO-006", "SEC-FIDO-006A", "SEC-FIDO-006B",
+  "SEC-FIDO-006C", "SEC-FIDO-007", "SEC-FIDO-008", "SEC-STORE-001",
+  "SEC-STORE-002", "SEC-STORE-003", "SEC-STORE-004", "SEC-STORE-005",
+  "SEC-STORE-006", "SEC-LAT-001", "SEC-LAT-002", "SEC-LAT-003",
+  "SEC-POL-001", "SEC-POL-002", "SEC-POL-003", "SEC-POL-004", "SEC-POL-005",
+  "SEC-POL-006", "SEC-SEAM-001", "SEC-SEAM-002", "SEC-SEAM-003",
+  "SEC-SEAM-006", "SEC-ADM-002", "SEC-ADM-004", "SEC-BOOT-001",
+  "SEC-BOOT-002", "SEC-TRANS-001", "SEC-TRANS-002", "SEC-TRANS-003",
+]
+columns = ["waveshare-one"]
+same_as = "firmware"
+knob_delta = [
+  "flash.kvmain_kb=1408", "flash.size_mb=4", "led.kind=ws2812",
+  "led.order=rgb", "led.pin=16", "presence.source=bootsel",
+  "usb.vidpid=RSKey",
+]
+disposition = "equivalent"
+basis = "same-cargo-features"
+why = """
+Identical cargo-feature closure, and every knob listed above is the value \
+`firmware/build.rs` already resolves to when the knob is unset: `VIDPID=RSKey`, \
+`LED_KIND=ws2812` `rgb` on GPIO16, BOOTSEL presence, `DEFAULT_FLASH_SIZE` 4 MB \
+with `DEFAULT_KVMAIN` 1408 K. `BOARD=waveshare-one` is the default image under \
+a board name, which is why it is the only board that earns the whole column — \
+and because the delta carries the VALUES, a preset that drifts off one of those \
+defaults stops earning it."""
+
+[[cell]]
+# Default flash geometry; the deltas are the LED and the presence SOURCE.
+properties = [
+  "SEC-FIDO-003", "SEC-FIDO-004", "SEC-FIDO-005", "SEC-FIDO-006",
+  "SEC-FIDO-006A", "SEC-FIDO-006B", "SEC-FIDO-006C", "SEC-FIDO-007",
+  "SEC-FIDO-008", "SEC-STORE-001", "SEC-STORE-002", "SEC-STORE-003",
+  "SEC-STORE-004", "SEC-STORE-005", "SEC-STORE-006", "SEC-LAT-001",
+  "SEC-LAT-002", "SEC-LAT-003", "SEC-POL-001", "SEC-POL-002", "SEC-POL-003",
+  "SEC-POL-005", "SEC-POL-006", "SEC-SEAM-001", "SEC-SEAM-002",
+  "SEC-SEAM-003", "SEC-SEAM-006", "SEC-ADM-004", "SEC-BOOT-001",
+  "SEC-BOOT-002", "SEC-TRANS-001", "SEC-TRANS-002", "SEC-TRANS-003",
+]
+columns = ["abrobot-4m"]
+same_as = "firmware"
+knob_delta = [
+  "flash.kvmain_kb=1408", "flash.size_mb=4", "led.kind=ws2812",
+  "led.max_leds=4", "led.order=grb", "led.pin=16",
+  "presence.active_high=False", "presence.pin=23", "presence.source=gpio",
+  "usb.vidpid=RSKey",
+]
+disposition = "equivalent"
+basis = "same-cargo-features"
+why = """
+Identical cargo-feature closure AND the default flash geometry (4 MB, 1408 K \
+KV main), so the axis that could reach a persisted-state property is \
+unmoved. What is left is the LED backend, which reaches no P0-family \
+statement at all, and the presence SOURCE — a GPIO button on 23 instead of \
+BOOTSEL. FOUR rows are deliberately NOT in this list and stay `gap`: the \
+ones whose statement QUANTIFIES OVER a presence decision — SEC-FIDO-001's \
+gate, SEC-FIDO-002's per-transport touch, SEC-POL-004's confirmed physical \
+press and SEC-ADM-002's Confirmed operator. Claiming those while the \
+column's own question asks whether this button has BOOTSEL's semantics would \
+be the two halves of one cell disagreeing. The four reset clauses used to be \
+refused beside them, on the argument that an operator only ever REACHES a \
+reset through a touch, and that argument is withdrawn as the wrong KIND: it \
+is about reachability, and applied evenly it takes a row this cell already \
+claims — SEC-FIDO-003's own statement names `reset` among the invalidations \
+it quantifies over, and it has been in this list since the cell was written. \
+What the four clauses actually say is what a PREFIX of an authenticatorReset \
+leaves in the store, and `crates/rsk-fido/src/reset.rs` puts the whole \
+presence gate — `shows_confirm`, then the ceremony — ahead of the first \
+sweep, which samples no button. The source of the press decides whether the \
+sweep RUNS; the write ordering it is torn in the middle of is the same \
+compiled code at the same geometry. The one thing this does not claim is the \
+reverse direction: BOOTSEL sampling stalls XIP and a GPIO read does not, so \
+the column removes a hazard from the reset path rather than adding one."""
+
+[[cell]]
+properties = [
+  "SEC-SEAM-001", "SEC-SEAM-002", "SEC-SEAM-003", "SEC-TRANS-001",
+  "SEC-TRANS-002", "SEC-TRANS-003",
+]
+columns = ["firmware-2mb"]
+same_as = "firmware"
+knob_delta = [
+  "flashSize=2M", "kvmain=896K",
+]
+disposition = "equivalent"
+basis = "same-cargo-features"
+why = """
+Identical cargo-feature closure — the gate re-derives it — so the delta is the \
+knobs listed above: flash geometry, LED wiring, the presence pin, and the panel's \
+serial link. These six statements are about in-RAM state only: the applet \
+security status that lives for the duration of a selection, and the CTAPHID \
+reassembly buffer. \
+Neither reads `PK_FLASH_SIZE`/`PK_KVMAIN_LEN`: inside the firmware image \
+`firmware/src/flash_storage.rs` is their only consumer. Not in the tree — \
+`rsk-wipe/src/main.rs` reads `PK_FLASH_SIZE` too, from its own `build.rs`, \
+which is a separate binary and is what the next sentence is about. Every other \
+row on this column stays \
+`gap`, because the store IS what the geometry changes: `check.sh` rebuilds \
+`rsk-wipe` once per board because a change that stopped `BOARD` reaching the \
+wiper once left a 16 MB board's whole KV store standing behind a "successful" \
+wipe. Those rebuilds mean something only because of the row beside them, \
+`check.sh: rsk-wipe refuses an unknown flash size`, which fails a wiper that \
+links with no board at all — it used to fall back to 4 MB at EXIT=0, so the \
+per-board loop passed whether or not `BOARD` was reaching it. Cited with the \
+`check.sh:` prefix because that label carries no parentheses, and the shape \
+rule alone sees 52% of the row namespace.
+
+Re-decided when `display.spi_freq_hz` moved 62.5 -> 80 MHz with the PIO panel \
+transport, because that knob is no longer only a panel knob: the transport takes \
+its wire rate from `clk_sys / 2`, so this column now runs the whole part at \
+160 MHz where every other one runs 150. That is a real difference and it is \
+recorded in `docs/limitations.md`, but it does not reach these six. They are \
+statements about which state survives a selection and how a reassembly buffer is \
+bounded — no clause in `RSKeyAppletSeams` or `RSKeyTransport` quantifies over \
+time, a rate, or a deadline, so a core that retires instructions faster cannot \
+make one of them true or false. A property that DID depend on timing would owe a \
+`conditional` here instead, and none of the six is one."""
+
+[[cell]]
+properties = [
+  "SEC-SEAM-001", "SEC-SEAM-002", "SEC-SEAM-003", "SEC-TRANS-001",
+  "SEC-TRANS-002", "SEC-TRANS-003",
+]
+columns = ["firmware-16mb"]
+same_as = "firmware"
+knob_delta = [
+  "flashSize=16M",
+]
+disposition = "equivalent"
+basis = "same-cargo-features"
+why = """
+Identical cargo-feature closure — the gate re-derives it — so the delta is the \
+knobs listed above, all of them flash geometry, LED wiring or the presence pin. \
+These six statements are about in-RAM state only: the applet security status \
+that lives for the duration of a selection, and the CTAPHID reassembly buffer. \
+Neither reads `PK_FLASH_SIZE`/`PK_KVMAIN_LEN`: inside the firmware image \
+`firmware/src/flash_storage.rs` is their only consumer. Not in the tree — \
+`rsk-wipe/src/main.rs` reads `PK_FLASH_SIZE` too, from its own `build.rs`, \
+which is a separate binary and is what the next sentence is about. Every other \
+row on this column stays \
+`gap`, because the store IS what the geometry changes: `check.sh` rebuilds \
+`rsk-wipe` once per board because a change that stopped `BOARD` reaching the \
+wiper once left a 16 MB board's whole KV store standing behind a "successful" \
+wipe. Those rebuilds mean something only because of the row beside them, \
+`check.sh: rsk-wipe refuses an unknown flash size`, which fails a wiper that \
+links with no board at all — it used to fall back to 4 MB at EXIT=0, so the \
+per-board loop passed whether or not `BOARD` was reaching it. Cited with the \
+`check.sh:` prefix because that label carries no parentheses, and the shape \
+rule alone sees 52% of the row namespace."""
+
+[[cell]]
+properties = [
+  "SEC-SEAM-001", "SEC-SEAM-002", "SEC-SEAM-003", "SEC-TRANS-001",
+  "SEC-TRANS-002", "SEC-TRANS-003",
+]
+columns = ["abrobot-16m"]
+same_as = "firmware"
+knob_delta = [
+  "flash.kvmain_kb=1408", "flash.size_mb=16", "led.kind=ws2812",
+  "led.max_leds=4", "led.order=grb", "led.pin=16",
+  "presence.active_high=False", "presence.pin=23", "presence.source=gpio",
+  "usb.vidpid=RSKey",
+]
+disposition = "equivalent"
+basis = "same-cargo-features"
+why = """
+Identical cargo-feature closure — the gate re-derives it — so the delta is the \
+knobs listed above, all of them flash geometry, LED wiring or the presence pin. \
+These six statements are about in-RAM state only: the applet security status \
+that lives for the duration of a selection, and the CTAPHID reassembly buffer. \
+Neither reads `PK_FLASH_SIZE`/`PK_KVMAIN_LEN`: inside the firmware image \
+`firmware/src/flash_storage.rs` is their only consumer. Not in the tree — \
+`rsk-wipe/src/main.rs` reads `PK_FLASH_SIZE` too, from its own `build.rs`, \
+which is a separate binary and is what the next sentence is about. Every other \
+row on this column stays \
+`gap`, because the store IS what the geometry changes: `check.sh` rebuilds \
+`rsk-wipe` once per board because a change that stopped `BOARD` reaching the \
+wiper once left a 16 MB board's whole KV store standing behind a "successful" \
+wipe. Those rebuilds mean something only because of the row beside them, \
+`check.sh: rsk-wipe refuses an unknown flash size`, which fails a wiper that \
+links with no board at all — it used to fall back to 4 MB at EXIT=0, so the \
+per-board loop passed whether or not `BOARD` was reaching it. Cited with the \
+`check.sh:` prefix because that label carries no parentheses, and the shape \
+rule alone sees 52% of the row namespace."""
+
+[[cell]]
+properties = [
+  "SEC-SEAM-001", "SEC-SEAM-002", "SEC-SEAM-003", "SEC-TRANS-001",
+  "SEC-TRANS-002", "SEC-TRANS-003",
+]
+columns = ["seeed-xiao"]
+same_as = "firmware"
+knob_delta = [
+  "flash.kvmain_kb=896", "flash.size_mb=2", "led.kind=ws2812",
+  "led.order=grb", "led.pin=22", "led.power_pin=23",
+  "presence.source=bootsel", "usb.vidpid=RSKey", "usr_led.active_high=False",
+  "usr_led.pin=25",
+]
+disposition = "equivalent"
+basis = "same-cargo-features"
+why = """
+Identical cargo-feature closure — the gate re-derives it — so the delta is the \
+knobs listed above, all of them flash geometry, LED wiring or the presence pin. \
+These six statements are about in-RAM state only: the applet security status \
+that lives for the duration of a selection, and the CTAPHID reassembly buffer. \
+Neither reads `PK_FLASH_SIZE`/`PK_KVMAIN_LEN`: inside the firmware image \
+`firmware/src/flash_storage.rs` is their only consumer. Not in the tree — \
+`rsk-wipe/src/main.rs` reads `PK_FLASH_SIZE` too, from its own `build.rs`, \
+which is a separate binary and is what the next sentence is about. Every other \
+row on this column stays \
+`gap`, because the store IS what the geometry changes: `check.sh` rebuilds \
+`rsk-wipe` once per board because a change that stopped `BOARD` reaching the \
+wiper once left a 16 MB board's whole KV store standing behind a "successful" \
+wipe. Those rebuilds mean something only because of the row beside them, \
+`check.sh: rsk-wipe refuses an unknown flash size`, which fails a wiper that \
+links with no board at all — it used to fall back to 4 MB at EXIT=0, so the \
+per-board loop passed whether or not `BOARD` was reaching it. Cited with the \
+`check.sh:` prefix because that label carries no parentheses, and the shape \
+rule alone sees 52% of the row namespace."""
+
+[[cell]]
+properties = [
+  "SEC-SEAM-001", "SEC-SEAM-002", "SEC-SEAM-003", "SEC-TRANS-001",
+  "SEC-TRANS-002", "SEC-TRANS-003",
+]
+columns = ["tenstar-usb"]
+same_as = "firmware"
+knob_delta = [
+  "flash.kvmain_kb=1408", "flash.size_mb=16", "led.kind=ws2812",
+  "led.order=grb", "led.pin=22", "presence.active_high=False",
+  "presence.pin=15", "presence.source=gpio", "usb.vidpid=RSKey",
+]
+disposition = "equivalent"
+basis = "same-cargo-features"
+why = """
+Identical cargo-feature closure — the gate re-derives it — so the delta is the \
+knobs listed above, all of them flash geometry, LED wiring or the presence pin. \
+These six statements are about in-RAM state only: the applet security status \
+that lives for the duration of a selection, and the CTAPHID reassembly buffer. \
+Neither reads `PK_FLASH_SIZE`/`PK_KVMAIN_LEN`: inside the firmware image \
+`firmware/src/flash_storage.rs` is their only consumer. Not in the tree — \
+`rsk-wipe/src/main.rs` reads `PK_FLASH_SIZE` too, from its own `build.rs`, \
+which is a separate binary and is what the next sentence is about. Every other \
+row on this column stays \
+`gap`, because the store IS what the geometry changes: `check.sh` rebuilds \
+`rsk-wipe` once per board because a change that stopped `BOARD` reaching the \
+wiper once left a 16 MB board's whole KV store standing behind a "successful" \
+wipe. Those rebuilds mean something only because of the row beside them, \
+`check.sh: rsk-wipe refuses an unknown flash size`, which fails a wiper that \
+links with no board at all — it used to fall back to 4 MB at EXIT=0, so the \
+per-board loop passed whether or not `BOARD` was reaching it. Cited with the \
+`check.sh:` prefix because that label carries no parentheses, and the shape \
+rule alone sees 52% of the row namespace."""
+
+[[cell]]
+properties = [
+  "SEC-SEAM-001", "SEC-SEAM-002", "SEC-SEAM-003", "SEC-TRANS-001",
+  "SEC-TRANS-002", "SEC-TRANS-003",
+]
+columns = ["waveshare-touch-lcd"]
+same_as = "firmware"
+knob_delta = [
+  "display.bl_pin=16", "display.bl_pwm_channel=A", "display.bl_pwm_slice=0",
+  "display.cs=13", "display.dc=14", "display.rst=15",
+  "display.spi_freq_hz=80000000", "display.tp_rst=17",
+  "display.wake_active_high=False", "display.wake_pin=25",
+  "flash.kvmain_kb=1408", "flash.size_mb=16", "led.kind=none",
+  "presence.source=bootsel", "usb.vidpid=RSKey",
+]
+disposition = "equivalent"
+basis = "same-cargo-features"
+why = """
+Identical cargo-feature closure — the gate re-derives it — so the delta is the \
+knobs listed above, all of them flash geometry, LED wiring or the presence pin. \
+These six statements are about in-RAM state only: the applet security status \
+that lives for the duration of a selection, and the CTAPHID reassembly buffer. \
+Neither reads `PK_FLASH_SIZE`/`PK_KVMAIN_LEN`: inside the firmware image \
+`firmware/src/flash_storage.rs` is their only consumer. Not in the tree — \
+`rsk-wipe/src/main.rs` reads `PK_FLASH_SIZE` too, from its own `build.rs`, \
+which is a separate binary and is what the next sentence is about. Every other \
+row on this column stays \
+`gap`, because the store IS what the geometry changes: `check.sh` rebuilds \
+`rsk-wipe` once per board because a change that stopped `BOARD` reaching the \
+wiper once left a 16 MB board's whole KV store standing behind a "successful" \
+wipe. Those rebuilds mean something only because of the row beside them, \
+`check.sh: rsk-wipe refuses an unknown flash size`, which fails a wiper that \
+links with no board at all — it used to fall back to 4 MB at EXIT=0, so the \
+per-board loop passed whether or not `BOARD` was reaching it. Cited with the \
+`check.sh:` prefix because that label carries no parentheses, and the shape \
+rule alone sees 52% of the row namespace."""
+
+[[cell]]
+# The four images that remove the gate the statements are about.
+properties = [
+  "SEC-FIDO-001", "SEC-FIDO-002", "SEC-POL-004", "SEC-ADM-002",
+]
+columns = [
+  "firmware-no-touch", "firmware-no-touch-pqc", "firmware-no-touch-fips",
+  "firmware-no-touch-fips-pqc",
+]
+feature = "no-touch"
+cfg = ["firmware/src/presence.rs"]
+hook = "rsk_sdk::UserPresence"
+disposition = "out-of-scope"
+basis = "gate-compiled-out"
+why = """
+`no-touch` replaces the button watcher with an instant auto-confirm \
+(`firmware/src/presence.rs`), so the physical-consent gate these four \
+statements are ABOUT is not in the image: "the live authorization its own gate \
+requires", "a presence decision produced for one transport", "a confirmed \
+physical press", "a Confirmed operator presence". The claim is not weakened \
+here, it is not made — and the tree already treats these builds that way. None \
+of the four is published, `firmware/Cargo.toml` says "Never ship a no-touch \
+build", and `release-build.yml` refuses to create a release carrying one. \
+"No-touch image" in the singular is the phrasing that hid four packages."""
+
+# ---- Settling questions -----------------------------------------------------
+#
+# One per column that still carries a `gap` cell. Required: a gap with no
+# question is a shrug with a verdict column, and it is the shape in which a
+# whole axis goes unexamined for a year. No counts here on purpose — the
+# generated page prints them, and a number written twice is a number that rots.
+#
+# "NEVER SHIPPED" DISPOSES OF NOTHING, and three of the questions below used to
+# be parked on it. This axis is a buildable configuration and not a list of
+# publications, and the argument that an image no release carries is out of
+# scope by definition is refuted from both ends by columns already in the file.
+# One end: `firmware-pico` is unpublished and disposed of in FULL, so being
+# unpublished did not stop a column being decided. The other: eight columns are
+# told "never ship" in firmware/Cargo.toml's own words — a ninth, `core1-stats`,
+# by reference to the benches — and four of the eight are the `no-touch`
+# packages this file exists for, the ones that remove the physical-consent gate
+# the P0-launch authorization properties are ABOUT. A rule retiring a column for
+# not being shipped retires those four, which is the reason there is a matrix at
+# all. What disposes of a cell is what the tree COMPILES, which the generated
+# page derives per column: the crates this configuration resolves unlike the
+# default build, and how many of the column's open rows are owned by one of them.
+#
+# EVERY QUESTION NAMES AN OWNER AND A ROUTE OUT — roadmap §6 stage 0's last exit
+# bullet, which asks for an owner and a decision, or a deferral with a review
+# point. `owner` is scripts/platform_gate.py's four-role vocabulary, borrowed
+# rather than re-picked: that file chose it because "someone should look at this"
+# names nobody, which is the same reason it is wanted here, and a second
+# vocabulary would be two answers to one question. `maintainer` is the role that
+# means a decision no derivation can produce, per AGENTS.md's maintainer-only
+# list.
+#
+# `settled_by` is the review point, and it is an EVENT and not a DATE. The
+# calendar half is already argued down for the sibling register — platform_gate:
+# "a trigger for a measurement nobody has made is a placeholder, and 17
+# placeholders are what a required field would produce today" — and that
+# argument is adopted, though not by analogy, because the two registers face
+# opposite ways: `revalidated_by` asks what would UNSETTLE a settled result,
+# which a pending row cannot answer, and this asks what would SETTLE an open
+# one, which is answerable exactly when the question is well posed. What rules a
+# date out here is narrower. Enforced, a `review_by` reddens scripts/check.sh on
+# a day nobody touched the tree and the repair is to move the date — a red that
+# names no defect and teaches the reader to reset the timer. Unenforced, it is
+# the field-nothing-reads a [[cell]] is refused for carrying. Neither is a check.
+# What prompts the review instead is the row itself: the page is regenerated and
+# byte-diffed on every run, so a new package, feature, board or property
+# reprints every question below in the same diff that adds the column.
+#
+# The four values are this file's own disposition table read backwards, so each
+# names the [[cell]] the question would become:
+#   evidence   a check.sh row (or a proof) built at THIS column, which does not
+#              exist yet -> `covered`/`conditional` on `check-sh-rows`
+#   absence    the property's code or the gate it is about is not in this image
+#              -> `out-of-scope` on `crate-absent`/`gate-compiled-out`
+#   sameness   this column compiles the property's code as another does ->
+#              `equivalent` on `same-cargo-features`
+#   ruling     a decision no derivation can produce; `owner` is then maintainer
+# Two of the four are ones the tree can refuse: `sameness` where the derived
+# closure delta is non-empty — the answer the three measurement columns were
+# parked on — and `absence` on a column that enables no feature production Rust
+# gates on and compiles every open row's owner, which is every board preset.
+# What none of it can do is tell six real words from six nonsense ones; four
+# candidate rules for that were measured against the questions below and all
+# four were refuted by them (the list is in matrix_gate.check_question).
+
+[[question]]
+column = "firmware-no-touch"
+owner = "contributor"
+settled_by = "absence"
+text = """
+Beyond the four presence statements: which rows depend on a presence decision \
+only INDIRECTLY — a reset is reached through a touch, so does `SEC-FIDO-006`'s \
+torn-reset argument still describe an image where the touch is instant?"""
+
+[[question]]
+column = "firmware-no-touch-pqc"
+owner = "contributor"
+settled_by = "absence"
+text = "As `firmware-no-touch`, plus: does advertising ML-DSA-44 in `getInfo` change any authorization path, or only the algorithm list?"
+
+[[question]]
+column = "firmware-no-touch-fips"
+owner = "contributor"
+settled_by = "absence"
+text = "As `firmware-no-touch`, plus the `fips-profile` question: the locked algorithm policy also raises the PIN floor, so which retry/gate properties are re-measured under it?"
+
+[[question]]
+column = "firmware-no-touch-fips-pqc"
+owner = "contributor"
+settled_by = "absence"
+text = "The union of the `firmware-no-touch`, `firmware-fips` and `firmware-pqc` questions; no evidence is measured on the three-feature combination at all."
+
+[[question]]
+column = "firmware-fips"
+owner = "contributor"
+settled_by = "evidence"
+text = """
+`fips-profile` changes `rsk-fido` and `rsk-piv` — the PIN policy and the \
+permitted algorithm set. `check.sh` runs the `rsk-fido` and `rsk-piv` test \
+suites under it, so the question is narrow: does any P0-family invariant's \
+model take the PIN floor or the algorithm set as a parameter, and if so, was \
+it re-checked at the profile's values?"""
+
+[[question]]
+column = "firmware-fips-pqc"
+owner = "contributor"
+settled_by = "evidence"
+text = "As `firmware-fips`, on the combination with `advertise-pqc`; the pair is published and nothing measures the two features together."
+
+[[question]]
+column = "firmware-pqc"
+owner = "contributor"
+settled_by = "evidence"
+text = "`advertise-pqc` only adds ML-DSA-44 to the `getInfo` algorithm list — is that the whole delta for every P0-family row, or does the larger credential/attestation path move with it?"
+
+[[question]]
+column = "firmware-strong-pin"
+owner = "contributor"
+settled_by = "evidence"
+text = "A six-code-point floor and a trivially-guessable-PIN refusal. Does any P0-family statement quantify over PIN values, or do they all treat the PIN as an opaque secret whose policy is someone else's row?"
+
+[[question]]
+column = "firmware-strong-pin-pqc"
+owner = "contributor"
+settled_by = "evidence"
+text = "As `firmware-strong-pin`, on the combination with `advertise-pqc`."
+
+[[question]]
+column = "firmware-always-uv"
+owner = "contributor"
+settled_by = "evidence"
+text = """
+`always-uv` ships `alwaysUv` ON, which changes what `SEC-FIDO-001`'s gate \
+DEMANDS rather than whether it is enforced — and `SEC-FIDO-006B` is about \
+the alwaysUv gate surviving a reset, with a compiled-in default this column \
+moves. Do the model's gate constants cover the alwaysUv-on arm? THE MODEL \
+HALF IS ANSWERED: `AlwaysUvShipped` is AS-AUTH-2 in \
+`assurance/assumptions.toml`, and `formal/AlwaysUv.cfg` runs `TypeOK` plus \
+the eight P0-launch invariants with it TRUE — GREEN over 31 451 172 distinct \
+states at depth 51, per `formal/runs.toml`. Read the cfg for that count, \
+never this sentence: it said "all six invariants", and the file has carried \
+nine entries in every commit it has ever had, so the number was wrong when \
+it was written rather than gone stale — a count restated beside a file is a \
+count that disagrees with it. THE CODE HALF IS NOT, and its cost is a number \
+rather than an omission: `cargo test -p rsk-fido --features always-uv \
+--target "$HOST"` came back 496 passed, 176 failed and 1 ignored — the \
+harness's own `running 673 tests`, rc 101 — run at commit `709cb52`, because \
+alwaysUv with no PIN answers `PUAT_REQUIRED` and the suite is written \
+against the default door. The run is NAMED here because the sentence it \
+replaces was not: `is 493 passed and 176 FAILED`, present tense, no commit, \
+no date, over a suite that grows most weeks — a measurement written as a \
+property of the column. The commit IS the date and is deliberately the only \
+half written here: git dates a sha exactly, and `scripts/run_count_gate.py` \
+refuses a second copy of a day its generated regions already print — the \
+tier-run table of `docs/assurance-vector.md` prints this one, and typing it \
+again here reddens that row (driven, EXIT=1). Write the target the way \
+`scripts/check.sh` does: this said `aarch64-apple-darwin`, which is one \
+maintainer's host triple pinned into a shared register, and CI runs the same \
+row at `x86_64-unknown-linux-gnu`. And say which convention the denominator \
+uses, because this tree has two and they differ by exactly the one ignored \
+test: 673 is passed + failed + IGNORED, which is the number the harness \
+prints and the number every count below is in. The pair 446/172 is NOT a \
+superseded version of this one and must not be reconciled with it: it is \
+what `assurance/bundle/logs/cargo-test-always-uv.log` holds, over 619 tests, \
+and 619 counts the same way — two true measurements of a growing suite, \
+which is why the bundle's own framing of that log is the thing to fix and \
+not this number. The 669 that stood here was the third convention, passed + \
+failed with the ignored test dropped; under the log's it was 670, and no \
+reader could have told the two apart. So no `check.sh` row exercises this \
+column, and `covered` may rest only on the default build or on such a row — \
+the matrix has no basis for "the model half is checked at this column's own \
+constant", which is evidence-schema work and not a cell anybody can fill \
+here."""
+
+[[question]]
+column = "firmware-always-uv-pqc"
+owner = "contributor"
+settled_by = "evidence"
+text = "As `firmware-always-uv`, on the combination with `advertise-pqc`."
+
+[[question]]
+column = "firmware-strict-up"
+owner = "contributor"
+settled_by = "evidence"
+text = "`strict-up` demands a touch on EVERY assertion, dropping the silent `up:false` pre-flight. That strengthens the gate — but `SEC-FIDO-002` is about presence decisions not crossing transports, and this column produces strictly more of them. Is the model's transport arity still the right one?"
+
+[[question]]
+column = "firmware-strict-up-pqc"
+owner = "contributor"
+settled_by = "evidence"
+text = "As `firmware-strict-up`, on the combination with `advertise-pqc`."
+
+[[question]]
+column = "firmware-display"
+owner = "contributor"
+settled_by = "evidence"
+text = """
+This column is NOT `default + display`: it also sets `flashSize = 16M` and \
+`ledKind = none`, and it re-routes user presence through the panel's \
+Approve/Deny instead of the button. Each non-display row therefore has to \
+answer three questions, not one — and the flash-geometry half is the same \
+16 MB question the board axis carries. It reaches the three `SEC-DISP-*` rows \
+too, which is why they are `gap` here and not `covered`: the ceremony's \
+evidence — `formal/Display.cfg`, the `rsk-ui`/`rsk-display` host tests and the \
+`check.sh` rows that compile the feature — was every bit of it produced at the \
+DEFAULT 4 MB geometry. The BUILD half is answered now: `build firmware \
+(display)` sets `FLASH_SIZE=16M` too, so the gate compiles the image this \
+column IS rather than a combination no package ships. The EVIDENCE half is \
+not, and that is what keeps these three at `gap` — `Display.cfg`, the \
+`rsk-ui`/`rsk-display` host tests and the three co-mutants all run at the \
+default geometry, and `BugPadSubstitutesForCard` runs in `rsk-fido` with no \
+display feature at all. Closing it takes evidence produced at this \
+configuration, or a `conditional` saying what the ceremony claim is \
+conditional on."""
+
+[[question]]
+column = "firmware-2mb"
+owner = "contributor"
+settled_by = "evidence"
+text = """
+2 MB with `KVMAIN` shrunk to 896 K. Do the store properties' models take the \
+partition size as a parameter, and were they checked at the shrunk one? The \
+scope floors in `formal/floors.txt` are about model constants, not about the \
+device's own capacity."""
+
+[[question]]
+column = "firmware-16mb"
+owner = "contributor"
+settled_by = "evidence"
+text = """
+16 MB with the default 1408 K `KVMAIN`. This is the geometry on which a whole \
+KV store survived a wipe the device reported as successful — so for every store \
+and boot row the question is not "does the code differ" (it does not) but "was \
+the evidence ever produced against this partition map"."""
+
+[[question]]
+column = "firmware-strict-config"
+owner = "contributor"
+settled_by = "evidence"
+text = """
+The largest feature delta in the tree: five crates, and it re-imposes the \
+presence/PIN gates on device-config writes that the DEFAULT build leaves \
+ungated. `SEC-ADM-002` and `SEC-ADM-004` are about exactly that surface, so \
+this column is the one where their disposition may be STRONGER than the \
+default's — which the matrix has no way to say until someone measures it."""
+
+[[question]]
+column = "keygen-bench"
+owner = "contributor"
+settled_by = "evidence"
+text = """
+A debug vendor command (INS 0x13) that `firmware/Cargo.toml` says never to \
+ship, and it exposes a timing oracle over the primality primitives. Its \
+never-shipped half is settled above; its sameness half is settled by \
+measurement, and against the hoped-for answer — the closure is NOT the default \
+build's, so `same-cargo-features` is refused here by derivation rather than by \
+opinion. No cargo-feature column can ever earn that basis, because the feature \
+NAMING the column is in that column's own closure by construction, which makes \
+"is it equivalent" a question the derivation answers before it is asked. What \
+the derivation does say is how narrow the delta is, and the page counts it: the \
+crate set is the default build's exactly and `firmware` is the only crate whose \
+features move, so all but one of the open rows here own code that resolves \
+identically. What is left is not derivable — does a vendor INS answering on \
+this image, gated by nothing, reach a statement whose own crate did not move? \
+`SEC-BOOT-002` is the row where that is not even the question, because \
+`firmware` is its owner."""
+
+[[question]]
+column = "core1-stats"
+owner = "contributor"
+settled_by = "evidence"
+text = """
+As `keygen-bench`: INS 0x12 exposes per-core candidate/find rates, which time \
+the RSA keygen prime search. The measurement lands in the same place and for \
+the same reason — the crate set is the default build's, `firmware` alone moves \
+— so this column's narrowness is not inherited from that one's, it is \
+re-derived on every run and printed beside this row."""
+
+[[question]]
+column = "bench"
+owner = "contributor"
+settled_by = "evidence"
+text = """
+As `keygen-bench`, and the one of the three the measurement separates rather \
+than groups: `bench` is not a `firmware`-only delta. It turns on \
+`rsk-fido/bench` and pulls `rsk-bench` into the image, so the `rsk-fido`-owned \
+rows and `SEC-BOOT-002` are open on a column where the code they are ABOUT is a \
+different compilation, and the rest are not. It is also the only one of the \
+three with `check.sh` rows — and none of them is evidence for a P0-family \
+statement: `clippy (bench fw)` and `clippy (bench host)` are lints, and \
+`test (bench)` selects `rsk-fido` under the name FILTER `bench`, which \
+`--list` answers with the harness's own four selector tests and one \
+`#[ignore]`d timing loop — no invariant among them. So `covered` has nothing to \
+rest on here either, and the open question is the `keygen-bench` one plus \
+whichever `rsk-fido` statements a second timing entrypoint can reach."""
+
+[[question]]
+column = "fido-conformance"
+owner = "contributor"
+settled_by = "evidence"
+text = """
+Built only for the FIDO Conformance Tool run: it suppresses the EdDSA \
+advertisement. Its "is a conformance-only build in the supported set" half was \
+the same parked ruling the three measurement columns carried and is settled \
+above with them. What is left is narrower AND wider than the sentence used to \
+say, because the closure the page derives names a second feature: \
+`fido-conformance` implies `strict-up`, so this column also demands a touch on \
+EVERY assertion. Two questions then, not one — does any P0-family row depend on \
+the advertised algorithm list, and does `firmware-strict-up`'s transport-arity \
+question apply here too?"""
+
+[[question]]
+column = "ea-conformance-rpid"
+owner = "contributor"
+settled_by = "evidence"
+text = "Adds the conformance tool's RPID to the vendor-facilitated enterprise-attestation list, which is an authorization-relevant allowlist. `SEC-FIDO-001` is about gates; is an EA RPID list one of them?"
+
+[[question]]
+column = "largeblob-ext"
+owner = "contributor"
+settled_by = "evidence"
+text = """
+The sharpest orthogonal feature: it serves the CTAP 2.3 `largeBlob` extension \
+INSTEAD OF the 2.1 `largeBlobKey` + `authenticatorLargeBlobs` pair (the spec \
+forbids both), it carries four `check.sh` rows, and it has zero flake packages \
+— so nothing in the release axis would ever have given it a cell. Does the \
+swapped surface move any credential-management or authorization transition the \
+P0-launch models name?"""
+
+[[question]]
+column = "abrobot-16m"
+owner = "contributor"
+settled_by = "evidence"
+text = "The 16 MB geometry question of `firmware-16mb`, plus a GPIO presence source instead of BOOTSEL."
+
+[[question]]
+column = "abrobot-4m"
+owner = "maintainer"
+settled_by = "evidence"
+text = """
+The narrowest column with anything open, and it is now one group and one \
+question: does a GPIO button on 23 (active-low) deliver the \
+Confirmed/Cancelled semantics the presence model assumes of BOOTSEL — same \
+debounce, same cancellation, same per-transport arbitration? Only the four \
+rows that quantify over a presence decision are still open on it. The four \
+reset clauses used to be held here as reached-through-a-touch; that is a \
+reachability argument and it is withdrawn in the cell above, where applied \
+evenly it would have taken SEC-FIDO-003 out with them. What is left is \
+genuinely about the button: `crates/rsk-device/src/presence.rs` arbitrates \
+the scope and `firmware/src/presence.rs` holds the latch, and both compile \
+identically here — the one arm that moves is the raw sample."""
+
+[[question]]
+column = "seeed-xiao"
+owner = "contributor"
+settled_by = "evidence"
+text = "2 MB with `KVMAIN` at 896 K — the `firmware-2mb` question on a board that also gates the LED behind a power pin."
+
+[[question]]
+column = "tenstar-usb"
+owner = "contributor"
+settled_by = "evidence"
+text = "The 16 MB geometry question, plus a GPIO presence source on 15."
+
+[[question]]
+column = "waveshare-touch-lcd"
+owner = "maintainer"
+settled_by = "ruling"
+text = """
+The trusted-display BOARD without the `display` feature: 16 MB geometry, no \
+addressable LED, and panel pins compiled as inert constants. The geometry \
+question is `firmware-16mb`'s. The sharper half is now measured rather than \
+asked: this preset IS buildable without `--features display` — `build.rs` \
+parses the `[display]` keys with no `CARGO_FEATURE_DISPLAY` gate — and nothing \
+in `check.sh` builds `firmware` on it at all. The board loop builds `rsk-wipe`, \
+and both `BOARD=` firmware rows pin `waveshare-one`. So the column is real and \
+WHOLLY UNEXERCISED, and what is left to decide is whether the tree should build \
+it, or whether it should be a knob of `firmware-display` instead."""

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 RS-Key contributors
 
 use super::*;
+use rsk_fs::storage::faults::{Cut, CutMedium, RemoveStuck, TruncatedWalk, Undead};
 use rsk_fs::storage::ram::RamStorage;
 
 /// PUT's body grammar — a rule per field, a measured card cell per rule. Hung
@@ -37,6 +38,14 @@ mod p1p2_tests;
 /// The TLV bodies the read and access-code commands accept, tag by tag.
 #[path = "grammar_tests.rs"]
 mod grammar_tests;
+
+/// What the two removal commands answer when the medium refuses the removal.
+#[path = "removal_tests.rs"]
+mod removal_tests;
+
+/// What CALCULATE answers when the medium refuses to advance an HOTP counter.
+#[path = "counter_tests.rs"]
+mod counter_tests;
 
 /// RFC 6238 reference secrets.
 const SECRET_SHA1: &[u8] = b"12345678901234567890";
@@ -78,14 +87,24 @@ fn new_fs() -> Fs<RamStorage> {
     fs
 }
 
-fn select(app: &mut OathApplet, fs: &mut Fs<RamStorage>) -> (Sw, Vec<u8>) {
+/// [`new_fs`] on a medium that logs the order of the appends it serves — the only
+/// place the re-arm of the at-rest lap can be seen to land BEFORE the re-key it
+/// covers rather than after it.
+fn new_cut_fs() -> (Fs<Cut>, CutMedium) {
+    let (cut, medium) = Cut::new();
+    let mut fs = Fs::new(cut);
+    fs.scan();
+    (fs, medium)
+}
+
+fn select<S: Storage>(app: &mut OathApplet, fs: &mut Fs<S>) -> (Sw, Vec<u8>) {
     let mut out = [0u8; 256];
     let mut res = ResBuf::new(&mut out);
     let sw = Applet::select(app, false, fs, &mut res);
     (sw, res.as_slice().to_vec())
 }
 
-fn run(app: &mut OathApplet, fs: &mut Fs<RamStorage>, raw: &[u8]) -> (Sw, Vec<u8>) {
+fn run<S: Storage>(app: &mut OathApplet, fs: &mut Fs<S>, raw: &[u8]) -> (Sw, Vec<u8>) {
     let mut out = [0u8; 2048];
     let mut res = ResBuf::new(&mut out);
     let apdu = Apdu::parse(raw).unwrap();
@@ -133,7 +152,7 @@ fn put_data(
     d
 }
 
-fn put(app: &mut OathApplet, fs: &mut Fs<RamStorage>, data: &[u8]) -> Sw {
+fn put<S: Storage>(app: &mut OathApplet, fs: &mut Fs<S>, data: &[u8]) -> Sw {
     run(app, fs, &apdu(INS_PUT, 0, 0, data)).0
 }
 
@@ -307,7 +326,7 @@ fn select_reports_version_and_serial() {
     let mut app = OathApplet::new(SERIAL, [0x22; 32], None, &rng, &touch);
     let (sw, body) = select(&mut app, &mut fs);
     assert_eq!(sw, Sw::OK);
-    assert_eq!(&body[..5], &[TAG_T_VERSION, 3, 5, 7, 4]);
+    assert_eq!(&body[..5], &[TAG_T_VERSION, 3, 5, 8, 0]);
     assert_eq!(body[5], TAG_NAME);
     assert_eq!(body[6], 8);
     // The device id is an opaque one-way hash of serial_hash, NOT the raw serial
@@ -1019,6 +1038,136 @@ fn cred_sealed_before_otp_burn_survives_the_burn() {
     assert!(seal::seal_read(&nootp, &mut fs, fid, &mut buf).is_none());
 }
 
+#[test]
+fn the_boot_pass_re_arms_the_lap_before_it_supersedes_a_pre_otp_cred() {
+    // Standing before `run_at_rest_lap` in `firmware/src/main.rs` is not the same as
+    // standing before every lap. A boot whose re-seal here was refused latched the
+    // marker all the same, and the boot that finally migrates the credential
+    // supersedes a chip-serial-rooted copy under a marker the lap gates on and
+    // nothing clears.
+    let nootp = Device {
+        serial_hash: &[0x22; 32],
+        serial_id: &SERIAL,
+        otp_key: None,
+    };
+    let otp = Device {
+        otp_key: Some(&TEST_MKEK),
+        ..nootp
+    };
+    let secret = b"a-totp-cred-tlv-blob\x00\x01\x02";
+    let fid = KeyFid::new(EF_OATH_CRED);
+    let mut rng = CountRng(7);
+    let mut buf = [0u8; CRED_MAX];
+
+    // The ORDER, on the one medium that can tell the two orderings apart.
+    let (mut fs, medium) = new_cut_fs();
+    assert!(seal::seal_put(&nootp, &mut fs, &mut rng, fid, secret));
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    assert!(
+        fs.has_data(rsk_fs::EF_HARDENED),
+        "fixture: an earlier boot latched the marker"
+    );
+    medium.clear_ops();
+    migrate_seal(&otp, &mut fs, &mut rng);
+    medium.assert_re_armed_before(EF_OATH_CRED, |_| false, "migrate_seal's pre-OTP arm");
+    assert!(
+        !fs.has_data(rsk_fs::EF_HARDENED),
+        "the re-seal superseded a chip-serial-rooted copy, so the lap must run again"
+    );
+
+    // The GATE. A medium refusing only `remove(EF_HARDENED)` reaches that same end
+    // state with no reset in it, so the re-seal must not go ahead at all.
+    let (stuck, medium) = RemoveStuck::new();
+    let mut fs = Fs::new(stuck);
+    fs.scan();
+    assert!(seal::seal_put(&nootp, &mut fs, &mut rng, fid, secret));
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    medium.refuse(Some(rsk_fs::EF_HARDENED));
+    migrate_seal(&otp, &mut fs, &mut rng);
+    assert!(
+        seal::seal_read(&otp, &mut fs, fid, &mut buf).is_none(),
+        "the re-arm never landed, so the pre-OTP copy must stay UNSUPERSEDED rather \
+         than be displaced under a marker nothing will clear. The cost is stated \
+         at the site: this is the reader every command uses, so LIST answers \
+         `9000` over an empty body until a later boot migrates it"
+    );
+    assert!(
+        medium.live(rsk_fs::EF_HARDENED),
+        "fixture: the refusal really left the marker on the medium"
+    );
+
+    // The control, same medium, fault cleared: the migration DOES happen, so the
+    // assertion above is about the gate and not about a pass that never fires.
+    medium.refuse(None);
+    migrate_seal(&otp, &mut fs, &mut rng);
+    assert_eq!(
+        seal::seal_read(&otp, &mut fs, fid, &mut buf),
+        Some(secret.len())
+    );
+    assert!(!medium.live(rsk_fs::EF_HARDENED));
+}
+
+#[test]
+fn the_boot_pass_re_arms_the_lap_before_it_seals_a_cleartext_cred() {
+    // The other arm of the same pass, over a copy weaker still: the legacy record
+    // holds the credential's HMAC secret in the clear, and sealing it in place
+    // appends over it. `run_at_rest_lap`'s caller gates the lap on the OTP key, so
+    // this does too.
+    let otp = Device {
+        serial_hash: &[0x22; 32],
+        serial_id: &SERIAL,
+        otp_key: Some(&TEST_MKEK),
+    };
+    // Pre-seal layout: NAME ‖ KEY(type|alg, digits, secret), written raw.
+    let mut blob = tlv(TAG_NAME, b"acct");
+    let mut key = vec![0x21u8, 8];
+    key.extend_from_slice(SECRET_SHA1);
+    blob.extend(tlv(TAG_KEY, &key));
+    let mut rng = CountRng(1);
+    let mut stored = [0u8; seal::MAX_BLOB];
+
+    let (mut fs, medium) = new_cut_fs();
+    fs.put(EF_OATH_CRED, &blob).unwrap();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    medium.clear_ops();
+    migrate_seal(&otp, &mut fs, &mut rng);
+    medium.assert_re_armed_before(EF_OATH_CRED, |_| false, "migrate_seal's plaintext arm");
+    assert!(!fs.has_data(rsk_fs::EF_HARDENED));
+
+    // The gate, and its control on the same unpoisoned medium.
+    let (stuck, medium) = RemoveStuck::new();
+    let mut fs = Fs::new(stuck);
+    fs.scan();
+    fs.put(EF_OATH_CRED, &blob).unwrap();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    medium.refuse(Some(rsk_fs::EF_HARDENED));
+    migrate_seal(&otp, &mut fs, &mut rng);
+    let n = fs
+        .read(EF_OATH_CRED, &mut stored)
+        .expect("fixture: the credential is still there");
+    assert!(
+        stored[..n]
+            .windows(SECRET_SHA1.len())
+            .any(|w| w == SECRET_SHA1),
+        "the re-arm never landed, so the cleartext credential must stay UNSUPERSEDED \
+         rather than be displaced under a marker nothing will clear. The cost is \
+         the pre-OTP arm's, stated at the site: plaintext fails the AEAD trial \
+         decrypt every command reads through, so LIST does not show it either"
+    );
+    medium.refuse(None);
+    migrate_seal(&otp, &mut fs, &mut rng);
+    let n = fs
+        .read(EF_OATH_CRED, &mut stored)
+        .expect("fixture: the credential is still there");
+    assert!(
+        !stored[..n]
+            .windows(SECRET_SHA1.len())
+            .any(|w| w == SECRET_SHA1),
+        "the healthy medium does seal it"
+    );
+    assert!(!medium.live(rsk_fs::EF_HARDENED));
+}
+
 /// A device whose records were sealed on other silicon: `serial_hash` is the GCM
 /// AAD, so nothing it holds opens under either arm here.
 fn foreign_sealed(fs: &mut Fs<RamStorage>, fid: KeyFid, plain: &[u8]) -> Device<'static> {
@@ -1094,7 +1243,7 @@ fn otp_pin_set_before_burn_still_verifies_after_burn() {
     // back to the pre-OTP arm (and the success re-stores under the OTP arm),
     // so the PIN is not permanently locked out. The legacy double_hash_pin
     // survived a burn; v1 must not regress that.
-    let mut fs = new_fs();
+    let (mut fs, medium) = new_cut_fs();
     let rng = RefCell::new(CountRng(7));
     let touch = RefCell::new(AlwaysConfirm);
 
@@ -1109,7 +1258,22 @@ fn otp_pin_set_before_burn_still_verifies_after_burn() {
         assert_eq!(sw, Sw::OK);
     }
 
+    // The one-shot at-rest lap has already run on this device, so the lazy
+    // re-store below supersedes the chip-serial-rooted copy AFTER the only pass
+    // that could reclaim its page — it must re-arm the lap (audit run-35).
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    assert!(
+        fs.has_data(rsk_fs::EF_HARDENED),
+        "fixture: the lap has latched"
+    );
+
     // Post-burn: the same PIN must still verify, via the without_otp fallback.
+    // The verify's own retry spend rewrites the record with the SAME verifier, so
+    // "still weak" is every write that leaves the verifier bytes alone.
+    let before = medium
+        .value(EF_OTP_PIN)
+        .expect("fixture: EF_OTP_PIN is on the medium");
+    medium.clear_ops();
     let mut app = OathApplet::new(SERIAL, [0x22; 32], Some(test_mkek), &rng, &touch);
     let (sw, _) = run(
         &mut app,
@@ -1117,6 +1281,11 @@ fn otp_pin_set_before_burn_still_verifies_after_burn() {
         &apdu(INS_VERIFY_PIN, 0, 0, &tlv(TAG_PASSWORD, b"1234")),
     );
     assert_eq!(sw, Sw::OK);
+    medium.assert_re_armed_before(
+        EF_OTP_PIN,
+        |v| v.len() == before.len() && v[2..] == before[2..],
+        "VERIFY OTP PIN's kbase fallback",
+    );
 
     // The success re-stored the verifier under the OTP arm (self-heal).
     let otp_dev = Device {
@@ -1132,6 +1301,11 @@ fn otp_pin_set_before_burn_still_verifies_after_burn() {
         &otp_dev.pin_derive_verifier(b"1234")[..],
         "verifier re-stored under the OTP arm"
     );
+    assert!(
+        !fs.has_data(rsk_fs::EF_HARDENED),
+        "VERIFY re-keyed the verifier off the chip-serial root and must re-arm \
+         the at-rest lap: the marker is still latched",
+    );
 
     // A wrong PIN post-burn still fails.
     let (sw, _) = run(
@@ -1143,7 +1317,7 @@ fn otp_pin_set_before_burn_still_verifies_after_burn() {
 }
 
 /// Lock the applet behind an access code, so a fresh SELECT starts unvalidated.
-fn lock_with_code(app: &mut OathApplet, fs: &mut Fs<RamStorage>) {
+fn lock_with_code<S: Storage>(app: &mut OathApplet, fs: &mut Fs<S>) {
     let mut code_key = vec![ALG_HMAC_SHA1];
     code_key.extend_from_slice(&[0xAB; 16]);
     let chal = [1u8, 2, 3, 4, 5, 6, 7, 8];
@@ -1949,6 +2123,345 @@ fn a_completed_reset_clears_credentials_and_the_code() {
     assert!(!fs.has_data(EF_OATH_CODE.get()));
     assert!(!fs.has_data(EF_OTP_PIN));
     assert!((0..5u16).all(|i| !fs.has_data(EF_OATH_CRED + i)));
+}
+
+/// `RESET_MAX_DELETES` is the sweep's progress guard, and OATH had nothing that
+/// reached it: `TornStorage` above ERRORS once its budget runs out, which stops the
+/// sweep at the `?` before the valve is ever consulted. So the one fault the budget
+/// exists for — a medium that answers `Ok` and keeps the record — was undriven here.
+///
+/// `deleted` rises a whole batch at a time, so `>` → `==` lets it step PAST the
+/// budget without ever equalling it. Five undead records: 5 divides none of the
+/// four applets' budgets (257 · 768 · 512 · 1039), which is the whole point —
+/// FIDO's and PIV's runaways re-yield ONE fid, and 1 divides everything, so the
+/// mutant trips one delete early there and both tests pass it by construction.
+#[test]
+fn a_sweep_that_never_converges_stops_inside_its_delete_budget() {
+    const UNDEAD: u16 = 5;
+    // The premise, made checkable rather than argued: `deleted` rises a whole
+    // UNDEAD per pass, so a batch that DIVIDES the budget lets `==` fire on the
+    // nose and this test stops seeing the valve — silently, suite still green.
+    const _: () = assert!(
+        !RESET_MAX_DELETES.is_multiple_of(UNDEAD as u32),
+        "the batch divides the delete budget, so this test cannot falsify the valve"
+    );
+    let (backend, count) = Undead::new(2 * RESET_MAX_DELETES);
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    for i in 0..UNDEAD {
+        fs.put(EF_OATH_CRED + i, &[0x11; 24]).unwrap();
+    }
+    assert_eq!(
+        sweep(&mut fs, is_oath_cred_fid),
+        Err(Sw::MEMORY_FAILURE),
+        "a sweep the medium never lets converge must fail, not run on"
+    );
+    assert!(
+        count.removals() <= RESET_MAX_DELETES,
+        "the valve let the sweep spend {} deletions on a budget of {RESET_MAX_DELETES}",
+        count.removals()
+    );
+}
+
+/// The `?` under the valve — a refused backend removal must STOP the sweep, because
+/// `for_each_key` re-yields the fid the medium kept. Nothing in any of the four
+/// applets could see it: swallow the `?` and the loop spins on that fid straight
+/// into the VALVE, which answers the SAME error, so `let _ = gone.value;` left
+/// 118 / 615 / 140 / 197 passing. The removal COUNT is the observation that
+/// separates them — one batch against a whole budget.
+#[test]
+fn a_refused_removal_stops_the_sweep_instead_of_spinning_into_the_valve() {
+    const LIVE: u16 = 5;
+    let (backend, medium) = RemoveStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    for i in 0..LIVE {
+        fs.put(EF_OATH_CRED + i, &[0x11; 24]).unwrap();
+    }
+    // Which of the batch is reached first is a fresh HashMap order per run, so the
+    // stop lands anywhere in 1..=LIVE — the bound is what has to hold, not a count.
+    medium.refuse(Some(EF_OATH_CRED));
+    assert_eq!(
+        sweep(&mut fs, is_oath_cred_fid),
+        Err(Sw::MEMORY_FAILURE),
+        "a removal the medium refused must fail the sweep"
+    );
+    assert!(
+        medium.attempts() <= LIVE as u32,
+        "the sweep asked for {} removals over {LIVE} credentials: it carried on past \
+         the refusal and the delete budget, not the `?`, is what stopped it",
+        medium.attempts()
+    );
+}
+
+/// The reset path's own re-arm, which no applet wipe in the tree had: measured at
+/// five wipe-sweep delete sites across four applets, none re-armed. A tombstone
+/// appends like a re-seal, and `EF_OTP_PIN` migrates only on a successful verify —
+/// so a RESET can leave a chip-serial-rooted verifier dumpable under a marker the
+/// lap gates on. Best-effort, and that is the whole difference from the gated
+/// sites: refusing here would leave the secrets live rather than in force.
+#[test]
+fn a_reset_re_arms_the_at_rest_lap_before_the_first_tombstone() {
+    let (mut fs, medium) = new_cut_fs();
+    let rng = RefCell::new(CountRng(7));
+    let touch = RefCell::new(AlwaysConfirm);
+    let mut app = OathApplet::new(SERIAL, [0x22; 32], Some(test_mkek), &rng, &touch);
+    select(&mut app, &mut fs);
+    fs.put(EF_OTP_PIN, &[MAX_OTP_COUNTER; 33]).unwrap();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    assert!(
+        fs.has_data(rsk_fs::EF_HARDENED),
+        "fixture: an earlier boot latched the marker"
+    );
+
+    medium.clear_ops();
+    let (sw, _) = run(&mut app, &mut fs, &apdu(INS_RESET, 0xDE, 0xAD, &[]));
+    assert_eq!(sw, Sw::OK);
+    medium.assert_re_armed_before(EF_OTP_PIN, |_| false, "OATH RESET");
+    assert!(
+        !fs.has_data(rsk_fs::EF_HARDENED),
+        "the reset tombstoned a possibly chip-serial-rooted verifier, so the lap \
+         must run again"
+    );
+
+    // The best-effort half, and the direction that separates a wipe from every
+    // gated site: a medium refusing only `remove(EF_HARDENED)` must still WIPE.
+    let (stuck, medium) = RemoveStuck::new();
+    let mut fs = Fs::new(stuck);
+    fs.scan();
+    let mut app = OathApplet::new(SERIAL, [0x22; 32], Some(test_mkek), &rng, &touch);
+    select(&mut app, &mut fs);
+    fs.put(EF_OTP_PIN, &[MAX_OTP_COUNTER; 33]).unwrap();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    medium.refuse(Some(rsk_fs::EF_HARDENED));
+    let (sw, _) = run(&mut app, &mut fs, &apdu(INS_RESET, 0xDE, 0xAD, &[]));
+    assert!(
+        !medium.live(EF_OTP_PIN),
+        "the refused re-arm stopped the wipe, which leaves the secrets LIVE — the \
+         one direction a reset must never fail in"
+    );
+    assert_eq!(sw, Sw::OK);
+    assert!(
+        medium.live(rsk_fs::EF_HARDENED),
+        "fixture: the refusal really left the marker on the medium"
+    );
+}
+
+/// The head re-arm is BEST-EFFORT, so its refusal leaves the marker latched over
+/// every tombstone the sweep then appends — the residual the gated sites do not
+/// carry. A single-shot refusal is the only kind the pass recovers from, and the
+/// retry after the sweep is what recovers it; a persistent one is still a residual.
+#[test]
+fn a_reset_retries_the_re_arm_after_the_sweep() {
+    let (stuck, medium) = RemoveStuck::new();
+    let mut fs = Fs::new(stuck);
+    fs.scan();
+    let rng = RefCell::new(CountRng(7));
+    let touch = RefCell::new(AlwaysConfirm);
+    let mut app = OathApplet::new(SERIAL, [0x22; 32], Some(test_mkek), &rng, &touch);
+    select(&mut app, &mut fs);
+    fs.put(EF_OTP_PIN, &[MAX_OTP_COUNTER; 33]).unwrap();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    assert!(
+        medium.live(rsk_fs::EF_HARDENED),
+        "fixture: an earlier boot latched the marker"
+    );
+    // Only the HEAD re-arm is refused; the medium serves every mutation after it.
+    medium.refuse_once(rsk_fs::EF_HARDENED);
+
+    let (sw, _) = run(&mut app, &mut fs, &apdu(INS_RESET, 0xDE, 0xAD, &[]));
+    assert!(
+        !medium.live(rsk_fs::EF_HARDENED),
+        "the head re-arm was refused and nothing retried it, so the marker stands \
+         over the verifier this reset just tombstoned and no later boot ever laps"
+    );
+    assert_eq!(sw, Sw::OK);
+    assert!(!medium.live(EF_OTP_PIN), "the wipe still ran");
+
+    // The control on the same medium, with the refusal made PERSISTENT instead:
+    // the marker survives, so the assertion above is about the retry landing and
+    // not about a marker the fixture never latched.
+    fs.put(EF_OTP_PIN, &[MAX_OTP_COUNTER; 33]).unwrap();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    medium.refuse(Some(rsk_fs::EF_HARDENED));
+    let (sw, _) = run(&mut app, &mut fs, &apdu(INS_RESET, 0xDE, 0xAD, &[]));
+    assert_eq!(sw, Sw::OK);
+    assert!(
+        medium.live(rsk_fs::EF_HARDENED),
+        "fixture: a persistent refusal really does leave the marker standing"
+    );
+}
+
+/// Both faults of the residual in one medium, because neither alone reaches it: a
+/// SINGLE-SHOT refusal of `refuse_once`'s removal — the only kind a retry recovers
+/// — and a walk that truncates for good once `truncate_after` has been tombstoned.
+/// `RemoveStuck` and `TruncatedWalk` carry one each and cannot be composed.
+struct RefusedThenTruncated {
+    inner: RamStorage,
+    refuse_once: Option<u16>,
+    truncate_after: Option<u16>,
+    truncated: bool,
+}
+
+impl Storage for RefusedThenTruncated {
+    fn read(&mut self, fid: u16, buf: &mut [u8]) -> Option<usize> {
+        self.inner.read(fid, buf)
+    }
+    fn write(&mut self, fid: u16, data: &[u8]) -> rsk_sdk::error::Result<()> {
+        self.inner.write(fid, data)
+    }
+    fn remove(&mut self, fid: u16) -> rsk_sdk::error::Result<()> {
+        if self.refuse_once == Some(fid) {
+            self.refuse_once = None;
+            return Err(rsk_sdk::error::Error::MemoryFatal);
+        }
+        self.inner.remove(fid)?;
+        self.truncated |= self.truncate_after == Some(fid);
+        Ok(())
+    }
+    fn size(&mut self, fid: u16) -> Option<usize> {
+        self.inner.size(fid)
+    }
+    fn for_each_key(&mut self, f: &mut dyn FnMut(u16)) -> bool {
+        if self.truncated {
+            return false;
+        }
+        self.inner.for_each_key(f)
+    }
+}
+
+/// What one arm of [`a_reset_that_faults_mid_sweep_still_re_arms_the_lap`] left
+/// behind: the host's answer, and what the MEDIUM kept — never `Fs::has_data`,
+/// since a refused removal is exactly where the present cache and the medium part.
+/// Nothing re-provisions after this wipe, unlike PIV's and OpenPGP's, so the
+/// verifier is read straight off the medium.
+struct Residue {
+    answered: Sw,
+    marker: bool,
+    verifier: bool,
+    cred: bool,
+}
+
+fn reset_under(refuse_once: Option<u16>, truncate_after: Option<u16>) -> Residue {
+    let mut fs = Fs::new(RefusedThenTruncated {
+        inner: RamStorage::new(),
+        refuse_once,
+        truncate_after,
+        truncated: false,
+    });
+    fs.scan();
+    let rng = RefCell::new(CountRng(7));
+    let touch = RefCell::new(AlwaysConfirm);
+    let mut app = OathApplet::new(SERIAL, [0x22; 32], Some(test_mkek), &rng, &touch);
+    select(&mut app, &mut fs);
+    fs.put(EF_OATH_CRED, &[0x11; 24]).unwrap();
+    fs.put(EF_OTP_PIN, &[MAX_OTP_COUNTER; 33]).unwrap();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    // Neither fault fires during setup — it writes and never removes these — so
+    // the arms differ only in what the RESET meets.
+    assert!(
+        fs.has_data(rsk_fs::EF_HARDENED) && fs.has_data(EF_OTP_PIN),
+        "fixture"
+    );
+    let (answered, _) = run(&mut app, &mut fs, &apdu(INS_RESET, 0xDE, 0xAD, &[]));
+    let mut medium = fs.into_storage();
+    Residue {
+        answered,
+        marker: medium.inner.exists(rsk_fs::EF_HARDENED),
+        verifier: medium.inner.exists(EF_OTP_PIN),
+        cred: medium.inner.exists(EF_OATH_CRED),
+    }
+}
+
+/// The refusal the retry exists for, met by the wipe fault the retry stands below:
+/// the sweeps carry `?`, so an early return skips the retry, and the conjunction is
+/// exactly the case it was written for. Both controls run in this case rather than
+/// their own, so the claim is about the CONJUNCTION and not about either fault.
+#[test]
+fn a_reset_that_faults_mid_sweep_still_re_arms_the_lap() {
+    let subject = reset_under(Some(rsk_fs::EF_HARDENED), Some(EF_OTP_PIN));
+    assert!(
+        !subject.marker,
+        "the head re-arm was refused and the sweep then faulted, so the only retry \
+         left is one the fault returns past — the marker stands over a possibly \
+         chip-serial-rooted verifier this reset tombstoned and no boot ever laps"
+    );
+    assert!(
+        !subject.verifier && !subject.cred,
+        "fixture: the verifier really was tombstoned under that marker, over the \
+         credential the wipe had already taken"
+    );
+    assert_eq!(
+        subject.answered,
+        Sw::MEMORY_FAILURE,
+        "the faulted sweep is still reported, so the re-arm changed no answer"
+    );
+
+    // CONTROL A: the head refusal alone. The sweeps complete, so the retry is
+    // reached — the refusal is not by itself what leaves the marker.
+    let head_only = reset_under(Some(rsk_fs::EF_HARDENED), None);
+    assert!(!head_only.marker, "control: a refusal the retry recovers");
+    assert_eq!(head_only.answered, Sw::OK);
+
+    // CONTROL B: the sweep fault alone. The head re-arm lands, so the fault has no
+    // latched marker to leave behind.
+    let sweep_only = reset_under(None, Some(EF_OTP_PIN));
+    assert!(
+        !sweep_only.marker,
+        "control: the head re-arm already landed"
+    );
+    assert_eq!(sweep_only.answered, Sw::MEMORY_FAILURE);
+}
+
+/// The wrap to a second batch, which nothing in this crate crossed: every fixture
+/// above puts FIVE records live against a [`SWEEP_BATCH`] of 32, so the bound that
+/// keeps `fids[n]` in range was untested — and what breaks it is an out-of-bounds
+/// index in a `no_std` image, not a wrong answer. Measured: delete
+/// `n < fids.len()` and this crate reported 120 passed, 0 failed. `rsk-openpgp`'s
+/// wipe is the same shape and had the same hole; FIDO, PIV and `Fs::factory_wipe`
+/// already have this test. Sweep by class, not by site.
+///
+/// Sized OFF the batch: a fill copied as 48 would stop crossing the wrap the day
+/// the batch widened, with this test still green — the defect this whole series is
+/// about.
+#[test]
+fn a_sweep_clears_more_credentials_than_one_batch_holds() {
+    const FILL: u16 = SWEEP_BATCH as u16 + 16;
+    const _: () = assert!(FILL as u32 <= RESET_MAX_DELETES && FILL <= MAX_OATH_CRED);
+    let mut fs = Fs::new(RamStorage::new());
+    fs.scan();
+    for i in 0..FILL {
+        fs.put(EF_OATH_CRED + i, &[0x11; 24]).unwrap();
+    }
+    assert_eq!(sweep(&mut fs, is_oath_cred_fid), Ok(false));
+    for i in 0..FILL {
+        assert!(
+            !fs.has_data(EF_OATH_CRED + i),
+            "0x{:04X} survived a sweep that spans two batches",
+            EF_OATH_CRED + i
+        );
+    }
+}
+
+/// An un-yielded fid is not an absent fid: a walk the medium truncated must fail the
+/// sweep rather than read the empty batch as "the range is clear" — which is a wipe
+/// answering success over key material it never looked at.
+///
+/// Forcing the `complete` arm true left 615 / 118 / 197 passing: PIV owned this guard
+/// and the other three did not, because the only fixture that truncates a walk was
+/// PIV's own local one. It is `rsk_fs::storage::faults::TruncatedWalk` now.
+#[test]
+fn a_truncated_enumeration_fails_the_sweep_instead_of_reading_it_as_clear() {
+    let mut fs = Fs::new(TruncatedWalk::new());
+    fs.scan();
+    fs.put(EF_OATH_CRED, &[0x11; 24]).unwrap();
+    assert_eq!(sweep(&mut fs, is_oath_cred_fid), Err(Sw::MEMORY_FAILURE));
+    let mut buf = [0u8; 24];
+    assert_eq!(
+        fs.read(EF_OATH_CRED, &mut buf),
+        Some(24),
+        "the credential was never swept"
+    );
 }
 
 /// An OTP PIN the owner set must be required before the password-safe secrets

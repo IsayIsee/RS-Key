@@ -1,0 +1,448 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 RS-Key contributors
+#
+# THE PLACES A MODEL DELIBERATELY NARROWS, and what each of them owes.
+#
+# A `.tla` module here is checked exhaustively over the surface it names, so
+# every clause that takes something OUT of that surface moves a piece of the
+# product beyond every mutant the module has. `RSKeyAppletSeams`'s `Reselect`
+# hard-codes `\/ a = Oath` twice — once to clear the statuses OATH does not keep
+# through a re-SELECT, once to stop the conformance recorder firing at it — and
+# for the whole life of that module, deleting either changed the input of no
+# gate. This file is the ledger those clauses were missing, and stage 6's exit
+# criterion is its contract: an exception in a model with no row here reddens
+# the row, and a row here naming an exception the model no longer has reddens it
+# the other way.
+#
+# WHICH EXCEPTIONS EXIST IS DERIVED, never stored. scripts/model_exception_gate.py
+# scans every `formal/*.tla` for three shapes — a narrowing operand, a set
+# literal that omits what a sibling has, a `CASE` that answers for part of its
+# domain — over each module's OWN vocabulary, resolved through `EXTENDS`. A
+# roster typed here and typed again into the gate's regex is the failure this
+# tree has already paid for four times: the list in the source shrinks, the copy
+# in the guard shrinks with it, and the registry stays "complete" over a shorter
+# list. Measured while this landed: scoping the vocabulary to the module's own
+# text hid `RSKeyTokenGate`'s only narrowing, because the eleven operations it
+# narrows are defined in the module it extends.
+#
+# HAND-WRITTEN FIELDS ONLY: id, kind, production, why, mutant, owed, carried_by.
+# `module`, `line`, `shape`, `site`, `clause`, `against` and `omits` address the
+# derived site and are held against it, so a clause edited rather than removed is
+# a finding rather than an unrelated diff.
+#
+# kind
+#   narrowing   a hole in the model standing for a fact about the product: this
+#               applet, this reference, this operation, and not its siblings
+#   dispatch    a per-case answer the operand test read as a hole. A label, and a
+#               label can be wrong — nothing here can check it, the way nothing
+#               in assurance/deleters.toml can check a `class`
+#   mutant-arm  a defect the module carries on purpose, driven by a configuration.
+#               The one kind that may never say `owes`
+#
+# mutant
+#   <name>.cfg  the configuration that drives this clause. Held BOTH ways: the
+#               file must be in formal/, and it must switch a `Bug…` constant the
+#               row's own definition reads, so a row cannot claim a mutant that
+#               belongs to a different clause
+#   owes        no configuration refutes this narrowing yet. Then `owed` names the
+#               one that would, and THAT file must not exist — pay the debt and
+#               the row goes red until it claims what it paid
+#
+# READ THE `owed` COLUMN AS DEBT, NOT AS A PLAN. Most rows still owe a mutant
+# and the price below is why. A narrowing in the seam family costs one switch in
+# RSKeyAppletSeams.tla's CONSTANTS and in gen-configs.sh's `SEAM_BUGS`,
+# one arm in `seam_target`, a requirement-side statement for the clause to
+# violate — the ones that have none cost an invariant in `SEAM_INV` and a
+# `[[property]]` in assurance/properties.toml with it — two generated
+# configurations (`SeamMut_…`, `SeamSolo_…`), and a regeneration of the other
+# thirty in the family, which all carry every switch. It costs ZERO rows in
+# formal/floors.txt: `SeamMut_*.cfg` and `SeamSolo_*.cfg` are already wildcard
+# families required RED, and `LatMut_*`/`LatSolo_*`/`PolicyMut_*`/`PolicySolo_*`
+# are too. What it does cost is a re-record of the whole TLC tier, because
+# formal/runs.toml stores that matrix row by row and every published run-count is
+# counted out of it. The configurations themselves run in about a second each —
+# it is the re-record that costs 103 minutes, and it is paid ONCE however many
+# rows a wave clears, which is why the OATH default-open family was paid in one
+# wave rather than a row at a time.
+#
+# AND WHAT A SWITCH CANNOT PAY, so the next wave does not re-derive it. The seam
+# invariant sees a status HELD outside the selection that bought it and nothing
+# else, so a narrowing whose defect makes a status go FALSE — a code-less OATH
+# that LOCKS, a policy that spends freshness it never established — reddens no
+# configuration at all. Those rows owe a requirement-side statement first, and
+# an invariant is not free here: it is a `[[property]]` in
+# assurance/properties.toml, which is the registry the matrix, the evidence
+# bundles and the generated pages all read. MX-SEAM-004/005 are out for a reason
+# of their own, and their rows state it: the two clauses cannot switch apart.
+#
+# The other price a seam switch pays is a code twin: formal/comutants.toml is
+# closed-world over `SeamMut_*`, so a switch with no host-testable twin cannot
+# land — `pending` is floored at zero and the floor may only go down.
+#
+# How many rows are in each state is DERIVED: scripts/model_exception_gate.py
+# prints it on every green run. A count typed into this paragraph is the column
+# assurance/platform.toml's header records having got wrong.
+
+[[exception]]
+id = "MX-SEAM-001"
+module = "RSKeyAppletSeams.tla"
+line = 125
+shape = "set"
+site = "Refs"
+clause = "Refs"
+against = "RSKeyRetryLattice.tla:Refs"
+omits = ["pivPuk", "rc"]
+kind = "narrowing"
+production = "PIV's PUK and OpenPGP's resetting code are real references with real verifiers (crates/rsk-piv/src/lib.rs, crates/rsk-openpgp/src/pin.rs), but neither leaves an in-RAM security status behind: each is PRESENTED inside a RESET RETRY and spends a counter, which is the lattice module's subject and not this one's."
+why = '''
+The seam module is about who HOLDS a status and what ends it, so a reference
+that grants nothing has nothing to hold. The narrowing is the reason the two
+modules can share a name and disagree about it, and it is exactly the assumption
+to attack the day a recovery reference starts opening a command on its own.
+'''
+mutant = "owes"
+owed = "SeamSolo_BugRecoveryRefHoldsStatus.cfg"
+
+[[exception]]
+id = "MX-SEAM-002"
+module = "RSKeyAppletSeams.tla"
+line = 206
+shape = "clause"
+site = "ClearedFor"
+clause = 'r = "oathCode"'
+kind = "narrowing"
+production = "OATH is default-OPEN: `validated = !code_set` (crates/rsk-oath/src/lib.rs), so a deselect of a code-less applet leaves it unlocked rather than locked."
+why = '''
+Every other reference falls to FALSE when its applet loses the selection; this
+one falls to "unlocked unless a code is provisioned". Without the exception the
+shipped tree would be red at `ClearedFor`; with it, the clause decides both
+directions at once, and only one of them is a run. `BugDeselectKeepsOathUnlock`
+drives that one — a deselect that leaves a PROVISIONED OATH unlocked, refused at
+the first SELECT away. The other, a code-less OATH that LOCKS, is refuted by
+nothing here and cannot be: a status that is FALSE is never one held outside its
+selection, so it owes a requirement-side statement rather than a switch.
+'''
+mutant = "SeamSolo_BugDeselectKeepsOathUnlock.cfg"
+carried_by = "NAR-OATH-REMOVAL"
+
+[[exception]]
+id = "MX-SEAM-003"
+module = "RSKeyAppletSeams.tla"
+line = 211
+shape = "clause"
+site = "AllCleared"
+clause = 'r = "oathCode"'
+kind = "narrowing"
+production = "The same default-OPEN rule one path over: a card reset and a power cycle rebuild the applet from `new()`, and a code-less OATH comes back unlocked (crates/rsk-oath/src/lib.rs)."
+why = '''
+Its own row rather than a share of MX-SEAM-002, for the reason
+`BugUnscopedOtpCancel` has its own switch in the sibling module: the same
+requirement in a different function, and the two paths have already diverged once
+— `CardReset` was pinned to a no-op by an `UNCHANGED` naming a variable its own
+ELSE branch assigned, so the reset path was not modelled at all while the
+deselect path was. `BugResetKeepsOathUnlock` drives it through `CardReset`, and
+the trace is not MX-SEAM-002's: the reset selects NOTHING, so the status stands
+outside every selection rather than inside the wrong one. The locking direction
+is unrefutable here for the reason it is there.
+'''
+mutant = "SeamSolo_BugResetKeepsOathUnlock.cfg"
+carried_by = "NAR-OATH-REMOVAL"
+
+[[exception]]
+id = "MX-SEAM-004"
+module = "RSKeyAppletSeams.tla"
+line = 227
+shape = "clause"
+site = "Reselect"
+clause = "a = Oath"
+kind = "narrowing"
+production = "OATH ignores the `reselect` flag the applet trait hands it and re-locks (crates/rsk-oath/src/lib.rs), while PIV and OpenPGP keep everything — SP 800-73-4 pt2 3.1.1 makes it a `shall`, OpenPGP 3.4.1 4.2 holds access status until a select to a different DF, and a YubiKey 5.7.4 was measured keeping both."
+why = '''
+The clause the criterion is about. It is a recorded, deliberate asymmetry with no
+oracle reading behind it — three applets, and the third does the opposite of the
+other two — and it is a hole in the strongest direction: a change that made PIV
+or OpenPGP re-lock would be caught by `ReselectPreservesAccessStatus`, while a
+change that made OATH KEEP its unlock is caught by nothing at all, because the
+sibling clause at :210 also stops the recorder firing at it.
+'''
+mutant = "owes"
+owed = "SeamSolo_BugOathReselectKeepsStatus.cfg"
+
+[[exception]]
+id = "MX-SEAM-005"
+module = "RSKeyAppletSeams.tla"
+line = 237
+shape = "clause"
+site = "Reselect"
+clause = "a = Oath"
+kind = "narrowing"
+production = "The recorder half of the same fact: `ReselectPreservesAccessStatus` is a conformance claim about PIV and OpenPGP, so OATH is exempted in the writer rather than in the invariant, because the exemption belongs to that applet and not to the rule."
+why = '''
+Two rows and not one, because the two clauses fail apart. Delete the one at :200
+and OATH keeps its status while this one keeps the recorder quiet, so the model
+goes green over the defect; delete this one and the shipped tree goes RED at
+`ReselectPreservesAccessStatus` for a behaviour the product has on purpose. A
+single row would have described whichever of those someone thought of first.
+'''
+mutant = "owes"
+owed = "SeamSolo_BugOathReselectUnrecorded.cfg"
+
+[[exception]]
+id = "MX-SEAM-006"
+module = "RSKeyAppletSeams.tla"
+line = 446
+shape = "clause"
+site = "PgpKeyOp"
+clause = 'r = "pw1"'
+kind = "narrowing"
+production = "EF_PW_PRIV[0] = 0 makes PW1 no. 81 valid for exactly one PSO:CDS (crates/rsk-openpgp/src/keys.rs). PW1 no. 82 — PSO:DECIPHER and INTERNAL AUTHENTICATE — carries no such rule and is not spent."
+why = '''
+The one-shot spend is narrowed to the signature reference. `BugSigPinNotSpent`
+mutates whether the spend HAPPENS and is required RED; nothing mutates which
+reference it happens AT, so a spend that also took PW1.82 down — or a widening
+that stopped taking PW1.81 down — passes this clause untouched.
+'''
+mutant = "owes"
+owed = "SeamSolo_BugDecipherPinSpentLikeSig.cfg"
+carried_by = "NAR-ASSIGNMENT-HOLES"
+
+[[exception]]
+id = "MX-SEAM-007"
+module = "RSKeyAppletSeams.tla"
+line = 448
+shape = "clause"
+site = "PgpKeyOp"
+clause = 'r = "pw1"'
+kind = "narrowing"
+production = "The requirement-side twin of the line above: `psig` is the freshness the specification leaves behind, and it is spent by a signature under the one-shot status and by nothing else."
+why = '''
+Kept apart from MX-SEAM-006 for the reason the ghost exists at all. The two
+clauses are the implementation half and the requirement half of one fact, and
+they are what makes `BugSigPinNotSpent` fall structurally rather than through its
+own `viol` assignment; narrowing them together would let a mutant repair the
+property it is meant to break.
+'''
+mutant = "owes"
+owed = "SeamSolo_BugDecipherGhostSpentLikeSig.cfg"
+carried_by = "NAR-ASSIGNMENT-HOLES"
+
+[[exception]]
+id = "MX-SEAM-008"
+module = "RSKeyAppletSeams.tla"
+line = 614
+shape = "clause"
+site = "NoStatusOutsideItsSelection"
+clause = 'r = "oathCode"'
+kind = "narrowing"
+production = "An unlocked code-less OATH is not a status anybody authenticated for (crates/rsk-oath/src/lib.rs), so the seam invariant exempts that one reference while `~oathCodeSet`."
+why = '''
+The exemption inside the invariant, and the tree has already paid for it once:
+an unauthenticated access-code REMOVAL is DEFINITIONALLY invisible here, because
+this clause fires exactly when `~oathCodeSet` and the removal itself sets that.
+The repair was a recorder at the step (`AccessCodeRemovalNeedsTheCode`), not a
+change to the exemption. `BugCodelessOathIsAStatus` takes the exemption out and
+the shipped tree is red at the INITIAL state, which is what says the clause is
+reached and load-bearing rather than one nothing branches on. One direction
+only: a WIDER exemption weakens the invariant, so no configuration can make that
+half fail, and it stays an argument about which states can reach it.
+'''
+mutant = "SeamSolo_BugCodelessOathIsAStatus.cfg"
+carried_by = "NAR-OATH-REMOVAL"
+
+[[exception]]
+id = "MX-SEAM-009"
+module = "RSKeyAppletSeams.tla"
+line = 190
+shape = "clause"
+site = "Init"
+clause = 'r = "oathCode"'
+kind = "narrowing"
+production = "A fresh card has no access code, so OATH answers `validated` from the start (crates/rsk-oath/src/lib.rs) while PIV and OpenPGP start with every status FALSE."
+why = '''
+The same default-OPEN fact as MX-SEAM-002/003, in the one place it has no
+connective to hang off — the initial predicate builds the characteristic function
+of a single reference. Its own row because it is the one that decides where every
+trace STARTS: a defect here does not lose a status, it hands out one the model
+then treats as legitimate for the whole run. `BugFreshCardOpensOtpPin` is that
+defect — OATH's OTP PIN handed out by the same default-open rule as its access
+code — and the initial state is already outside every selection, so the run is
+refused before a step is taken.
+'''
+mutant = "SeamSolo_BugFreshCardOpensOtpPin.cfg"
+carried_by = "NAR-OATH-REMOVAL"
+
+[[exception]]
+id = "MX-SEAM-010"
+module = "RSKeyAppletSeams.tla"
+line = 573
+shape = "clause"
+site = "FactoryWipe"
+clause = 'r = "oathCode"'
+kind = "narrowing"
+production = "`Fs::factory_wipe` (crates/rsk-fs/src/fs.rs) takes the access code with everything else, so the applet comes back code-less and therefore open — the fresh-card state again, reached the other way."
+why = '''
+Not a share of MX-SEAM-009, because the two differ in what they leave standing:
+the wipe is FLASH-only and never sees an applet, so every in-RAM status here
+stands over freshly-defaulted verifiers until the reboot both callers queue. The
+model folds the wipe and that reboot into one step, and this clause is what makes
+the folded step agree with the initial one. `BugWipeWithoutItsReboot` separates
+them, and it is the fold itself that the run measures: the wipe alone leaves a
+PIV status standing over freshly-defaulted verifiers at `sel = NoApplet`, which
+is the seam invariant's own shape. So what is owed here is no longer a mutant
+but the split — a wipe and a reboot as two steps, with the window between them.
+'''
+mutant = "SeamSolo_BugWipeWithoutItsReboot.cfg"
+carried_by = "NAR-OATH-REMOVAL"
+
+[[exception]]
+id = "MX-LAT-001"
+module = "RSKeyRetryLattice.tla"
+line = 66
+shape = "set"
+site = "Refs"
+clause = "Refs"
+against = "RSKeyAppletSeams.tla:Refs"
+omits = ["oathCode", "oathOtpPin", "pivMgm", "pw2"]
+kind = "narrowing"
+production = "PW2 is PW1 mode 0x82 and shares PW1's verifier and counter (crates/rsk-openpgp/src/pin.rs), so it is PW1's counter under another name. The OATH access code and the OTP slot code are a MAC / equality challenge-response with no retry counter at all, and PIV's 9B management key has none either."
+why = '''
+Four references left out of a lattice about counters, for two different reasons,
+and only one of them is stated in the module: the comment names PW2 and the two
+OATH codes and is silent about `pivMgm`. That silence is the finding this row
+carries — a reader checking the model against the product would find three
+justifications for four omissions, and the fourth is the one a 9B mutual
+authenticate would need if it ever gained a budget.
+'''
+mutant = "owes"
+owed = "LatSolo_BugPw2HasItsOwnCounter.cfg"
+
+[[exception]]
+id = "MX-LAT-002"
+module = "RSKeyRetryLattice.tla"
+line = 72
+shape = "set"
+site = "VerifyTargets"
+clause = "VerifyTargets"
+against = "Refs"
+omits = ["pivPuk", "rc"]
+kind = "narrowing"
+production = "Neither the PUK nor the resetting code is verified on its own: each is presented as the recovery secret inside a RESET RETRY (crates/rsk-piv/src/lib.rs, crates/rsk-openpgp/src/pin.rs), where a wrong one still spends its counter."
+why = '''
+The narrowing decides which references `Next` offers a direct VERIFY at, so a
+firmware that started answering VERIFY on the PUK — the shape a spec-completeness
+change reaches for — is outside the model rather than caught by it. `Recover`
+does exercise both references' floors, which is why this is a narrowing of the
+reachable space and not of the property.
+'''
+mutant = "owes"
+owed = "LatSolo_BugRecoveryRefIsVerifiable.cfg"
+
+[[exception]]
+id = "MX-LAT-003"
+module = "RSKeyRetryLattice.tla"
+line = 82
+shape = "case"
+site = "RecoveryOf"
+clause = "RecoveryOf"
+against = "Refs"
+omits = ["pivPuk", "pw3", "rc"]
+kind = "narrowing"
+production = "Blocked is terminal for the PUK, PW3 and the resetting code: TERMINATE DF and a factory RESET are the only ways back, and both belong to the reset models rather than to this ladder."
+why = '''
+The `OTHER -> {}` arm answers for three of the five references, so `Recover` is
+never enabled at any of them and no interleaving in this module can reach a
+terminal reference's recovery. A mutant that gave one of them a recovery path
+would not be caught here; it would simply be a bigger model.
+'''
+mutant = "owes"
+owed = "LatSolo_BugTerminalRefRecovers.cfg"
+carried_by = "NAR-RETRY-LATTICE"
+
+[[exception]]
+id = "MX-LAT-004"
+module = "RSKeyRetryLattice.tla"
+line = 82
+shape = "case"
+site = "RecoveryOf"
+clause = "RecoveryOf"
+against = "VerifyTargets"
+omits = ["pw3"]
+kind = "narrowing"
+production = "OpenPGP's admin path from PW3 to PW1 (RESET RETRY, P1 = 0x02) gates on a live PW3 SESSION (crates/rsk-openpgp/src/pin.rs), not on a secret presented in the call — which is the seam module's status and not this module's counter."
+why = '''
+The same `CASE` measured against the references a host verifies directly, and it
+is a different statement: PW3 is a VERIFY target with no recovery, while the
+other two omissions are references a host never verifies at all. Two rows for one
+clause, because the derivation measures against every containing set rather than
+guessing which one the author meant — and the two answers are what a reader needs
+to see the admin path is out for a reason the ladder cannot express.
+'''
+mutant = "owes"
+owed = "LatSolo_BugAdminPathRefills.cfg"
+carried_by = "NAR-RETRY-LATTICE"
+
+[[exception]]
+id = "MX-POL-001"
+module = "RSKeyAppletPolicies.tla"
+line = 140
+shape = "clause"
+site = "PivKeyOp"
+clause = 'pivPolicy # "never"'
+kind = "narrowing"
+production = "PIN policy NEVER needs no PIN, so a key operation at such a slot has no freshness to spend; ONCE and ALWAYS both do, and the firmware spends at both (crates/rsk-piv/src/auth.rs)."
+why = '''
+Two of the three PIN policies are treated as one. The narrowing is safe in the
+direction the module argues — a NEVER slot has nothing to spend — and unfalsified
+in the other: nothing drives a NEVER slot that DOES spend, so a firmware that
+started clearing `pin_fresh` at an unauthenticated slot would be a behaviour
+change this model cannot see.
+
+And a switch alone will not buy it — measured, not argued. Built as
+`BugNeverSlotSpendsFreshness` and run at `Policies.cfg`'s constants against all
+six invariants, the mutant is GREEN over a state space IDENTICAL to the shipped
+one, 9 200 521 states and 331 776 distinct in both arms: spending at a NEVER
+slot reaches no state the other policies do not already reach, so only the EDGES
+differ and no state predicate can be written that sees it. The debt is a
+recorder at the STEP, and here that is an invariant, which is a `[[property]]`
+row and the registries that read it. `owed` names the configuration, not the
+work.
+'''
+mutant = "owes"
+owed = "PolicySolo_BugNeverSlotSpendsFreshness.cfg"
+
+[[exception]]
+id = "MX-POL-002"
+module = "RSKeyAppletPolicies.tla"
+line = 146
+shape = "clause"
+site = "PivKeyOp"
+clause = 'pivPolicy = "always"'
+kind = "narrowing"
+production = "`PivAlwaysSpendsFreshness` is a claim about PIN-policy-ALWAYS slots only: one VERIFY buys one operation there (crates/rsk-piv/src/auth.rs), while a ONCE slot keeps its freshness for the whole session by design."
+why = '''
+The recorder is narrowed one policy value tighter than the spend it watches. The
+clause above spends at ONCE and at ALWAYS; this one records a failure to spend at
+ALWAYS alone, so an ONCE slot that stopped spending violates nothing here. That
+asymmetry is deliberate — ONCE has no such requirement — but it is stated in two
+places that can drift apart, and only one of them has a mutant.
+'''
+mutant = "owes"
+owed = "PolicySolo_BugOnceSlotUnrecorded.cfg"
+
+[[exception]]
+id = "MX-TOKG-001"
+module = "RSKeyTokenGate.tla"
+line = 86
+shape = "clause"
+site = "AuthorizedFrom"
+clause = 'op = "UseAcfg"'
+kind = "mutant-arm"
+production = "authenticatorConfig served with no PIN and no live token — the one Authorized edge the abstract requirement forbids, rebuilt on purpose so a green `NoAuthorizationBypassA` is a run that could have gone red."
+why = '''
+Not a hole in the model but a defect inside it, narrowed to one operation so the
+oracle has exactly one edge to disagree about. It is here rather than absent
+because the derivation cannot tell a deliberate defect from a deliberate
+omission, and a shape that quietly dropped one would drop the other: this row is
+what says which it is, and its `mutant` is the configuration that drives it.
+'''
+mutant = "TokenGateMut_BugUnauthorizedEdge.cfg"

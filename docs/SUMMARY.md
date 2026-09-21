@@ -23,6 +23,7 @@
 - [Git: signing + auth](guides/git.md)
 - [OpenPGP card](guides/openpgp.md)
 - [PIV](guides/piv.md)
+- [`age` encryption + secretspec](guides/age.md)
 - [OATH — TOTP / HOTP](guides/oath.md)
 - [OTP slots](guides/otp.md)
 - [Seed backup](guides/seed-backup.md)
@@ -47,22 +48,31 @@
 # Security
 
 - [Threat model](threat-model.md)
+- [Assurance case](assurance-case.md)
 - [Limitations](limitations.md)
 - [`unsafe` audit](unsafe.md)
 - [Constant-time audit](ct-audit.md)
 - [Formal model](formal.md)
+  - [Assurance matrix](assurance-matrix.md)
+  - [Assurance vector](assurance-vector.md)
+  - [Bounds](assurance-bounds.md)
+  - [Platform assumptions](platform-assumptions.md)
+  - [Authorization slice design](authorization-slice.md)
   - [Token refinement pilot](token-refinement.md)
   - [Cross-reset refinement pilot](reset-refinement.md)
   - [Store refinement pilot](store-refinement.md)
+  - [Verified compilation decision](verified-compilation.md)
 
 # Internals
 
 - [Architecture](architecture.md)
 - [Host protocol](protocol.md)
 - [Testing](testing.md)
+- [Reproducing the evidence](reproducing.md)
 - [Interop matrix](interop.md)
 - [Versions](versioning.md)
 - [Motivation](motivation.md)
+- [Roadmap](roadmap.md)
 
 <!-- The governance files (CONTRIBUTING, SECURITY, COMPLIANCE) live at the repo
      root and are linked from the Introduction page. They are intentionally not

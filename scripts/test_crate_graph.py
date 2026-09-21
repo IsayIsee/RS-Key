@@ -18,6 +18,7 @@ import re
 import pytest
 
 import crate_graph
+import gate_lines
 
 TIERS = [
     ("BIN", "the binary", "#000", ["firmware"]),
@@ -125,7 +126,7 @@ def test_this_checkout_is_green():
 def test_check_sh_runs_the_row():
     """A guard nothing invokes can be deleted with the whole suite still green."""
     check = (crate_graph.ROOT / "scripts/check.sh").read_text()
-    assert "scripts/crate_graph.py --check" in check
+    assert gate_lines.runs(check, "scripts/crate_graph.py --check")
 
 
 # --- the roster seam: a crate the drawing would silently omit ------------------

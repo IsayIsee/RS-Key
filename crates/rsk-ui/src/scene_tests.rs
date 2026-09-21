@@ -528,8 +528,17 @@ fn raster_failure_rolls_back_checkpoint_state_and_clear_cannot_hide_it() {
 
 #[test]
 fn scene_memory_stays_within_the_documented_stack_budget() {
-    assert!(core::mem::size_of::<Scene>() <= 16 * 1024);
-    eprintln!("Scene host size: {} bytes", core::mem::size_of::<Scene>());
+    // What used to be here was a re-typed copy of scene.rs's ceiling, and it kept
+    // asserting 16 KiB after that one moved. Spend the named budget, and spend the
+    // whole frame's — a `Scene` is the largest part of what one costs the stack, not
+    // all of it, and `display_stack_floor` is sized against the total.
+    let scene = core::mem::size_of::<Scene>();
+    let frame = scene + 2 * BAND_BYTES + core::mem::size_of::<[DamageTag; DAMAGE_TILES]>();
+    eprintln!(
+        "Scene host size: {scene} bytes; one retained frame: {frame} of \
+         {RETAINED_FRAME_STACK_BYTES}"
+    );
+    assert!(frame <= RETAINED_FRAME_STACK_BYTES);
 }
 
 #[test]
@@ -576,15 +585,32 @@ fn a_complex_screen_fits_the_retained_capacity() {
 
 static CENSUS_MAX_STREAM: AtomicUsize = AtomicUsize::new(0);
 static CENSUS_MAX_CHECKPOINTS: AtomicUsize = AtomicUsize::new(0);
+/// The glyph the census is currently filling every dynamic label with, and the
+/// renderer + glyph behind `CENSUS_MAX_STREAM` — a bare "too big" says nothing
+/// about which screen and which relying-party name to go and look at.
+static CENSUS_GLYPH: AtomicUsize = AtomicUsize::new(0);
+static CENSUS_WORST: std::sync::Mutex<std::string::String> =
+    std::sync::Mutex::new(std::string::String::new());
 
 fn retained_frame_fits(name: &str, draw: impl FnOnce(&mut Scene) -> Result<(), SceneError>) {
+    let glyph = CENSUS_GLYPH.load(Ordering::Relaxed) as u8 as char;
     let mut scene = Scene::default();
-    draw(&mut scene).unwrap_or_else(|error| panic!("{name}: {error:?}"));
+    draw(&mut scene).unwrap_or_else(|error| panic!("{name} at {glyph:?}: {error:?}"));
     scene
         .finalize(DAMAGE_KEY)
-        .unwrap_or_else(|error| panic!("{name}: {error:?}"));
-    CENSUS_MAX_STREAM.fetch_max(usize::from(scene.stream_len), Ordering::Relaxed);
+        .unwrap_or_else(|error| panic!("{name} at {glyph:?}: {error:?}"));
+    let stream = usize::from(scene.stream_len);
+    if stream > CENSUS_MAX_STREAM.fetch_max(stream, Ordering::Relaxed) {
+        *CENSUS_WORST.lock().unwrap() = std::format!("{name} at {glyph:?}");
+    }
     CENSUS_MAX_CHECKPOINTS.fetch_max(usize::from(scene.checkpoint_len), Ordering::Relaxed);
+}
+
+/// A label of `LABEL_MAX` copies of one glyph. `Label::clamp` passes `0x20..=0x7E`
+/// through untouched, so every one of these is a relying-party id or user name a
+/// registration can actually put on the screen.
+fn glyph_label(glyph: u8) -> crate::Label {
+    crate::Label::clamp(&[glyph; crate::LABEL_MAX])
 }
 
 fn max_entropy_label() -> crate::Label {
@@ -712,8 +738,7 @@ fn every_semantic_renderer_fits_the_damage_rectangle_capacity() {
     });
 }
 
-#[test]
-fn every_full_frame_renderer_fits_with_maximum_dynamic_text() {
+fn census_full_frames(label: crate::Label) {
     use crate::{
         AccountRow, AppsView, AuditKind, AuditRow, BackupView, CardholderView, ConfirmPrompt,
         HomeView, OathDetailView, OathRow, OpenpgpView, PgpKeyView, PgpSlotRow, PinCaption, PinPad,
@@ -721,9 +746,6 @@ fn every_full_frame_renderer_fits_with_maximum_dynamic_text() {
         StatusKind, SuccessKind,
     };
 
-    CENSUS_MAX_STREAM.store(0, Ordering::Relaxed);
-    CENSUS_MAX_CHECKPOINTS.store(0, Ordering::Relaxed);
-    let label = max_entropy_label();
     let confirm = ConfirmPrompt {
         title: "Approve security operation",
         primary: label,
@@ -1006,11 +1028,43 @@ fn every_full_frame_renderer_fits_with_maximum_dynamic_text() {
 
     // Partial animation and page-body renderers do not own a complete Scene. Their
     // parent frame is covered above; direct panel tests cover their clipped writes.
+}
+
+/// Bytes of `STREAM_CAPACITY` the census must leave free. A renderer inside this
+/// band still fits, but has stopped having room for the next glyph a font update
+/// draws differently — and the far side of the line is a panic on the trusted
+/// display, not a clipped pixel. The 12 KiB this replaced cleared its own census
+/// by 42 bytes while two glyphs it never tried were already over.
+const STREAM_RESERVE: usize = 1024;
+
+#[test]
+fn every_full_frame_renderer_fits_with_maximum_dynamic_text() {
+    CENSUS_MAX_STREAM.store(0, Ordering::Relaxed);
+    CENSUS_MAX_CHECKPOINTS.store(0, Ordering::Relaxed);
+
+    // Sweep the glyph rather than pick one. A relying party chooses the bytes in
+    // its own id and user name, `Label::clamp` passes all 95 printable ones, and
+    // which of them costs the retained encoder the most is a property of the font
+    // — not something a test can freeze and still be measuring years later. The
+    // hand-picked `(index * 37) % 94` label this replaced measured 10683 bytes
+    // where `'j'` measures 14630, so it certified a ceiling two glyphs cleared.
+    for glyph in 0x20..=0x7Eu8 {
+        CENSUS_GLYPH.store(usize::from(glyph), Ordering::Relaxed);
+        census_full_frames(glyph_label(glyph));
+    }
+
     let max_stream = CENSUS_MAX_STREAM.load(Ordering::Relaxed);
     let max_checkpoints = CENSUS_MAX_CHECKPOINTS.load(Ordering::Relaxed);
-    assert!(max_stream <= STREAM_CAPACITY);
+    let worst = CENSUS_WORST.lock().unwrap().clone();
+    eprintln!(
+        "renderer census maximum: {max_stream} stream bytes ({worst}), {max_checkpoints} checkpoints"
+    );
+    assert!(
+        max_stream + STREAM_RESERVE <= STREAM_CAPACITY,
+        "{worst} takes {max_stream} of {STREAM_CAPACITY} stream bytes, leaving under the \
+         {STREAM_RESERVE}-byte reserve"
+    );
     assert!(max_checkpoints <= CHECKPOINT_CAPACITY);
-    eprintln!("renderer census maximum: {max_stream} stream bytes, {max_checkpoints} checkpoints");
 }
 
 const FULL_FRAME_RENDERERS: &[&str] = &[

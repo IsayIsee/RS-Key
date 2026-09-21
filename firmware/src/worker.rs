@@ -370,8 +370,8 @@ impl<'a> Worker<'a> {
     /// periodic tick that polls the button for typed-ticket presses. All flash
     /// access stays on this single task.
     pub async fn run(&mut self) -> ! {
-        // Seed the keyboard status frame so a host poll before any command reads
-        // the real version + slot bits.
+        // Seed the keyboard status frame: polls from here on read the real version +
+        // slot bits, and any that landed earlier got `OtpHid::new`'s placeholder.
         otp_kbd::set_status(otp_kbd::make_status_frame(self.ccid.otp_status_record()));
         loop {
             match select3(

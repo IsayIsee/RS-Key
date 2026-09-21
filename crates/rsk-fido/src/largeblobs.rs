@@ -183,7 +183,12 @@ fn write_fragment<S: Storage, R: Rng>(
     // spells out the converse: an array CAN be written without user verification while
     // no PIN is configured. Entries stay AEAD-sealed under their largeBlobKey, so an
     // unverified write can destroy but never read.
-    if ctx.fs.has_data(EF_PIN) || crate::config::always_uv_enabled(ctx.fs) {
+    // `try_has_data`, because the absent arm here is the one that skips the token
+    // check: a faulted EF_PIN probe would let an unverified host overwrite the
+    // array on a PIN-protected key.
+    if ctx.fs.try_has_data(EF_PIN).map_err(|_| CtapError::Other)?
+        || crate::config::always_uv_enabled(ctx.fs)
+    {
         // pinUvAuthParam MAC over 0xff×32 ‖ 0x0c ‖ 0x00 ‖ offset_le(4) ‖ sha256(set).
         // A present-but-unsupported protocol is judged first — `0` is a value the
         // platform sent — and an absent one only where the token needs it.

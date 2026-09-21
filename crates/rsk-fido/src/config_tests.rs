@@ -107,7 +107,7 @@ fn run(state: &mut FidoState, req: &[u8]) -> CtapResult {
     authenticator_config(&mut ctx, req, &mut out)
 }
 
-fn run_fs(fs: &mut Fs<RamStorage>, state: &mut FidoState, req: &[u8]) -> CtapResult {
+fn run_fs<S: Storage>(fs: &mut Fs<S>, state: &mut FidoState, req: &[u8]) -> CtapResult {
     let mut rng = SeqRng(1);
     let mut out = [0u8; 64];
     let mut presence = crate::AlwaysConfirm;
@@ -319,6 +319,55 @@ fn enable_enterprise_attestation() {
     assert_eq!(run_fs(&mut fs, &mut state, &req), Ok(0));
     // Persisted: a fresh power cycle (new FidoState) still sees it.
     assert!(fs.has_data(EF_EA_ENABLED));
+}
+
+/// The same rule under a medium that would not answer, on both of the probes that
+/// decide it. `set_min_pin_length` reads `EF_PIN` twice — `has_data` for "is a PIN
+/// set at all", then the record for its length — and a collapsed answer at either
+/// leaves `force` FALSE. That value is then PERSISTED as `EF_MINPINLEN[1] = 0`, so a
+/// PIN below the new floor keeps working with no change demanded, `force_change_pending`
+/// reads the cleared flag forever, and the live token is never invalidated. Nothing
+/// short of another setMinPINLength repairs it, and nothing tells the owner.
+#[test]
+fn a_faulted_pin_probe_does_not_clear_the_forced_change() {
+    for skip in [0u32, 1] {
+        let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+        let mut fs = Fs::new(backend);
+        fs.scan();
+        // A 4-char PIN on file, and a floor already above it.
+        let mut pin_file = [0u8; 35];
+        pin_file[0] = 8;
+        pin_file[1] = 4;
+        pin_file[2] = 1;
+        fs.put(EF_PIN, &pin_file).unwrap();
+        let mut state = armed(PERM_ACFG);
+        let before = state.paut.token;
+
+        medium.stick_after(EF_PIN, skip);
+        let r = run_fs(
+            &mut fs,
+            &mut state,
+            &config_request(0x03, &subpara_min_pin(6), &TOKEN),
+        );
+        medium.stick(None);
+
+        assert_ne!(
+            medium.value(EF_MINPINLEN).as_deref().map(|v| v[1]),
+            Some(0),
+            "probe {skip}: a faulted read persisted forceChangePin = 0 over a PIN \
+             shorter than the floor it just raised"
+        );
+        assert_eq!(
+            r,
+            Err(CtapError::Other),
+            "probe {skip}: a setMinPINLength that could not read the PIN it must \
+             judge has to refuse"
+        );
+        assert_eq!(
+            state.paut.token, before,
+            "probe {skip}: and a refused command must not disturb the live token"
+        );
+    }
 }
 
 #[test]
@@ -586,4 +635,125 @@ fn an_unsupported_protocol_is_judged_before_the_subcommand_and_the_token() {
         let mut state = armed(PERM_ACFG);
         assert_eq!(run(&mut state, &req), Err(want), "subcommand {sub:#x}");
     }
+}
+
+/// `alwaysUv` is the UV requirement for every makeCredential and getAssertion, and
+/// an absent `EF_ALWAYS_UV` means "the compile default" — normally OFF. `Fs::read`
+/// answers the same `None` for that and for a read the flash could not serve, so a
+/// faulted probe silently dropped the gate to user presence. It resolves ON now.
+#[test]
+fn a_faulted_always_uv_read_resolves_to_on() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    fs.put(EF_ALWAYS_UV, &[1]).unwrap();
+    assert!(crate::config::always_uv_enabled(&mut fs));
+    medium.stick(Some(EF_ALWAYS_UV));
+    assert!(
+        crate::config::always_uv_enabled(&mut fs),
+        "a faulted EF_ALWAYS_UV read dropped the UV gate to the compile default"
+    );
+}
+
+/// `set_phy` is the FIDO half of the phy read-modify-write, and it carried its own
+/// copy of the merge rather than going through `rsk_phy`'s: a `load(..)
+/// .unwrap_or_default()` that read a failed probe as "nothing was ever written",
+/// so one PicoForge field write saved the DEFAULT record with that field on top
+/// and took the owner's USB identity, product string and LED wiring with it.
+#[test]
+fn a_faulted_phy_probe_does_not_wipe_the_record_a_config_write_edits() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    let owner = rsk_phy::PhyData {
+        vid_pid: Some((0x1234, 0x5678)),
+        usb_product: rsk_phy::Product::new(b"RSK Custom"),
+        led_gpio: Some(21),
+        led_num: Some(4),
+        ..Default::default()
+    };
+    rsk_phy::save(&mut fs, &owner).unwrap();
+    let before = medium.value(rsk_phy::EF_PHY).expect("record written");
+
+    let mut st = armed(PERM_ACFG);
+    let sub = subpara_vendor_int(CONFIG_PHY_LED_BRIGHTNESS, 64);
+    medium.stick_once(rsk_phy::EF_PHY);
+    let r = run_fs(&mut fs, &mut st, &vendor_req(&sub, &TOKEN));
+    let after = medium.value(rsk_phy::EF_PHY).expect("record present");
+    let kept = rsk_phy::PhyData::parse(&after);
+    assert_eq!(
+        (kept.vid_pid, kept.usb_product, kept.led_gpio, kept.led_num),
+        (
+            owner.vid_pid,
+            owner.usb_product,
+            owner.led_gpio,
+            owner.led_num
+        ),
+        "a faulted probe wiped the fields the config write did not carry \
+         ({} bytes stored, was {})",
+        after.len(),
+        before.len()
+    );
+    assert_eq!(after, before, "a refused write must leave the record alone");
+    assert_eq!(
+        r,
+        Err(CtapError::Other),
+        "a config write that could not read the record it edits must refuse"
+    );
+}
+
+/// CTAP 2.1 §6.11 makes minPINLength monotonic — setMinPINLength may only raise it,
+/// and nothing but a factory reset puts a lowered floor back. `current_min_pin` is
+/// the only thing that knows what the floor currently is, and it read `EF_MINPINLEN`
+/// with `Fs::read`, whose `None` covers both "no policy set" and "the flash could not
+/// serve it". The collapsed arm resolves to the build's `MIN_PIN_LENGTH`, so one
+/// faulted probe let the monotonic guard pass and wrote the LOWER floor.
+#[test]
+fn a_faulted_min_pin_probe_does_not_lower_the_floor() {
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    let mut state = armed(PERM_ACFG);
+    run_fs(
+        &mut fs,
+        &mut state,
+        &config_request(0x03, &subpara_min_pin(16), &TOKEN),
+    )
+    .unwrap();
+    assert_eq!(
+        medium.value(EF_MINPINLEN).as_deref().map(|v| v[0]),
+        Some(16),
+        "the enterprise floor is in place before the fault"
+    );
+
+    // Control: the monotonic guard refuses a lower floor on a healthy medium. 8 is
+    // above every profile's `MIN_PIN_LENGTH`, so a collapsed probe cannot refuse it
+    // for the length's own sake under `fips-profile` either.
+    assert_eq!(
+        run_fs(
+            &mut fs,
+            &mut state,
+            &config_request(0x03, &subpara_min_pin(8), &TOKEN)
+        ),
+        Err(CtapError::PinPolicyViolation),
+        "control: minPINLength can only grow"
+    );
+
+    medium.stick_once(EF_MINPINLEN);
+    let r = run_fs(
+        &mut fs,
+        &mut state,
+        &config_request(0x03, &subpara_min_pin(8), &TOKEN),
+    );
+    medium.stick(None);
+    assert_eq!(
+        medium.value(EF_MINPINLEN).as_deref().map(|v| v[0]),
+        Some(16),
+        "a faulted probe lowered the minPINLength floor, which only a reset raises back"
+    );
+    assert_eq!(
+        r,
+        Err(CtapError::Other),
+        "a setMinPINLength that could not read the floor it must not lower has to refuse"
+    );
 }

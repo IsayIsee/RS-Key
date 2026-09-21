@@ -20,8 +20,8 @@ pub use rsk_sdk::{AlwaysConfirm, Confirm, Presence, Rng, UserPresence};
 use rsk_sdk::{Apdu, Applet, ResBuf, Sw};
 use zeroize::Zeroize;
 
-/// YKOATH applet AID.
-pub const OATH_AID: &[u8] = &[0xA0, 0x00, 0x00, 0x05, 0x27, 0x21, 0x01];
+/// YKOATH instance AID, all 8 bytes: YubiKit selects by the whole of it, ykman by 7.
+pub const OATH_AID: &[u8] = &[0xA0, 0x00, 0x00, 0x05, 0x27, 0x21, 0x01, 0x01];
 
 /// Version reported in the SELECT response — the shared
 /// [`rsk_sdk::FIRMWARE_VERSION`]. ykman gates protocol features (rename, touch)
@@ -315,10 +315,13 @@ impl<'a> OathApplet<'a> {
         let mkek = read_fused(self.mkek_source);
         let dev = self.device(&mkek);
         match find_cred(&dev, fs, name, &mut scratch) {
-            Some((fid, _)) => {
-                let _ = fs.delete(fid);
-                Sw::OK
-            }
+            // Read the answer: this command's whole effect is the removal, and a
+            // `9000` over a TOTP secret still in flash is what the host prints as
+            // "deleted". PIV's DELETE DATA and CTAP's deleteCredential both do.
+            Some((fid, _)) => match fs.delete(fid) {
+                Ok(()) => Sw::OK,
+                Err(_) => Sw::MEMORY_FAILURE,
+            },
             None => Sw::DATA_INVALID,
         }
     }
@@ -335,9 +338,15 @@ impl<'a> OathApplet<'a> {
             if !key.is_empty() {
                 return Sw::WRONG_DATA;
             }
-            let _ = fs.delete_key(EF_OATH_CODE);
+            // Answered, like the sibling removals: `select` derives `validated`
+            // from `!code_set`, so a `9000` over a code that stayed hands the owner
+            // a card that locks itself again on the next power cycle.
+            let dropped = fs.delete_key(EF_OATH_CODE);
             self.validated = true;
-            return Sw::OK;
+            return match dropped {
+                Ok(()) => Sw::OK,
+                Err(_) => Sw::MEMORY_FAILURE,
+            };
         }
         // KEY, CHALLENGE, RESPONSE and nothing else, in the card's order —
         // which is ykman's and the YKOATH document's.
@@ -367,6 +376,18 @@ impl<'a> OathApplet<'a> {
         if !ct_eq(resp, &mac[..size]) {
             return Sw::DATA_INVALID;
         }
+        // Re-arm the one-shot at-rest lap (rsk-fs `EF_HARDENED`): EF_OTP_PIN is the
+        // only OATH record with no eager boot migration, so the copy the tombstone
+        // below supersedes can still be keyed under the pre-OTP arm the public chip
+        // serial derives. BEFORE the delete, and only if it LANDED: the two are
+        // separate appends, so a reset between them keeps whichever one did.
+        //
+        // Ahead of the SEAL as well, because this returns: a code sealed first is a
+        // lock the caller was told had failed, with the PIN it never reached still
+        // opening it — `validated` is per-session, and the next SELECT is not.
+        if rsk_fs::request_rescrub(fs).is_err() {
+            return Sw::MEMORY_FAILURE;
+        }
         self.rng.borrow_mut().fill(&mut self.challenge);
         let mkek = read_fused(self.mkek_source);
         let dev = self.device(&mkek);
@@ -377,9 +398,13 @@ impl<'a> OathApplet<'a> {
         // `validated` flag as VALIDATE, so a PIN minted while the applet was open
         // would survive as a second, invisible unlock path for the store the owner
         // is protecting right now. Re-mint it from a session that knows this code.
-        let _ = fs.delete(EF_OTP_PIN);
+        // Answered rather than discarded: a surviving PIN is that second path, and
+        // the lock-down covers both arms below, the refused drop's included.
         self.validated = false;
-        Sw::OK
+        match fs.delete(EF_OTP_PIN) {
+            Ok(()) => Sw::OK,
+            Err(_) => Sw::MEMORY_FAILURE,
+        }
     }
 
     fn cmd_reset<S: Storage>(&mut self, _apdu: &Apdu, fs: &mut Fs<S>) -> Sw {
@@ -490,6 +515,11 @@ impl<'a> OathApplet<'a> {
         // A present-but-unreadable code (over-long or corrupt) must keep the applet
         // LOCKED — a fail-open here unlocked it without the access code. A truly
         // absent code leaves the applet as select() set it (unlocked, no code).
+        //
+        // The collapsing probe stands: `select` reads a code it could not probe as
+        // SET and starts the session locked, so `validated` is already false in every
+        // state this arm can be reached in. Measured — a `try_has_key` twin here is
+        // bit-identical, and a guard nothing can falsify is a comment with a type.
         let Some(n) = seal::seal_read(&dev, fs, EF_OATH_CODE, &mut code) else {
             if fs.has_key(EF_OATH_CODE) {
                 self.validated = false;
@@ -592,17 +622,9 @@ impl<'a> OathApplet<'a> {
                 return Sw::MEMORY_FAILURE;
             }
         }
-        res.push(TAG_RESPONSE + apdu.p2);
-        let chal_eff = match &imf {
-            Some(r) => &scratch[r.start..r.start + 8],
-            None => chal,
-        };
-        if calculate(apdu.p2 == 0x01, &scratch[key_at], chal_eff, res).is_none() {
-            return Sw::EXEC_ERROR;
-        }
-        if let Some(r) = imf {
-            // Bump the counter and persist the updated blob.
-            let mut counter = [0u8; 8];
+        // HOTP's counter is the same kind of mark: its advance lands before the code.
+        let mut counter = [0u8; 8];
+        if let Some(r) = &imf {
             counter.copy_from_slice(&scratch[r.start..r.start + 8]);
             let v = u64::from_be_bytes(counter).wrapping_add(1);
             scratch[r.start..r.start + 8].copy_from_slice(&v.to_be_bytes());
@@ -615,6 +637,14 @@ impl<'a> OathApplet<'a> {
             ) {
                 return Sw::MEMORY_FAILURE;
             }
+        }
+        res.push(TAG_RESPONSE + apdu.p2);
+        let chal_eff = match imf {
+            Some(_) => &counter[..],
+            None => chal,
+        };
+        if calculate(apdu.p2 == 0x01, &scratch[key_at], chal_eff, res).is_none() {
+            return Sw::EXEC_ERROR;
         }
         Sw::OK
     }
@@ -1015,8 +1045,14 @@ impl<'a> OathApplet<'a> {
     /// A store with neither a code nor a PIN stays open, as YKOATH intends for a
     /// code-less applet — this only makes the credential the owner *did* create
     /// mean something.
+    /// A probe the medium could not answer is refused, not read as "no PIN set":
+    /// `Fs::has_data` collapses the two, and the absent arm here hands the stored
+    /// credentials to an unauthenticated host.
     fn otp_pin_gate<S: Storage>(&self, fs: &mut Fs<S>) -> Result<(), Sw> {
-        if fs.has_data(EF_OTP_PIN) && !self.otp_pin_verified {
+        let set = fs
+            .try_has_data(EF_OTP_PIN)
+            .map_err(|_| Sw::MEMORY_FAILURE)?;
+        if set && !self.otp_pin_verified {
             return Err(Sw::SECURITY_STATUS_NOT_SATISFIED);
         }
         Ok(())
@@ -1042,8 +1078,12 @@ impl<'a> OathApplet<'a> {
         {
             return Sw::SECURITY_STATUS_NOT_SATISFIED;
         }
-        if fs.has_data(EF_OTP_PIN) {
-            return Sw::CONDITIONS_NOT_SATISFIED;
+        // A faulted probe must not read as "no PIN yet": that arm overwrites the
+        // owner's OTP-PIN with the caller's.
+        match fs.try_has_data(EF_OTP_PIN) {
+            Ok(true) => return Sw::CONDITIONS_NOT_SATISFIED,
+            Err(_) => return Sw::MEMORY_FAILURE,
+            Ok(false) => {}
         }
         let Some(pw) = find_tag(&apdu.data[..apdu.nc], TAG_PASSWORD as u16) else {
             return Sw::WRONG_DATA;
@@ -1125,6 +1165,13 @@ impl<'a> OathApplet<'a> {
         if let Err(sw) = self.spend_and_match_otp_pin(fs, &mut rec, size, pw) {
             return sw;
         }
+        // Re-arm the one-shot at-rest lap (rsk-fs `EF_HARDENED`; audit run-35): the
+        // record the write below supersedes may be keyed under the pre-OTP arm the
+        // public chip serial derives. Before the write and gating it, like VERIFY —
+        // a marker this command cannot clear is one the next boot obeys.
+        if rsk_fs::request_rescrub(fs).is_err() {
+            return Sw::MEMORY_FAILURE;
+        }
         match fs.put(EF_OTP_PIN, &self.otp_pin_record_v1(new_pw)) {
             Ok(()) => Sw::OK,
             Err(_) => Sw::MEMORY_FAILURE,
@@ -1148,13 +1195,19 @@ impl<'a> OathApplet<'a> {
         if let Err(sw) = self.spend_and_match_otp_pin(fs, &mut rec, size, pw) {
             return sw;
         }
-        // Success: reset the counter and (lazily) upgrade a legacy record to the
-        // OTP-rooted v1 verifier. The OTP PIN doubles as VALIDATE (nitropy flow).
-        let _ = fs.put(EF_OTP_PIN, &self.otp_pin_record_v1(pw));
-        // The record just superseded may have been keyed under the pre-OTP arm,
-        // which the public chip serial derives. Re-arm the one-shot at-rest lap
-        // (rsk-fs `EF_HARDENED` invariant; audit run-35).
-        rsk_fs::request_rescrub(fs);
+        // The record the upgrade below supersedes may be keyed under the pre-OTP
+        // arm, which the public chip serial derives. Re-arm the one-shot at-rest lap
+        // (rsk-fs `EF_HARDENED` invariant; audit run-35) BEFORE that write, so a
+        // reset between the two appends costs the re-key and never the re-arm.
+        //
+        // A re-arm the medium REFUSED skips the write instead of failing the verify:
+        // this upgrade is already best-effort here (`let _`), and skipping it leaves
+        // the record in force rather than superseded under a marker nothing clears.
+        if rsk_fs::request_rescrub(fs).is_ok() {
+            // Success: reset the counter and (lazily) upgrade a legacy record to the
+            // OTP-rooted v1 verifier. The OTP PIN doubles as VALIDATE (nitropy flow).
+            let _ = fs.put(EF_OTP_PIN, &self.otp_pin_record_v1(pw));
+        }
         self.validated = true;
         self.otp_pin_verified = true;
         Sw::OK
@@ -1187,7 +1240,11 @@ impl<S: Storage> Applet<Fs<S>> for OathApplet<'_> {
         res.push(TAG_NAME);
         res.push(8);
         res.extend(&self.serial_name());
-        let code_set = fs.has_key(EF_OATH_CODE);
+        // A probe the medium could not serve reads as CODE SET. `validated` below is
+        // the access-code gate on every protected command, SELECT is unauthenticated
+        // and host-driven, and the collapsed `false` opened the whole store for the
+        // session — so the failed probe must lock it, not unlock it.
+        let code_set = fs.try_has_key(EF_OATH_CODE).unwrap_or(true);
         if code_set {
             self.rng.borrow_mut().fill(&mut self.challenge);
             res.push(TAG_CHALLENGE);
@@ -1470,27 +1527,68 @@ pub fn is_oath_lock_fid(fid: u16) -> bool {
 /// removed.
 const RESET_MAX_DELETES: u32 = 257;
 
+/// Fids one [`sweep`] pass collects before deleting them. Named because the wrap
+/// to a second pass is a code path, and the test that crosses it has to size its
+/// fixture off this rather than off a copy of the number.
+const SWEEP_BATCH: usize = 32;
+
 /// Delete every live OATH record, and say so only when the sweep provably
-/// completed. Mirrors `rsk_piv::files::wipe_piv`: batched because `for_each_key`
-/// cannot delete mid-iteration, de-duped because it yields one entry per stored
-/// *version*, and `force_delete` so a present-cache false-absent cannot loop.
+/// completed, with the at-rest lap re-armed around the sweeps.
 fn wipe_oath<S: Storage>(fs: &mut Fs<S>) -> Result<(), Sw> {
+    // A tombstone appends like a re-seal, and `EF_OTP_PIN` migrates only on a
+    // successful verify — so this can supersede a chip-serial-rooted verifier and
+    // owes the at-rest lap (rsk-fs `EF_HARDENED`) a re-arm, ahead of the sweeps.
+    //
+    // The failure does NOT stop the write, unlike the gated sites: "leave the
+    // record in force" means, on a wipe, leave the secrets live.
+    let _ = rsk_fs::request_rescrub(fs);
+    let swept = sweep_phases(fs);
+    // Retry, BETWEEN the sweeps and their `?` rather than after their last one: a
+    // refused head leaves the marker latched over every tombstone [`sweep_phases`]
+    // appended, and a sweep that faults on the way is exactly when that is true and
+    // unrecoverable.
+    //
+    // A single-shot refusal is the only kind either call recovers from (`rsk_otp`'s
+    // BUMP_TRIES states the same), and where the head landed this costs no append at
+    // all — `Fs::delete` skips a backend it already marked absent.
+    let _ = rsk_fs::request_rescrub(fs);
+    swept
+}
+
+/// The delete half of [`wipe_oath`]. Mirrors `rsk_piv::files::sweep_phases`:
+/// batched because `for_each_key` cannot delete mid-iteration, de-duped because it
+/// yields one entry per stored *version*, and `force_delete` so a present-cache
+/// false-absent cannot loop.
+///
+/// Its own function so the at-rest re-arm can stand between it and its caller's
+/// answer: every early return in here is one a re-arm written BELOW them would be
+/// skipped by, which is the case that re-arm exists for.
+fn sweep_phases<S: Storage>(fs: &mut Fs<S>) -> Result<(), Sw> {
     // Two phases, and the order carries the security property. `for_each_key`
     // yields in flash-ring (write) order, not FID order, so one combined sweep can
     // reach the access code before the credentials — and a power cut there leaves
     // the credentials live behind no lock at all, since `select` derives
     // `validated` from `!code_set`. Credentials first, proven empty, then the
     // unlock records.
-    sweep(fs, is_oath_cred_fid)?;
-    sweep(fs, is_oath_lock_fid)
+    let creds = sweep(fs, is_oath_cred_fid)?;
+    let locks = sweep(fs, is_oath_lock_fid)?;
+    if creds || locks {
+        return Err(Sw::MEMORY_FAILURE);
+    }
+    Ok(())
 }
 
 /// One phase of [`wipe_oath`]: delete every live fid matching `pred`, reporting
 /// success only when the enumeration provably completed over an empty range.
-fn sweep<S: Storage>(fs: &mut Fs<S>, pred: fn(u16) -> bool) -> Result<(), Sw> {
+///
+/// `Ok(true)` is "the range is clear, and a metadata record over it could not be
+/// PROVEN dropped" — carried to the end of the wipe rather than stopped on, for the reason
+/// `Fs::force_delete_halves` states.
+fn sweep<S: Storage>(fs: &mut Fs<S>, pred: fn(u16) -> bool) -> Result<bool, Sw> {
     let mut deleted = 0u32;
+    let mut orphaned = false;
     loop {
-        let mut fids = [0u16; 32];
+        let mut fids = [0u16; SWEEP_BATCH];
         let mut n = 0;
         let complete = fs.for_each_key(&mut |fid| {
             if pred(fid) && n < fids.len() && !fids[..n].contains(&fid) {
@@ -1502,7 +1600,7 @@ fn sweep<S: Storage>(fs: &mut Fs<S>, pred: fn(u16) -> bool) -> Result<(), Sw> {
             // A truncated walk (flash read fault) can hide a live fid, so an empty
             // batch only proves the range is clear when the enumeration completed.
             return if complete {
-                Ok(())
+                Ok(orphaned)
             } else {
                 Err(Sw::MEMORY_FAILURE)
             };
@@ -1512,7 +1610,9 @@ fn sweep<S: Storage>(fs: &mut Fs<S>, pred: fn(u16) -> bool) -> Result<(), Sw> {
             return Err(Sw::MEMORY_FAILURE);
         }
         for &fid in &fids[..n] {
-            fs.force_delete(fid).map_err(|_| Sw::MEMORY_FAILURE)?;
+            let gone = fs.force_delete_halves(fid);
+            gone.value.map_err(|_| Sw::MEMORY_FAILURE)?;
+            orphaned |= gone.record.is_err();
         }
     }
 }
@@ -1684,12 +1784,26 @@ fn reseal_if_plaintext<S: Storage>(
     if dev.otp_key.is_some()
         && let Some(n) = seal::seal_read(&dev.without_otp(), fs, fid, out)
     {
-        let _ = seal::seal_put(dev, fs, rng, fid, &out[..n]);
+        // Ahead of the write and gating it, per `rsk_fs::request_rescrub`: the copy
+        // it supersedes is the pre-OTP one. The `return` stays outside — falling
+        // through would re-seal that ciphertext as if it were plaintext.
+        //
+        // RESIDUAL: every command reads the CURRENT arm only, so a skipped
+        // credential leaves LIST answering `9000` over an EMPTY body until a later
+        // boot migrates it (measured). A reader fallback would re-admit the
+        // chip-serial arm at every command, not just at boot.
+        if rsk_fs::request_rescrub(fs).is_ok() {
+            let _ = seal::seal_put(dev, fs, rng, fid, &out[..n]);
+        }
         return;
     }
+    // The re-arm is the pre-OTP arm's, for a copy weaker still: this record's HMAC
+    // secret is in the clear on the medium. Gated on the OTP key because that is
+    // what `run_at_rest_lap`'s caller gates the lap on.
     if let Some(n) = fs.read_key(fid, raw)
         && let Some(blob) = raw.get(..n)
         && is_legacy_plaintext(fid, blob)
+        && (dev.otp_key.is_none() || rsk_fs::request_rescrub(fs).is_ok())
     {
         let _ = seal::seal_put(dev, fs, rng, fid, blob);
     }

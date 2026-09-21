@@ -1485,9 +1485,9 @@ fn security_page_paints_every_row_under_either_pin_state() {
             !d.oob,
             "security (pin_set={pin_set}) drew outside the panel"
         );
-        // Every Security row (Device PIN, FIDO PIN, PIV PIN, Audit log, Backup, Factory
-        // reset) is painted in the rect `hit_security` maps its tap to; the bottom row
-        // (now six) must stay on-panel (the `!oob` check above).
+        // Every Security row (Device PIN, FIDO PIN, PIV PIN, Scramble PIN pad, Audit log,
+        // Backup, Factory reset — `security_row_entry`'s order) is painted in the rect
+        // `hit_security` maps its tap to; the bottom row must stay on-panel (`!oob` above).
         for i in 0..crate::SECURITY_ROWS {
             assert!(
                 d.any_non_bg_in(settings_row_rect(i)),
@@ -2283,40 +2283,51 @@ fn hold_fill_repaints_only_the_new_strip_and_matches_one_step() {
     assert!(!incremental.wrote_anything());
 }
 
-/// Regression: `render_pin_dots` must clear the "+" overflow marker and the 10th
+/// Regression: `render_pin_dots` must clear the "+" overflow marker and the last
 /// dot when `entered` drops. The old per-dot clear was centred on each circle, so
-/// it left the "+" (drawn at x 184) and dot 10's right tail behind on a delete —
-/// a shortened PIN still read as long.
+/// it left the "+" and the last dot's right tail behind on a delete — a shortened
+/// PIN still read as long.
 #[test]
-fn pin_dots_clear_strip_erases_overflow_and_tenth_dot_on_delete() {
+fn pin_dots_clear_strip_erases_overflow_and_last_dot_on_delete() {
+    use super::pin::{ENTRY_CY, ENTRY_DIA, ENTRY_MAX_SHOWN, ENTRY_STEP, ENTRY_X0};
     use crate::render_pin_dots;
-    // ENTRY_* are private to render/pin.rs; mirror them here so the edge test does
-    // not force a wider re-export. Keep in sync with render/pin.rs.
-    const ENTRY_X0: u16 = 24;
-    const ENTRY_MAX_SHOWN: u16 = 10;
-    const ENTRY_STEP: u16 = 16;
+    // Read out of render/pin.rs, not mirrored: a mirror let `ENTRY_MAX_SHOWN` move
+    // (10 → 12 is enough) with every assertion below still passing and the overflow
+    // branch never taken.
+    let dot_x = |i: usize| (ENTRY_X0 + i as i32 * ENTRY_STEP) as u16;
+    let dot_y = (ENTRY_CY - ENTRY_DIA as i32 / 2) as u16;
 
-    // Dot i is a 12×12 circle at top-left (24 + i·16, 54). The "+" overflow marker
-    // draws to the right of the last dot (x 184..). Use boxes, not point probes, so
-    // the test does not pin a glyph baseline.
-    let dot10 = Rect::new(ENTRY_X0 + 9 * ENTRY_STEP, 54, 12, 12); // i = 9, the 10th dot.
-    let plus = Rect::new(ENTRY_X0 + ENTRY_MAX_SHOWN * ENTRY_STEP, 48, 20, 24);
+    // Dot i is an ENTRY_DIA circle at top-left (dot_x(i), dot_y). The "+" overflow
+    // marker draws in the slot just past the last dot. Boxes, not point probes, so
+    // the test does not pin a glyph baseline; the marker's 20×24 is hand-measured.
+    let last_dot = Rect::new(
+        dot_x(ENTRY_MAX_SHOWN - 1),
+        dot_y,
+        ENTRY_DIA as u16,
+        ENTRY_DIA as u16,
+    );
+    let plus = Rect::new(dot_x(ENTRY_MAX_SHOWN), dot_y - 6, 20, 24);
 
-    // 11 entered → both the 10th dot and the "+" paint; drop to 9 → both erase.
+    // One past the row → both the last dot and the "+" paint; one below it → both
+    // erase. `expected` stays under the second count so it is `entered` that drives
+    // the row, which is the state the regression was in.
+    let over = ENTRY_MAX_SHOWN + 1;
+    let under = ENTRY_MAX_SHOWN - 1;
+    let expected = (ENTRY_MAX_SHOWN - 2) as u8;
     let mut d = Rec::new();
-    render_pin_dots(&mut d, 11, 8, None).unwrap();
+    render_pin_dots(&mut d, over, expected, None).unwrap();
     assert!(
-        d.any_non_bg_in(dot10),
-        "setup: the 10th dot should paint before delete"
+        d.any_non_bg_in(last_dot),
+        "setup: the last dot should paint before delete"
     );
     assert!(
         d.any_non_bg_in(plus),
         "setup: the '+' overflow marker should paint before delete"
     );
-    render_pin_dots(&mut d, 9, 8, None).unwrap();
+    render_pin_dots(&mut d, under, expected, None).unwrap();
     assert!(
-        !d.any_non_bg_in(dot10),
-        "10th dot not erased on delete — stale tail reads as a longer PIN"
+        !d.any_non_bg_in(last_dot),
+        "last dot not erased on delete — stale tail reads as a longer PIN"
     );
     assert!(
         !d.any_non_bg_in(plus),

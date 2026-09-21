@@ -27,6 +27,8 @@ import sys
 
 import pytest
 
+import gate_lines
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts/generate_ui_fonts.py"
 OUTPUT = ROOT / "third_party/ibm-plex/font_data.rs"
@@ -185,4 +187,4 @@ def test_a_font_dir_without_the_files_is_refused(tree, tmp_path):
 def test_check_sh_runs_the_row():
     """The rule the guard cannot state about itself -- and the one that has failed."""
     text = (ROOT / "scripts/check.sh").read_text()
-    assert "scripts/generate_ui_fonts.py --check" in text
+    assert gate_lines.runs(text, "scripts/generate_ui_fonts.py --check")

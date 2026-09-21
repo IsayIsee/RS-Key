@@ -23,7 +23,7 @@ fighting over the reader. Check the card is visible (the `ykman` commands here
 assume the opt-in `VIDPID=Yubikey5` build):
 
 ```sh
-ykman piv info            # PIV version 5.7.4, slot + PIN/PUK/mgmt-key state
+ykman piv info            # PIV version 5.8.0, slot + PIN/PUK/mgmt-key state
 ```
 
 ## Defaults
@@ -326,7 +326,8 @@ The card shows up as a standard PIV token; nothing here is RS-Key-specific.
 - **`age` encryption**: `age-plugin-yubikey` drives PIV slots directly for
   identity files but, like `ykman`, keys off the "Yubico YubiKey" reader name, so
   it wants the opt-in `VIDPID=Yubikey5` build; on the default RS-Key build use any
-  PKCS#11-aware `age` build against `opensc-pkcs11.so`.
+  PKCS#11-aware `age` build against `opensc-pkcs11.so`. [age.md](age.md) covers
+  the other route, over FIDO2, which needs neither.
 
 - **ECDH / key agreement** (`9d` and retired slots, P-256/P-384 and X25519):
   `ykman piv ... ` exposes it (`ykman piv keys calculate-secret` for X25519); at

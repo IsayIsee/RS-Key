@@ -40,9 +40,10 @@ except ImportError:
     sys.exit("missing dependency: pip install cryptography")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _device import find_reader  # noqa: E402
+from _device import FW_VERSION_HINT, find_reader, fw_version  # noqa: E402
 
 PIV_AID = [0xA0, 0x00, 0x00, 0x03, 0x08, 0x00, 0x00, 0x10, 0x00, 0x01, 0x00]
+WANT_VERSION = bytes(fw_version())
 
 INS_VERIFY, INS_CHANGE_PIN, INS_RESET_RETRY = 0x20, 0x24, 0x2C
 INS_GENERATE, INS_AUTH = 0x47, 0x87
@@ -311,10 +312,10 @@ def main():
     print("SELECT PIV OK")
 
     ver, _ = piv.apdu(INS_VERSION, 0, 0, le=True)
-    if bytes(ver) != b"\x05\x07\x04":
-        fail(f"version {bytes(ver).hex()} != 050704")
+    if bytes(ver) != WANT_VERSION:
+        fail(f"version {bytes(ver).hex()} != {WANT_VERSION.hex()} {FW_VERSION_HINT}")
     serial, _ = piv.apdu(INS_YK_SERIAL, 0, 0, le=True)
-    print(f"  version 5.7.4, serial {int.from_bytes(serial, 'big')}")
+    print(f"  version {'.'.join(map(str, WANT_VERSION))}, serial {int.from_bytes(serial, 'big')}")
 
     # Retry counter on a fresh applet (default PIN, 3 tries).
     _, sw = piv.verify_pin(b"", want=None)

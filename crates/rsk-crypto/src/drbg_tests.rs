@@ -80,3 +80,17 @@ fn matches_sp800_90a_via_verified_hmac() {
     d.fill(&mut out);
     assert_eq!(out, expected);
 }
+
+#[test]
+fn scrub_wipes_both_halves_of_the_state() {
+    // The reboot path scrubs a *live* generator, and K and V are secret jointly:
+    // V is the chaining value the next Generate hashes, K the key it hashes it
+    // under — leave either behind and the hand-off keeps half the keystream.
+    let mut d = HmacDrbg::new(b"seed material xyz");
+    stream::<32>(&mut d);
+    assert!(d.k.iter().any(|&x| x != 0), "K is live before the scrub");
+    assert!(d.v.iter().any(|&x| x != 0), "V is live before the scrub");
+    d.scrub();
+    assert!(d.k.iter().all(|&x| x == 0), "K survived the scrub");
+    assert!(d.v.iter().all(|&x| x == 0), "V survived the scrub");
+}

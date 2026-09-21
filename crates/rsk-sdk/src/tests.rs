@@ -4,11 +4,11 @@
 use super::*;
 
 #[test]
-fn default_firmware_version_is_5_7_4() {
+fn default_firmware_version_is_5_8_0() {
     // The default build must keep masquerading as a current YubiKey 5; an
     // override (FW_VERSION=…) is the only thing that changes this.
-    assert_eq!(FIRMWARE_VERSION, (5, 7, 4));
-    assert_eq!(FIRMWARE_VERSION_U32, 0x05_07_04);
+    assert_eq!(FIRMWARE_VERSION, (5, 8, 0));
+    assert_eq!(FIRMWARE_VERSION_U32, 0x05_08_00);
 }
 
 #[test]

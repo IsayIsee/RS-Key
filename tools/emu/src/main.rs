@@ -20,6 +20,8 @@ mod display;
 mod hid;
 mod otp_kbd;
 mod park;
+#[cfg(test)]
+mod pin_client;
 mod platform;
 mod presence;
 mod rng;

@@ -13,7 +13,7 @@ The host tests cover the construction and each mutation path; only the stack can
 show that the tag a platform receives is the one it can open, and that it survives
 the power the device actually loses.
 
-  1. reset + no token yet          -> 0x1E absent
+  1. reset, nobody holds a token   -> 0x1E present anyway, exactly 32 bytes
   2. PIN, then a pcmr token        -> 0x1E present, exactly 32 bytes, tag = zero
   3. two getInfo calls in a row    -> different IVs, SAME tag underneath
   4. makeCredential (rk)           -> the tag moves
@@ -136,10 +136,11 @@ def cm(dev, cid, sub, subpara, token):
 def main():
     dev, cid = replug.reset(None, "a clean slate for encCredStoreState")
     try:
-        assert ENC_CRED_STORE_STATE not in get_info(dev, cid), (
-            "0x1E is keyed by the persistent token, so it must be absent before one exists"
+        blob = get_info(dev, cid).get(ENC_CRED_STORE_STATE)
+        assert blob is not None and len(blob) == ENC_MEMBER_LEN, (
+            f"0x1E is published from provisioning, before any platform asks, got {blob!r}"
         )
-        print("1. no persistent token yet: 0x1E absent, as it must be")
+        print("1. no platform holds a token yet, and 0x1E is already published")
 
         token = pin_token(dev, cid, PERM_PCMR, set_pin=True)
         first, zero = tag(dev, cid, token)

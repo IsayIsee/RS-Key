@@ -93,6 +93,13 @@ pub const DELIMS: [&'static str; 3] = [
     lane::<'a, 'b>(b'('),
     "end",
 ];
+
+pub const GATED: usize = 32;
+
+pub fn one() -> usize {
+    const LOCAL: usize = 1;
+    LOCAL
+}
 """
 
 PY = """\
@@ -131,6 +138,17 @@ FIXTURE_SPANS = [
 
 def fixture_span_use():
     return len(FIXTURE_SPANS)
+
+
+FIXTURE_GATED = 1
+
+
+def fixture_gated():
+    return FIXTURE_GATED
+
+
+def fixture_gated_use():
+    return fixture_gated()
 """
 
 #: A second file defining a name `src/lib.rs` also defines. Two modules each with
@@ -165,6 +183,10 @@ pub fn pair() -> u8 {
 
 pub fn delims() -> u8 {
     crate::DELIMS[0]
+}
+
+pub fn gated() -> usize {
+    crate::GATED
 }
 """
 
@@ -676,6 +698,108 @@ def test_another_files_definition_of_the_same_name_is_still_a_site(tree):
     report = tree.report()
     assert sorted(report) == ["SERIAL_OFF"]
     assert report["SERIAL_OFF"] == ["src/dup.rs:1", "src/other.rs:12"]
+
+
+# --- and the one it refused wrongly: a name that gains a SECOND definition ------
+
+
+def fixture_split(tree):
+    """Give `GATED` a second, `cfg`-gated arm and leave the first line alone.
+
+    `b37cfc3`'s shape exactly: the attribute above the original is written, the
+    original definition line is not, and the new arm goes below it.
+    """
+    tree.edit(
+        "src/lib.rs",
+        "pub const GATED: usize = 32;\n",
+        "#[cfg(not(kani))]\npub const GATED: usize = 32;\n"
+        "#[cfg(kani)]\npub const GATED: usize = 3;\n",
+    )
+
+
+def test_a_cfg_split_is_a_redefinition_and_not_a_fresh_name(tree):
+    """The defect this section is for, measured on `b37cfc3`.
+
+    `EF_META` gained a `#[cfg(kani)]` arm at `0x0017` beside an untouched `0xE010`,
+    so the name was in `born`, absent from `gone`, and `fresh` skipped the whole
+    audit — 246 sites across 39 files, reported as nothing, exit 0. Two definitions
+    is the change; which of the two the diff happened to write is not.
+    """
+    fixture_split(tree)
+    report = tree.report()
+    assert sorted(report) == ["GATED"]
+    assert report["GATED"] == ["src/other.rs:28"]
+
+
+def test_a_brand_new_name_arriving_already_split_is_still_fresh(tree):
+    """Both arms inside the change, so nothing downstream can have gone unread.
+
+    The over-fix, and the direction that gets a guard switched off: without
+    `num not in added` an added definition is its own second definition and every
+    fresh name in the tree reports. `FIXTURE_ROW` is named in the docs before the
+    code lands, so it arrives with a `git grep` hit already on it.
+    """
+    tree.edit(
+        "src/lib.rs",
+        "pub const GATED: usize = 32;\n",
+        "pub const GATED: usize = 32;\n#[cfg(not(kani))]\npub const FIXTURE_ROW: usize = 3;\n"
+        "#[cfg(kani)]\npub const FIXTURE_ROW: usize = 1;\n",
+    )
+    assert tree.report() == {}
+
+
+def test_a_function_local_const_redeclared_in_another_fn_is_not_a_redefinition(tree):
+    """The narrowing, and the direction that decides whether the rule survives.
+
+    `d823436` declares `const LIVE: u16 = 5;` in a second test fn beside the one
+    that already had it — ordinary Rust, and no other function can see either. Of
+    the 48 names this tree defines twice in one file, 26 are this; without the
+    column-0 anchor the last 120 commits go from 26 firing to 28.
+    """
+    widen(tree)
+    tree.edit(
+        "src/lib.rs",
+        "pub fn one() -> usize {\n    const LOCAL: usize = 1;\n    LOCAL\n}\n",
+        "pub fn one() -> usize {\n    const LOCAL: usize = 1;\n    LOCAL\n}\n\n"
+        "pub fn two() -> usize {\n    const LOCAL: usize = 2;\n    LOCAL\n}\n",
+    )
+    assert tree.names() == ["WIDTH"]
+
+
+def test_a_namesake_in_another_file_is_not_a_redefinition(tree):
+    """One file, not the tree — the arm this rule gives up, pinned so it stays given up.
+
+    A second module defining its own `SLOTS` is ordinary. Asking `git grep` instead
+    took the last 120 commits from 26 firing to 41: every new `scripts/` module
+    fires on `def main(`, `def audit(`, `ROOT`, and a guard that cries wolf is a
+    guard someone deletes. What it costs is a split whose halves are in different
+    files, and `src/dup.rs` is the shape that would have to carry it.
+    """
+    widen(tree)
+    path = tree.root / "src/other.rs"
+    path.write_text(path.read_text() + "\npub const SLOTS: usize = 4;\n")
+    assert tree.names() == ["WIDTH"]
+
+
+def test_a_second_module_level_binding_is_a_redefinition(tree):
+    """Python's half of the same shape: the later binding wins, and nothing says so.
+
+    `PY_DEF` is anchored at column 0 already, so this half needs no narrowing — an
+    indented rebinding is E200's flood, not a redefinition.
+    """
+    tree.edit("tool.py", "FIXTURE_GATED = 1\n", "FIXTURE_GATED = 1\nFIXTURE_GATED = 2\n")
+    report = tree.report()
+    assert sorted(report) == ["FIXTURE_GATED"]
+    assert report["FIXTURE_GATED"] == ["tool.py:43"]
+
+
+def test_a_second_module_level_def_of_the_same_name_is_a_redefinition(tree):
+    """The `def` half: a signature nothing checks, twice, and the second one wins."""
+    path = tree.root / "tool.py"
+    path.write_text(path.read_text() + "\n\ndef fixture_gated():\n    return 0\n")
+    report = tree.report()
+    assert sorted(report) == ["fixture_gated"]
+    assert report["fixture_gated"] == ["tool.py:46"]
 
 
 # --- the rev-range path, which nothing drives ----------------------------------
