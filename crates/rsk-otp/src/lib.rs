@@ -1042,7 +1042,11 @@ pub fn slot_status<S: Storage>(dev: &Device, fs: &mut Fs<S>) -> [SlotStatus; 4] 
     }; 4];
     let mut buf = [0u8; SLOT_SIZE];
     for (i, fid) in (EF_OTP_SLOT1..=EF_OTP_SLOT_LAST).enumerate() {
-        if try_read_slot(dev, fs, fid, &mut buf).ok().flatten().is_none() {
+        if try_read_slot(dev, fs, fid, &mut buf)
+            .ok()
+            .flatten()
+            .is_none()
+        {
             continue;
         }
         let tkt = buf[OFF_TKT_FLAGS];

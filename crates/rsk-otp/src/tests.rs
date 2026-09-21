@@ -2343,4 +2343,3 @@ fn boot_bump_retries_a_refused_write_and_pins_what_it_cannot_close() {
         "RESIDUAL CLOSED: update docs/threat-model.md's TM-HOST-OTP-REPLAY"
     );
 }
-
