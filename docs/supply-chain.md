@@ -316,10 +316,10 @@ The files that decide what a release is. A digest here covers the parts the tabl
 
 | File | sha256 |
 |---|---|
-| `.github/workflows/release.yml` | `eec4a008c70fd74e9e06f5637d86091f79abee01febda663d325fbc608262c62` |
-| `.github/workflows/release-build.yml` | `94d406140551925effbd7f5c6cca42faf454cba42972b08e1ce217f0a0fa921a` |
-| `nix/firmware.nix` | `b4a024e9693c60d88ed82896ed1039c5efc8b5d1f6e8a8f5657b55d8eb1b5b21` |
-| `scripts/pt.sh` | `df342c0f83589fc7550943a0bf40e6eeb038f00bd2e169f77d1b0fd5407d7994` |
+| `.github/workflows/release.yml` | `943eae75595831de403c51f1468be0d255b182a20fb155ab9a9eca956c54270f` |
+| `.github/workflows/release-build.yml` | `952c9e29c482e95776c2c037285ac0597b2492831f05b3b8fbd0085855334276` |
+| `nix/firmware.nix` | `f6105606c43a10b3beecb7e1b69771658a83a656ac72ed04a72cfd1dbb285da1` |
+| `scripts/pt.sh` | `c55ba6255421a664c13ba8b1e3b05b01af842d3ba8e95cd986a7a46005c877ed` |
 
 The CI code that runs them, pinned by commit:
 
