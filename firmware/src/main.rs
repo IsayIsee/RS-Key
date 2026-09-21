@@ -241,15 +241,16 @@ const _: () = assert!(
 // knobs below (PWM slice/channel, I2C, wake button) stay `display`-gated.
 #[cfg(any(feature = "display", feature = "display-keys"))]
 const BUILD_DISPLAY_SPI_FREQ_HZ: u32 = env_u32(env!("PK_DISPLAY_SPI_FREQ_HZ"));
-/// The display build's system clock. The panel's PIO program spends two instructions
+/// The display builds' system clock. The panel's PIO program spends two instructions
 /// per serial bit, so `clk_sys` has to be exactly twice `display.spi_freq_hz` for the
 /// divider to be 1 — which is what puts this above the RP2350's rated 150 MHz. The
 /// trade is written down in docs/limitations.md; the const assert below is what stops
-/// a board file from moving one half of it without the other.
-#[cfg(feature = "display")]
+/// a board file from moving one half of it without the other. The fork's GEEK
+/// `display-keys` panel runs the same 80 MHz/160 MHz pair (boards/waveshare-geek.toml).
+#[cfg(any(feature = "display", feature = "display-keys"))]
 const BUILD_DISPLAY_SYS_CLOCK_HZ: u32 = 160_000_000;
 
-#[cfg(feature = "display")]
+#[cfg(any(feature = "display", feature = "display-keys"))]
 const _: () = assert!(
     BUILD_DISPLAY_SYS_CLOCK_HZ == BUILD_DISPLAY_SPI_FREQ_HZ * 2,
     "display.spi_freq_hz must be exactly half the system clock: the PIO emits one bit \
