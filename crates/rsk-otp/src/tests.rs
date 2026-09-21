@@ -1469,6 +1469,7 @@ fn slot_status_reports_unprogrammed_slots_as_empty() {
     let mut fs = new_fs();
     let s = slot_status(&dev, &mut fs);
     assert!(s.iter().all(|x| x.kind == SlotKind::Empty && !x.touch));
+}
 
 /// The replay position a typed Yubico OTP carries — its clear public id, the
 /// persisted use counter and the RAM session counter — decoded out of the modhex
@@ -2342,3 +2343,4 @@ fn boot_bump_retries_a_refused_write_and_pins_what_it_cannot_close() {
         "RESIDUAL CLOSED: update docs/threat-model.md's TM-HOST-OTP-REPLAY"
     );
 }
+
