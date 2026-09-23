@@ -421,11 +421,19 @@ note = "eab4b5c reverted: EF_PAUTHTOKEN back in the deferred gate phase (it is a
 [comutant.BugNoDropStaleCancelAtEntry]
 status = "patch"
 file = "crates/rsk-device/src/presence.rs"
+# The anchor carries the `wait` signature: `GestureWait::wait` opens with the
+# same comment and the same two lines, so only `-> Outcome` separates them.
 find = """
+    pub fn wait<B: Board>(&mut self, arb: &Arbiter, board: &mut B) -> Outcome {
+        // Drop any cancel left from an earlier (already-finished) request so
+        // this wait starts clean.
         arb.set_cancel_requested(false);
         arb.set_up_pending(true);
 """
 replace = """
+    pub fn wait<B: Board>(&mut self, arb: &Arbiter, board: &mut B) -> Outcome {
+        // Drop any cancel left from an earlier (already-finished) request so
+        // this wait starts clean.
         arb.set_up_pending(true);
 """
 slice = ["cargo", "test", "-p", "rsk-device"]

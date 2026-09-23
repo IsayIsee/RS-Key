@@ -1880,7 +1880,7 @@ what the registry refuses:
 - `OnlyAllowConfirms` — Deny, the power button, timeout and CTAPHID cancel all
   end as Cancelled (`crates/rsk-display/src/presence.rs:120-124`); the
   Allow/Deny rectangles are disjoint and a stray touch above the band is no
-  button at all (`crates/rsk-ui/src/lib.rs:252-260`).
+  button at all (`crates/rsk-ui/src/lib.rs:254-262`).
 
 All three are ghosts, and the module says why plainly: a completed ceremony
 leaves nothing on the glass, so no reachable *state* distinguishes a phished
