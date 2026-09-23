@@ -148,11 +148,11 @@ pub(crate) fn keygen_enter() {
     // draws for a Processing status, so the keygen busy page and the
     // post-ceremony busy page are one and the same. The worker is between
     // dispatches here, so the panel borrow always succeeds.
-    if let Some(ui) = screen() {
-        if let Ok(mut board) = ui.try_borrow_mut() {
-            let panel: &mut Panel = &mut board;
-            let _ = rsk_ui::render_keys_status(panel, StatusKind::Processing);
-        }
+    if let Some(ui) = screen()
+        && let Ok(mut board) = ui.try_borrow_mut()
+    {
+        let panel: &mut Panel = &mut board;
+        let _ = rsk_ui::render_keys_status(panel, StatusKind::Processing);
     }
 }
 
@@ -209,7 +209,7 @@ pub(crate) async fn status_task(ui: &'static SharedPanel) {
             // Working breathes a little faster than Ready/Starting.
             StatusKind::Processing => {
                 breathe_ticks = breathe_ticks.wrapping_add(1);
-                if breathe_ticks % 2 == 0 {
+                if breathe_ticks.is_multiple_of(2) {
                     phase = phase.wrapping_add(1);
                     true
                 } else {
@@ -220,7 +220,7 @@ pub(crate) async fn status_task(ui: &'static SharedPanel) {
                 breathe_ticks = breathe_ticks.wrapping_add(1);
                 // One ramp step every three ticks (≈300 ms): the 16-phase ramp
                 // then completes a breath in ≈4.8 s — slow enough to feel calm.
-                if breathe_ticks % 3 == 0 {
+                if breathe_ticks.is_multiple_of(3) {
                     phase = phase.wrapping_add(1);
                     true
                 } else {
