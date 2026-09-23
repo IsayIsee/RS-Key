@@ -62,8 +62,8 @@ The `freshness` axis reads committed history only, so an uncommitted edit to an 
 | `SEC-REF-004` | `R4bEventConsensus` | 2 of 9 | 0 | 2 of 9 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
 | `SEC-REF-005` | `NoAuthorizationBypassA` | 1 of 2 | 0 | 0 of 0 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
 | `SEC-REF-006` | `RequiredGateAgreesWithRelation` | 0 of 1 | 0 | 0 of 0 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
-| `SEC-FIDO-001` | `NoAuthorizationBypass` | 5 of 50 | 12 | 0 of 0 | 4 | 0 | 3 | 4 | `f52b720` stale (58 input(s) newer) | BOUNDED |
-| `SEC-FIDO-002` | `NoCrossTransportTouchConsumption` | 5 of 42 | 5 | 0 of 0 | 2 | 0 | 3 | 4 | `31c21a7` stale (3 input(s) newer) | BOUNDED |
+| `SEC-FIDO-001` | `NoAuthorizationBypass` | 5 of 50 | 12 | 0 of 0 | 4 | 0 | 3 | 4 | `f52b720` stale (59 input(s) newer) | BOUNDED |
+| `SEC-FIDO-002` | `NoCrossTransportTouchConsumption` | 5 of 42 | 5 | 0 of 0 | 2 | 0 | 3 | 4 | `31c21a7` stale (4 input(s) newer) | BOUNDED |
 | `SEC-FIDO-003` | `NoTokenAfterInvalidation` | 5 of 45 | 6 | 0 of 0 | 2 | 0 | 4 | 0 | `31c21a7` stale (9 input(s) newer) | BOUNDED |
 | `SEC-FIDO-004` | `NoAccessibleSecretWithoutGate` | 5 of 39 | 2 | 0 of 0 | 0 | 0 | 4 | 0 | `31c21a7` stale (5 input(s) newer) | MODELLED-ONLY |
 | `SEC-FIDO-005` | `NoUnmanageableCredential` | 5 of 40 | 3 | 0 of 0 | 0 | 0 | 4 | 0 | `31c21a7` stale (6 input(s) newer) | MODELLED-ONLY |
@@ -170,8 +170,8 @@ Three spellings of "not current", which used to sit on two different pages and i
 
 | Kind | Subject | What is outstanding |
 |---|---|---|
-| bundle | `SEC-FIDO-001` | 58 input(s) newer than `f52b720` |
-| bundle | `SEC-FIDO-002` | 3 input(s) newer than `31c21a7` |
+| bundle | `SEC-FIDO-001` | 59 input(s) newer than `f52b720` |
+| bundle | `SEC-FIDO-002` | 4 input(s) newer than `31c21a7` |
 | bundle | `SEC-FIDO-003` | 9 input(s) newer than `31c21a7` |
 | bundle | `SEC-FIDO-004` | 5 input(s) newer than `31c21a7` |
 | bundle | `SEC-FIDO-005` | 6 input(s) newer than `31c21a7` |
