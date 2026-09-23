@@ -60,14 +60,30 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
   the hold threshold confirms, a longer hold declines, a scoped cancel or the
   timeout ends it — carrying the same `spent` latch and cancel scope the button
   wait does, host-tested and Kani-proved beside it.
+- **A no-host idle menu on the touchless build.** After 30 s with no host
+  configuring the device the STARTING wash becomes a read-only, single-button
+  browse of the device's own metadata — per-applet counts and slot states, PIV
+  slot policies, the OpenPGP and OATH listings, one row per passkey relying
+  party, backup state and firmware identity — plus a SETTINGS page for the menu
+  entry delay and the screen direction (the USB-C plug is reversible). The only
+  flash it writes is its own record, and plugging into a host leaves the menu
+  immediately.
+- **PIV's touch consent names the slot** it asks for (`9A Auth`, `Retired #1`,
+  …) instead of one generic title; both screen builds take the label from
+  `rsk_piv::info::slot_label`.
+- **`EF_MENU_CONF` (`0xE031`)**, the menu's own settings record, with its codec
+  in `rsk-ui` beside the touch build's `settings_store`. A record of its own
+  because `EF_DISPLAY` belongs to `rsk-display`, which this build does not pull
+  in, and that crate's single writer carries only the flags it knows.
 
 ### Changed
 
 - The at-rest hardening lap goes through `rsk_fs::run_at_rest_lap` on both
   paths, and the `display-keys` build defers it behind the panel so the ~30 s
   stall shows a working page instead of a black one.
-- `bcdDevice` moves to **0x09DB**: one more flavor to build, and a new panel
-  initialization every build of it compiles.
+- `bcdDevice` moves to **0x09DC**: one more flavor to build, a new panel
+  initialization every build of it compiles, a new settings record, and a new
+  screen.
 
 ## [0.4.11] - 2026-09-08
 

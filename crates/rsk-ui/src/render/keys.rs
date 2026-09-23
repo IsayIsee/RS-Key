@@ -22,8 +22,8 @@ pub const KEYS_H: u16 = 135;
 
 /// Horizontal inset for every text line; the text clip spans `KEYS_INSET` to
 /// `KEYS_W - KEYS_INSET`, so no line can touch the panel edges.
-const KEYS_INSET: u16 = 12;
-const KEYS_TEXT_W: u16 = KEYS_W - 2 * KEYS_INSET;
+pub(crate) const KEYS_INSET: u16 = 12;
+pub(crate) const KEYS_TEXT_W: u16 = KEYS_W - 2 * KEYS_INSET;
 
 /// Vertical centres of the confirm page's lines, top to bottom. The hint lines
 /// carry the one-button gestures the wait maps: press approves, a hold denies.
@@ -308,27 +308,24 @@ where
         Role::Heading,
         FG,
     )?;
-    // The relying-party id keeps its registrable suffix (head-truncated with the
-    // marker forced when the upstream clamp already cut it) — the same
-    // anti-phishing rule the touch confirm's plate follows.
-    text_right_ellipsized(
+    // The primary line keeps its registrable suffix through the shared consent
+    // helper — the same rule the touch prompt's service header uses.
+    consent_primary(
         t,
-        prompt.primary.as_str(),
+        &prompt.primary,
         EgPoint::new(KEYS_INSET as i32, KEYS_RP_CY as i32),
         Role::BodyStrong,
         FG,
         clip,
-        prompt.primary.truncated,
     )?;
     if !prompt.secondary.as_str().is_empty() {
-        text_left_ellipsized(
+        consent_secondary(
             t,
-            prompt.secondary.as_str(),
+            &prompt.secondary,
             EgPoint::new(KEYS_INSET as i32, KEYS_ACCOUNT_CY as i32),
             Role::Body,
             theme::GREY,
             clip,
-            prompt.secondary.truncated,
         )?;
     }
     // Gesture hints at the foot of the page.
