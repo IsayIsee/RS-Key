@@ -765,11 +765,11 @@ async fn main(spawner: Spawner) {
     config.max_power = 100;
     config.max_packet_size_0 = 64;
     // bcdDevice build counter; also surfaced on the trusted-display Firmware screen.
-    // 0x09DD: the touchless build's no-host idle menu — after 30 s without a
-    // host configuring the device, the STARTING wash becomes a read-only,
-    // single-button browse of the device's own metadata. (0x09DC is the panel
-    // pads going through one helper, the commit this one sits on.)
-    let device_release: u16 = 0x09DD;
+    // 0x09DE: the panel helper hands on the `Peri` its steal returns, so the
+    // `display-keys` flavor compiles (refactor, no behaviour change). (0x09DD
+    // is the idle menu, and 0x09DC the helper those pads go through, the
+    // commit this one sits on.)
+    let device_release: u16 = 0x09DE;
     config.device_release = device_release;
 
     let mut builder = Builder::new(
