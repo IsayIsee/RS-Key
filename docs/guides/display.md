@@ -331,6 +331,15 @@ declines. With no touch pad there is no on-device PIN entry, so PINs stay
 host-side as on a button-only key. See [hardware.md](../hardware.md) for the
 board and [releases.md](../releases.md) for the images that ship with it.
 
+When no host has configured it for a while (30 s), the STARTING wash becomes a
+read-only, single-button menu of the device's own metadata — per-applet counts
+and slot states, PIV slot policies, the OpenPGP and OATH listings, one row per
+passkey relying party (a hold opens its account list), backup state and
+firmware identity — plus a SETTINGS page for the menu entry delay and the
+screen direction (the USB-C plug is reversible). Taps step next, a double
+steps back, a hold opens a level; the only flash the menu writes is its own
+settings record, and plugging into a host leaves it immediately.
+
 ## See also
 
 - [Build options](../build.md): the `display` and `display-keys` features and their knobs.
