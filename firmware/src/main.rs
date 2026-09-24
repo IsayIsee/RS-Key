@@ -762,9 +762,9 @@ async fn main(spawner: Spawner) {
     config.max_power = 100;
     config.max_packet_size_0 = 64;
     // bcdDevice build counter; also surfaced on the trusted-display Firmware screen.
-    // 0x09DC: the touchless `display-keys` build for screen+button boards, whose
-    // panel pads go through one helper (refactor, no behaviour change).
-    let device_release: u16 = 0x09DC;
+    // 0x09DD: the panel helper hands on the `Peri` its steal returns, so the
+    // `display-keys` flavor compiles (refactor, no behaviour change).
+    let device_release: u16 = 0x09DD;
     config.device_release = device_release;
 
     let mut builder = Builder::new(
