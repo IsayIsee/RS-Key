@@ -86,6 +86,9 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
 - `bcdDevice` moves to **0x09DD**: one more flavor to build, a new panel
   initialization every build of it compiles, a new settings record, and a new
   screen.
+- `bcdDevice` moves to **0x09DE**: the panel helper hands on the `Peri` its
+  steal returns, so the `display-keys` flavor compiles — `refactor, no behaviour
+  change`.
 
 ## [0.4.11] - 2026-09-08
 
