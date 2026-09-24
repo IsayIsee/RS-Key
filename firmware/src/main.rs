@@ -1228,7 +1228,7 @@ async fn main(spawner: Spawner) {
         // The panel's build-configurable control pads, through one helper: the
         // `display` build above steals the same CS/DC/RST pads, and two
         // byte-identical sites are two the registry cannot name apart.
-        fn panel_pad(pin: u8) -> embassy_rp::gpio::AnyPin {
+        fn panel_pad(pin: u8) -> embassy_rp::Peri<'static, embassy_rp::gpio::AnyPin> {
             // Safety: the pads are proven disjoint from every other driver's pins by
             // the compile-time asserts above, and LED_KIND=none (required by
             // `display-keys`) compiles out the LED block sharing PIO0/DMA_CH0.
