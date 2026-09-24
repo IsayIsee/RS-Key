@@ -765,10 +765,11 @@ async fn main(spawner: Spawner) {
     config.max_power = 100;
     config.max_packet_size_0 = 64;
     // bcdDevice build counter; also surfaced on the trusted-display Firmware screen.
-    // 0x09DC: the touchless build's no-host idle menu — after 30 s without a
+    // 0x09DD: the touchless build's no-host idle menu — after 30 s without a
     // host configuring the device, the STARTING wash becomes a read-only,
-    // single-button browse of the device's own metadata.
-    let device_release: u16 = 0x09DC;
+    // single-button browse of the device's own metadata. (0x09DC is the panel
+    // pads going through one helper, the commit this one sits on.)
+    let device_release: u16 = 0x09DD;
     config.device_release = device_release;
 
     let mut builder = Builder::new(
@@ -1224,26 +1225,19 @@ async fn main(spawner: Spawner) {
             Irqs,
             BUILD_DISPLAY_SPI_FREQ_HZ,
         );
-        // Safety: the display control pads (CS/DC/RST/BL) are proven disjoint from
-        // every other driver's pins by the compile-time asserts above, and the
-        // display-keys compile-error requires LED_KIND=none (so the LED block,
-        // which shares PIO0/DMA_CH0, is compiled out).
-        let cs = Output::new(
-            unsafe { embassy_rp::gpio::AnyPin::steal(BUILD_DISPLAY_CS) },
-            Level::High,
-        );
-        let dc = Output::new(
-            unsafe { embassy_rp::gpio::AnyPin::steal(BUILD_DISPLAY_DC) },
-            Level::Low,
-        );
-        let rst = Output::new(
-            unsafe { embassy_rp::gpio::AnyPin::steal(BUILD_DISPLAY_RST) },
-            Level::High,
-        );
-        let bl = Output::new(
-            unsafe { embassy_rp::gpio::AnyPin::steal(BUILD_DISPLAY_BL_PIN) },
-            Level::High,
-        );
+        // The panel's build-configurable control pads, through one helper: the
+        // `display` build above steals the same CS/DC/RST pads, and two
+        // byte-identical sites are two the registry cannot name apart.
+        fn panel_pad(pin: u8) -> embassy_rp::gpio::AnyPin {
+            // Safety: the pads are proven disjoint from every other driver's pins by
+            // the compile-time asserts above, and LED_KIND=none (required by
+            // `display-keys`) compiles out the LED block sharing PIO0/DMA_CH0.
+            unsafe { embassy_rp::gpio::AnyPin::steal(pin) }
+        }
+        let cs = Output::new(panel_pad(BUILD_DISPLAY_CS), Level::High);
+        let dc = Output::new(panel_pad(BUILD_DISPLAY_DC), Level::Low);
+        let rst = Output::new(panel_pad(BUILD_DISPLAY_RST), Level::High);
+        let bl = Output::new(panel_pad(BUILD_DISPLAY_BL_PIN), Level::High);
         let mut damage_key_bytes = [0u8; 16];
         rsk_sdk::Rng::fill(&mut *rng_ref.borrow_mut(), &mut damage_key_bytes);
         let damage_key = [

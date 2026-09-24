@@ -81,7 +81,9 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
 - The at-rest hardening lap goes through `rsk_fs::run_at_rest_lap` on both
   paths, and the `display-keys` build defers it behind the panel so the ~30 s
   stall shows a working page instead of a black one.
-- `bcdDevice` moves to **0x09DC**: one more flavor to build, a new panel
+- `bcdDevice` moves to **0x09DC**: the touchless build's panel pads go through
+  one helper — `refactor, no behaviour change`.
+- `bcdDevice` moves to **0x09DD**: one more flavor to build, a new panel
   initialization every build of it compiles, a new settings record, and a new
   screen.
 
