@@ -1025,3 +1025,21 @@ asks: should the tree build this preset, or is the panel a knob of \
 `firmware-display-keys`? The board file's `bl_pwm_slice`/`bl_pwm_channel` exist \
 only to keep it shaped like a `display` board it is never built as, which is \
 the shape of the answer."""
+
+[[question]]
+column = "waveshare-touch-lcd-2"
+owner = "maintainer"
+settled_by = "ruling"
+text = """
+The 2" touch board as a preset: 16 MB geometry, `LED_KIND=none`, and the wiring \
+its board file declares — the PIO link on this board's own spi0 pins (GP18/19), \
+the CST816D on i2c0 (GP12/GP13), the backlight on GP15 slice 7 channel B, and \
+LCD_RST sharing GP20 with Touch_RST — compiled as inert constants, since a board \
+preset sets knobs and never a cargo feature. Its `SEC-DISP-001`/`-002`/`-003` \
+rows are therefore the `crate-absent` cell's, as the 2.8"'s and the GEEK's are. \
+The sharper half is what this column means for the touch build's cells: the \
+`covered` ones were measured on a 240×320 ST7789 with a CST328 on I2C1, and this \
+board is a 240×320 ST7789T3 with a CST816D on i2c0 — same geometry, a different \
+controller and a different touch part — so does a second trusted-display board \
+inherit those cells, or start as `gap` the way the GEEK's column did? Which row \
+would settle it is itself open."""

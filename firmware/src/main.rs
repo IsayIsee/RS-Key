@@ -232,7 +232,7 @@ const BUILD_WAKE_ACTIVE_HIGH: bool = env_u16(env!("PK_WAKE_ACTIVE_HIGH")) != 0;
 // already drives — catch a bad `WAKE_PIN` at compile time rather than double-claim a pad.
 #[cfg(feature = "display")]
 const _: () = assert!(
-    !BUILD_WAKE_ENABLED || BUILD_WAKE_PIN < 10 || BUILD_WAKE_PIN > 18,
+    !BUILD_WAKE_ENABLED || !matches!(BUILD_WAKE_PIN, 10..=18),
     "WAKE_PIN collides with an LCD/touch GPIO (10..=18) owned by the display build"
 );
 // Display GPIOs — defaults for the Waveshare RP2350-Touch-LCD-2.8.
@@ -270,6 +270,30 @@ const BUILD_DISPLAY_BL_PWM_SLICE: u8 = env_u16(env!("PK_DISPLAY_BL_PWM_SLICE")) 
 const BUILD_DISPLAY_BL_PWM_CHANNEL: u8 = env_u16(env!("PK_DISPLAY_BL_PWM_CHANNEL")) as u8;
 #[cfg(any(feature = "display", feature = "display-keys"))]
 const BUILD_DISPLAY_TP_RST: u8 = env_u16(env!("PK_DISPLAY_TP_RST")) as u8;
+// The PIO serial link's pads. The transport is PIO0/SM0 either way; the pads are
+// board data (GP10/GP11 on the 2.8" and the GEEK, GP18/GP19 on the 2") because a
+// `PioPin` is a type — `main` matches the pair below.
+#[cfg(any(feature = "display", feature = "display-keys"))]
+const BUILD_DISPLAY_SPI_CLK: u8 = env_u16(env!("PK_DISPLAY_SPI_CLK")) as u8;
+#[cfg(any(feature = "display", feature = "display-keys"))]
+const BUILD_DISPLAY_SPI_MOSI: u8 = env_u16(env!("PK_DISPLAY_SPI_MOSI")) as u8;
+// The touch bus: I2C1 on GP6/GP7 by default, i2c0 on GP12/GP13 on the 2". Both
+// halves are board data — a pad does not name its instance — and `main` matches
+// the triple below.
+#[cfg(feature = "display")]
+const BUILD_DISPLAY_I2C_INSTANCE: u8 = env_u16(env!("PK_DISPLAY_I2C_INSTANCE")) as u8;
+#[cfg(feature = "display")]
+const BUILD_DISPLAY_I2C_SDA: u8 = env_u16(env!("PK_DISPLAY_I2C_SDA")) as u8;
+#[cfg(feature = "display")]
+const BUILD_DISPLAY_I2C_SCL: u8 = env_u16(env!("PK_DISPLAY_I2C_SCL")) as u8;
+/// The board wires LCD_RST and Touch_RST to one pad, so the panel's reset pulse
+/// resets the touch controller too and nothing else may claim that pad.
+#[cfg(any(feature = "display", feature = "display-keys"))]
+const BUILD_DISPLAY_TP_RST_SHARED: bool = env_u16(env!("PK_DISPLAY_TP_RST_SHARED")) != 0;
+/// Which panel register set the controller wants: 0 = ST7789V2 (GEEK, 2.8"),
+/// 1 = ST7789T3 (the 2"). Both live in [`display_panel`].
+#[cfg(any(feature = "display", feature = "display-keys"))]
+const BUILD_DISPLAY_PANEL_INIT: u8 = env_u16(env!("PK_DISPLAY_PANEL_INIT")) as u8;
 #[cfg(feature = "display")]
 const BUILD_DISPLAY_I2C_FREQ_HZ: u32 = env_u32(env!("PK_DISPLAY_I2C_FREQ_HZ"));
 #[cfg(any(feature = "display", feature = "display-keys"))]
@@ -300,7 +324,18 @@ const _: () = {
         BUILD_DISPLAY_TP_RST,
         BUILD_DISPLAY_BL_PIN,
     ];
-    // Pins the panel's hard-wired PIO serial link (10/11) and I2C1 (6/7) own.
+    // Pins the panel's serial link and the touch bus own, from the board config:
+    // GP10/11 and GP6/7 on the 2.8", GP18/19 and GP12/13 on the 2". The touchless
+    // `display-keys` build has no touch bus, so it reserves the link its panel
+    // actually uses plus the I2C pads its boards leave free.
+    #[cfg(feature = "display")]
+    const HW_PINS: &[u8] = &[
+        BUILD_DISPLAY_SPI_CLK,
+        BUILD_DISPLAY_SPI_MOSI,
+        BUILD_DISPLAY_I2C_SDA,
+        BUILD_DISPLAY_I2C_SCL,
+    ];
+    #[cfg(feature = "display-keys")]
     const HW_PINS: &[u8] = &[10, 11, 6, 7];
 
     const fn contains(hay: &[u8], needle: u8) -> bool {
@@ -318,7 +353,17 @@ const _: () = {
     while i < DISPLAY_CTLS.len() {
         let mut j = i + 1;
         while j < DISPLAY_CTLS.len() {
-            assert!(DISPLAY_CTLS[i] != DISPLAY_CTLS[j], "duplicate panel GPIO");
+            // One pair may repeat: on a `tp_rst_shared` board LCD_RST and
+            // Touch_RST are the same pad, and then the panel's reset pulse is the
+            // touch controller's too. Any other repeat is still two owners.
+            let rst_pair = (DISPLAY_CTLS[i] == BUILD_DISPLAY_RST
+                && DISPLAY_CTLS[j] == BUILD_DISPLAY_TP_RST)
+                || (DISPLAY_CTLS[i] == BUILD_DISPLAY_TP_RST
+                    && DISPLAY_CTLS[j] == BUILD_DISPLAY_RST);
+            assert!(
+                DISPLAY_CTLS[i] != DISPLAY_CTLS[j] || (BUILD_DISPLAY_TP_RST_SHARED && rst_pair),
+                "duplicate panel GPIO"
+            );
             j += 1;
         }
         i += 1;
@@ -368,28 +413,29 @@ const _: () = {
     }
 };
 
-// Backlight PWM: the only valid (pin, slice, channel) combos on the RP2350.
-// Build.rs bakes the values; catch an unsupported combo at compile time so the
-// runtime `_ => unreachable!(...)` arm below is reachable only on a typo'd build.
+// The supported display wirings, one row per board: (SPI_CLK, SPI_MOSI,
+// I2C_INSTANCE, I2C_SDA, I2C_SCL, BL_PIN, BL_SLICE, BL_CHANNEL). Build.rs bakes
+// the values; one arm of a single match in `main` moves the row's pads, because
+// each of them is a single-owner `Peri` — so a ROW, not an individual knob, is
+// what a new board adds. An unlisted row is a build error rather than a
+// silently mis-wired panel.
 #[cfg(feature = "display")]
 const _: () = assert!(
     matches!(
         (
+            BUILD_DISPLAY_SPI_CLK,
+            BUILD_DISPLAY_SPI_MOSI,
+            BUILD_DISPLAY_I2C_INSTANCE,
+            BUILD_DISPLAY_I2C_SDA,
+            BUILD_DISPLAY_I2C_SCL,
             BUILD_DISPLAY_BL_PIN,
             BUILD_DISPLAY_BL_PWM_SLICE,
-            BUILD_DISPLAY_BL_PWM_CHANNEL
+            BUILD_DISPLAY_BL_PWM_CHANNEL,
         ),
-        (16, 0, 0)
-            | (17, 0, 1)
-            | (18, 1, 0)
-            | (19, 1, 1)
-            | (20, 2, 0)
-            | (21, 2, 1)
-            | (13, 6, 1)
-            | (15, 7, 1)
+        (10, 11, 1, 6, 7, 16, 0, 0) | (18, 19, 0, 12, 13, 15, 7, 1)
     ),
-    "unsupported backlight PWM config (BL_PIN, SLICE, CHANNEL) — \
-     see the Pwm::new_output_* match in main.rs for the supported set"
+    "unsupported display wiring (SPI_CLK, SPI_MOSI, I2C_INSTANCE, I2C_SDA, I2C_SCL, \
+     BL_PIN, BL_SLICE, BL_CHANNEL) — see the per-board match in main.rs"
 );
 
 // Optional nuisance user/status LED to hold OFF at boot (`USR_LED_PIN`): a plain
@@ -1098,19 +1144,59 @@ async fn main(spawner: Spawner) {
         let Pio {
             mut common, sm0, ..
         } = Pio::new(p.PIO0, Irqs);
-        let spi = display::PioDisplayTx::new(
-            &mut common,
-            sm0,
-            p.PIN_10,
-            p.PIN_11,
-            p.DMA_CH0,
-            Irqs,
-            BUILD_DISPLAY_SPI_FREQ_HZ,
-        );
-
+        // The transport is PIO0/SM0 on every board, but the pads are data and a
+        // `PioPin` is a type, so the board's pair picks the arm; the const assert
+        // below keeps the supported set closed.
+        // The board's display wiring in ONE match. Every pad is a single-owner
+        // `Peri` value and each consumer (PIO link, I2C instance, backlight PWM)
+        // wants a statically typed one, so a *second* match naming a pad the
+        // first has already moved fails to borrow-check — even in arms this
+        // build does not take. One row per board; the const assert below keeps
+        // that set closed.
         let mut i2c_cfg = I2cConfig::default();
         i2c_cfg.frequency = BUILD_DISPLAY_I2C_FREQ_HZ;
-        let i2c = I2c::new_blocking(p.I2C1, p.PIN_7, p.PIN_6, i2c_cfg);
+        let (spi, i2c, bl) = match (
+            BUILD_DISPLAY_SPI_CLK,
+            BUILD_DISPLAY_SPI_MOSI,
+            BUILD_DISPLAY_I2C_INSTANCE,
+            BUILD_DISPLAY_I2C_SDA,
+            BUILD_DISPLAY_I2C_SCL,
+            BUILD_DISPLAY_BL_PIN,
+            BUILD_DISPLAY_BL_PWM_SLICE,
+            BUILD_DISPLAY_BL_PWM_CHANNEL,
+        ) {
+            // Waveshare RP2350-Touch-LCD-2.8 — link on GP10/11, CST328 on I2C1
+            // (GP6/GP7), backlight on GP16 (slice 0 channel A).
+            (10, 11, 1, 6, 7, 16, 0, 0) => (
+                display::PioDisplayTx::new(
+                    &mut common,
+                    sm0,
+                    p.PIN_10,
+                    p.PIN_11,
+                    p.DMA_CH0,
+                    Irqs,
+                    BUILD_DISPLAY_SPI_FREQ_HZ,
+                ),
+                display::TouchI2c::block1(I2c::new_blocking(p.I2C1, p.PIN_7, p.PIN_6, i2c_cfg)),
+                Pwm::new_output_a(p.PWM_SLICE0, p.PIN_16, display::backlight_cfg(0)),
+            ),
+            // Waveshare RP2350-Touch-LCD-2 — link on GP18/19, CST816D on i2c0
+            // (GP12/GP13), backlight on GP15 (slice 7 channel B).
+            (18, 19, 0, 12, 13, 15, 7, 1) => (
+                display::PioDisplayTx::new(
+                    &mut common,
+                    sm0,
+                    p.PIN_18,
+                    p.PIN_19,
+                    p.DMA_CH0,
+                    Irqs,
+                    BUILD_DISPLAY_SPI_FREQ_HZ,
+                ),
+                display::TouchI2c::block0(I2c::new_blocking(p.I2C0, p.PIN_13, p.PIN_12, i2c_cfg)),
+                Pwm::new_output_b(p.PWM_SLICE7, p.PIN_15, display::backlight_cfg(0)),
+            ),
+            _ => unreachable!("unsupported display wiring (see the const assert below)"),
+        };
 
         let cs = Output::new(
             unsafe { embassy_rp::gpio::AnyPin::steal(BUILD_DISPLAY_CS) },
@@ -1146,33 +1232,16 @@ async fn main(spawner: Spawner) {
         } else {
             None
         };
-        // Backlight PWM — pin, slice, and channel from the board config.
-        let bl = {
-            let cfg = display::backlight_cfg(0);
-            match (
-                BUILD_DISPLAY_BL_PIN,
-                BUILD_DISPLAY_BL_PWM_SLICE,
-                BUILD_DISPLAY_BL_PWM_CHANNEL,
-            ) {
-                (16, 0, 0) => Pwm::new_output_a(p.PWM_SLICE0, p.PIN_16, cfg),
-                (17, 0, 1) => Pwm::new_output_b(p.PWM_SLICE0, p.PIN_17, cfg),
-                (18, 1, 0) => Pwm::new_output_a(p.PWM_SLICE1, p.PIN_18, cfg),
-                (19, 1, 1) => Pwm::new_output_b(p.PWM_SLICE1, p.PIN_19, cfg),
-                (20, 2, 0) => Pwm::new_output_a(p.PWM_SLICE2, p.PIN_20, cfg),
-                (21, 2, 1) => Pwm::new_output_b(p.PWM_SLICE2, p.PIN_21, cfg),
-                (13, 6, 1) => Pwm::new_output_b(p.PWM_SLICE6, p.PIN_13, cfg),
-                (15, 7, 1) => Pwm::new_output_b(p.PWM_SLICE7, p.PIN_15, cfg),
-                _ => {
-                    // Guarded by the const assert below — unreachable at runtime,
-                    // kept so the match stays exhaustive over (pin, slice, channel).
-                    unreachable!("unsupported backlight PWM config")
-                }
-            }
+        // On a `tp_rst_shared` board the panel's reset pulse already reset the
+        // touch controller, and the same pad cannot have two owners.
+        let tp_rst = if BUILD_DISPLAY_TP_RST_SHARED {
+            None
+        } else {
+            Some(Output::new(
+                unsafe { embassy_rp::gpio::AnyPin::steal(BUILD_DISPLAY_TP_RST) },
+                Level::High,
+            ))
         };
-        let tp_rst = Output::new(
-            unsafe { embassy_rp::gpio::AnyPin::steal(BUILD_DISPLAY_TP_RST) },
-            Level::High,
-        );
 
         let panel = display::PanelHw {
             spi,

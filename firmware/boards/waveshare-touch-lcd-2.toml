@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 RS-Key contributors
+#
+# Waveshare RP2350-Touch-LCD-2 — the trusted-display build.
+# ST7789T3 240×320 panel over a PIO serial link on *this* board's spi0 pins
+# (GP18 CLK / GP19 MOSI, not the 2.8"'s GP10/11), CST816D touch on i2c0
+# (GP12/GP13). Backlight PWM on GPIO15, slice 7 channel B — driven through an
+# SS8050 low-side switch, so the PWM output is high-while-lit. The touch reset
+# shares the panel's GP20 (`tp_rst_shared`). No addressable LED
+# (LED_KIND=none); the panel is the indicator.
+
+[usb]
+vidpid = "RSKey"
+
+[led]
+kind = "none"
+
+[presence]
+source = "bootsel"
+
+[flash]
+size_mb = 16
+kvmain_kb = 1408
+
+[display]
+# TX-only PIO uses two instructions per bit at a 160 MHz system clock.
+spi_freq_hz = 80_000_000
+# PIO serial link: GP18 clock, GP19 MOSI (the vendor example's LCD_CLK/LCD_MOSI).
+spi_clk = 18
+spi_mosi = 19
+# GPIOs for the panel control lines (the vendor example's LCD_CS/DC/RST).
+cs = 17
+dc = 16
+rst = 20
+# Backlight PWM: GPIO15, PWM slice 7 channel B.
+bl_pin = 15
+bl_pwm_slice = 7
+bl_pwm_channel = "B"
+# The ST7789T3 wants its own register set (see `display_panel::init_st7789t3`).
+panel_init = 1
+# Colour order and scan direction. The vendor example writes `MemoryAccessReg`
+# 0x08 — the BGR bit, no MX/MY — and this module drew left-to-right reversed
+# with it (measured on two units of this board, the second one on 2026-09-28),
+# so the scan direction carries MX: 0x48.
+color_order = "bgr"
+madctl_scan = 64 # 0x40 = MX
+# CST816D touch on i2c0 (the vendor example's DEV_SDA/DEV_SCL), and LCD_RST and
+# Touch_RST are the same pad on this board, so the panel's reset pulse is the
+# touch controller's too.
+i2c_instance = 0
+i2c_sda = 12
+i2c_scl = 13
+tp_rst = 20
+tp_rst_shared = true
+# No GPIO user key on this board (BOOTSEL and RESET only): touch-only wake.
+wake_pin = "none"

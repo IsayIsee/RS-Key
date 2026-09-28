@@ -80,6 +80,16 @@ struct BoardConfig {
     display_madctl_scan: Option<u8>,
     display_win_x: Option<u16>,
     display_win_y: Option<u16>,
+    display_spi_clk: Option<u8>,
+    display_spi_mosi: Option<u8>,
+    display_i2c_instance: Option<u8>,
+    display_i2c_sda: Option<u8>,
+    display_i2c_scl: Option<u8>,
+    display_tp_rst_shared: Option<bool>,
+    display_panel_init: Option<u8>,
+    /// `wake_pin = "none"` in a board file — no wake button at all, which is not
+    /// the same as the key being absent (that keeps `WAKE_PIN`'s GPIO25 default).
+    display_wake_none: bool,
 }
 
 fn read_board() -> Option<BoardConfig> {
@@ -126,6 +136,14 @@ fn parse_toml(raw: &str) -> BoardConfig {
         display_madctl_scan: None,
         display_win_x: None,
         display_win_y: None,
+        display_spi_clk: None,
+        display_spi_mosi: None,
+        display_i2c_instance: None,
+        display_i2c_sda: None,
+        display_i2c_scl: None,
+        display_tp_rst_shared: None,
+        display_panel_init: None,
+        display_wake_none: false,
     };
     let mut sec = "";
     fn strip_comment(s: &str) -> &str {
@@ -221,7 +239,12 @@ fn parse_toml(raw: &str) -> BoardConfig {
                 });
             }
             ("display", "tp_rst") => c.display_tp_rst = Some(u8(v)),
-            ("display", "wake_pin") => c.display_wake_pin = Some(u8(v)),
+            // `"none"` = no wake button (touch-only wake). A number selects a GPIO;
+            // the key being absent leaves `WAKE_PIN` at its GPIO25 default.
+            ("display", "wake_pin") => match u(v) {
+                s if s.eq_ignore_ascii_case("none") => c.display_wake_none = true,
+                _ => c.display_wake_pin = Some(u8(v)),
+            },
             ("display", "wake_active_high") => c.display_wake_active_high = Some(b(v)),
             ("display", "i2c_freq_hz") => c.display_i2c_freq_hz = Some(u32(v)),
             ("display", "invert_colors") => c.display_invert_colors = Some(b(v)),
@@ -236,6 +259,26 @@ fn parse_toml(raw: &str) -> BoardConfig {
             // Waveshare demo adds (40, 53) in landscape mode. 0 = full-glass.
             ("display", "win_x") => c.display_win_x = Some(u32(v) as u16),
             ("display", "win_y") => c.display_win_y = Some(u32(v) as u16),
+            // The PIO serial link's own pins. The transport is fixed to PIO0/SM0
+            // and the program is pin-agnostic, but the pads are not: the RP2350
+            // routes a `PioPin` to a fixed set of pads, so a board whose panel
+            // hangs off other pads (e.g. the 2"'s GP18/GP19) names them here.
+            ("display", "spi_clk") => c.display_spi_clk = Some(u8(v)),
+            ("display", "spi_mosi") => c.display_spi_mosi = Some(u8(v)),
+            // The touch controller's bus: instance and pads. Values, because
+            // `I2c::new_blocking` wants a statically typed instance — `main.rs`
+            // matches them to the two supported buses at compile time.
+            ("display", "i2c_instance") => c.display_i2c_instance = Some(u8(v)),
+            ("display", "i2c_sda") => c.display_i2c_sda = Some(u8(v)),
+            ("display", "i2c_scl") => c.display_i2c_scl = Some(u8(v)),
+            // The board wires LCD_RST and Touch_RST to one pad, so the panel's
+            // reset pulse is the touch controller's too and `main.rs` must not
+            // claim that pad twice.
+            ("display", "tp_rst_shared") => c.display_tp_rst_shared = Some(b(v)),
+            // Which register set the panel's controller wants: 0 = the
+            // ST7789V2 set (the GEEK and the 2.8"), 1 = the ST7789T3 set (the
+            // 2"). Both live in `display_panel::Panel`.
+            ("display", "panel_init") => c.display_panel_init = Some(u8(v)),
             _ => {}
         }
     }
@@ -315,7 +358,9 @@ fn main() {
         if let Some(v) = b.kvmain_kb {
             set("KVMAIN", &format!("{}K", v));
         }
-        if let Some(v) = b.display_wake_pin {
+        if b.display_wake_none {
+            set("WAKE_PIN", "none");
+        } else if let Some(v) = b.display_wake_pin {
             set("WAKE_PIN", &v.to_string());
         }
         if let Some(v) = b.display_wake_active_high {
@@ -537,6 +582,48 @@ fn main() {
         "PK_DISPLAY_TP_RST",
         disp_cfg.and_then(|b| b.display_tp_rst).unwrap_or(17)
     );
+    // The serial link's pads: GP10/GP11 on the 2.8" and the GEEK, GP18/GP19 on
+    // the 2". `main.rs` matches the pair to a `PioPin` at compile time.
+    disp_pin!(
+        "PK_DISPLAY_SPI_CLK",
+        disp_cfg.and_then(|b| b.display_spi_clk).unwrap_or(10)
+    );
+    disp_pin!(
+        "PK_DISPLAY_SPI_MOSI",
+        disp_cfg.and_then(|b| b.display_spi_mosi).unwrap_or(11)
+    );
+    // The touch bus: I2C1 on GP6/GP7 (a.k.a. SDA/SCL) by default, i2c0 on
+    // GP12/GP13 on the 2". Both halves are needed — a pad does not name its
+    // instance — and `main.rs` asserts the pair before matching on it.
+    disp!(
+        "PK_DISPLAY_I2C_INSTANCE",
+        disp_cfg.and_then(|b| b.display_i2c_instance).unwrap_or(1)
+    );
+    disp_pin!(
+        "PK_DISPLAY_I2C_SDA",
+        disp_cfg.and_then(|b| b.display_i2c_sda).unwrap_or(6)
+    );
+    disp_pin!(
+        "PK_DISPLAY_I2C_SCL",
+        disp_cfg.and_then(|b| b.display_i2c_scl).unwrap_or(7)
+    );
+    {
+        let v = if disp_cfg
+            .and_then(|b| b.display_tp_rst_shared)
+            .unwrap_or(false)
+        {
+            "1"
+        } else {
+            "0"
+        };
+        if env::var("PK_DISPLAY_TP_RST_SHARED").is_err() {
+            println!("cargo:rustc-env=PK_DISPLAY_TP_RST_SHARED={v}");
+        }
+    }
+    disp!(
+        "PK_DISPLAY_PANEL_INIT",
+        disp_cfg.and_then(|b| b.display_panel_init).unwrap_or(0)
+    );
     disp!(
         "PK_DISPLAY_I2C_FREQ_HZ",
         disp_cfg
@@ -603,6 +690,13 @@ fn main() {
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_BL_PWM_SLICE");
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_BL_PWM_CHANNEL");
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_TP_RST");
+    println!("cargo:rerun-if-env-changed=PK_DISPLAY_SPI_CLK");
+    println!("cargo:rerun-if-env-changed=PK_DISPLAY_SPI_MOSI");
+    println!("cargo:rerun-if-env-changed=PK_DISPLAY_I2C_INSTANCE");
+    println!("cargo:rerun-if-env-changed=PK_DISPLAY_I2C_SDA");
+    println!("cargo:rerun-if-env-changed=PK_DISPLAY_I2C_SCL");
+    println!("cargo:rerun-if-env-changed=PK_DISPLAY_TP_RST_SHARED");
+    println!("cargo:rerun-if-env-changed=PK_DISPLAY_PANEL_INIT");
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_I2C_FREQ_HZ");
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_INVERT_COLORS");
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_COLOR_ORDER");

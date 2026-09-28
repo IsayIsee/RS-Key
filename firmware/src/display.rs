@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 RS-Key contributors
 
-//! This board's trusted display: the Waveshare RP2350-Touch-LCD-2.8 (ST7789 over
-//! PIO serial output, CST328 touch over I2C1), plus the board verbs the flow asks for.
+//! This board's trusted display: the Waveshare RP2350 touch panels (ST7789 over
+//! PIO serial output, the CST328/CST816D touch controller on the board's own I2C
+//! bus), plus the board verbs the flow asks for.
 //!
 //! The flow itself — which screen is shown when, the PIN pad, the Approve/Deny
 //! wait — is [`rsk_display`], where a host can run it against a window. What is
@@ -14,7 +15,7 @@ use core::cell::RefCell;
 
 use embassy_rp::gpio::{Input, Output};
 use embassy_rp::i2c::{Blocking as I2cBlocking, I2c};
-use embassy_rp::peripherals::I2C1;
+use embassy_rp::peripherals::{I2C0, I2C1};
 use embassy_rp::pwm::{Config as PwmConfig, Pwm};
 use embassy_time::{Duration, Instant, block_for};
 use mipidsi::options::{ColorInversion, ColorOrder};
@@ -54,34 +55,84 @@ pub struct PanelHw {
     pub bl: Pwm<'static>,
 }
 
-/// The CST328 touch controller's I2C bus + reset pin.
-pub struct TouchHw {
-    pub i2c: I2c<'static, I2C1, I2cBlocking>,
-    pub rst: Output<'static>,
+/// The touch controller's I2C bus: whichever of the two the board wires its
+/// pads to (the 2.8" and the 1.54" use I2C1 on GP6/GP7, the 2" i2c0 on
+/// GP12/GP13). `I2c` is generic over its instance and the board config carries
+/// values, so the variant is chosen once in `main` and every transfer dispatches
+/// on it — a generic `Touch` instead would ripple into the `Ui` type alias and
+/// the `UI` cell that holds it.
+pub enum TouchI2c {
+    Block0(I2c<'static, I2C0, I2cBlocking>),
+    Block1(I2c<'static, I2C1, I2cBlocking>),
 }
 
-/// PWM config for the GPIO16 backlight: 8-bit `top`, non-inverted (high = lit), with
-/// `duty` as the on-fraction. Shared by `main`'s initial (zero-duty) construction and
-/// every live brightness change so the polarity always matches.
+impl TouchI2c {
+    pub fn block0(i2c: I2c<'static, I2C0, I2cBlocking>) -> Self {
+        Self::Block0(i2c)
+    }
+
+    pub fn block1(i2c: I2c<'static, I2C1, I2cBlocking>) -> Self {
+        Self::Block1(i2c)
+    }
+
+    /// A bus error is erased to `()`: a failed transfer already means "no touch"
+    /// or "the controller did not take the write" to every caller here.
+    fn write(&mut self, addr: u16, bytes: &[u8]) -> Result<(), ()> {
+        match self {
+            Self::Block0(i2c) => i2c.blocking_write(addr, bytes),
+            Self::Block1(i2c) => i2c.blocking_write(addr, bytes),
+        }
+        .map_err(|_| ())
+    }
+
+    fn write_read(&mut self, addr: u16, wr: &[u8], rd: &mut [u8]) -> Result<(), ()> {
+        match self {
+            Self::Block0(i2c) => i2c.blocking_write_read(addr, wr, rd),
+            Self::Block1(i2c) => i2c.blocking_write_read(addr, wr, rd),
+        }
+        .map_err(|_| ())
+    }
+}
+
+/// The touch controller's I2C bus + reset pin. `rst` is `None` on a board that
+/// wires Touch_RST to the panel's own reset pad (`tp_rst_shared`): there the
+/// panel's reset pulse is the controller's, and the pad has a single owner.
+pub struct TouchHw {
+    pub i2c: TouchI2c,
+    pub rst: Option<Output<'static>>,
+}
+
+/// PWM config for the backlight: 8-bit `top`, non-inverted (high = lit), with
+/// `duty` as the on-fraction. Shared by `main`'s initial (zero-duty) construction
+/// and every live brightness change so the polarity always matches.
 pub fn backlight_cfg(duty: u16) -> PwmConfig {
     // `PwmConfig` is `#[non_exhaustive]`, so build from Default and set fields.
     let mut cfg = PwmConfig::default();
     cfg.top = BL_TOP;
-    cfg.compare_a = duty.min(BL_TOP);
+    // The compare register is per channel, and a channel whose compare stays 0 is
+    // held low for the whole period — so a board whose backlight hangs off
+    // channel B (this fork's GEEK wiring shares slice 6 B, the 2" uses slice 7 B)
+    // stayed dark while this wrote `compare_a` only.
+    if crate::BUILD_DISPLAY_BL_PWM_CHANNEL == 1 {
+        cfg.compare_b = duty.min(BL_TOP);
+    } else {
+        cfg.compare_a = duty.min(BL_TOP);
+    }
     cfg
 }
 
-/// The CST328 touch controller on I2C1. Owns only the bus; the reset pin is pulsed
-/// once during [`build`].
+/// The CST328 touch controller on this board's I2C bus. Owns only the bus; the
+/// reset pin is pulsed once during [`build`] (or left to the panel on a
+/// `tp_rst_shared` board).
 pub struct Touch {
-    i2c: I2c<'static, I2C1, I2cBlocking>,
+    i2c: TouchI2c,
 }
 
 impl Touch {
     /// Leave normal reporting mode set after the reset pulse — write register
     /// 0xD109 (REG_MODE_NORMAL) as a 2-byte big-endian address with no payload.
     fn normal_mode(&mut self) {
-        let _ = self.i2c.blocking_write(CST328_ADDR, &[0xD1, 0x09]);
+        let _ = self.i2c.write(CST328_ADDR, &[0xD1, 0x09]);
     }
 }
 
@@ -92,15 +143,12 @@ impl TouchPad for Touch {
     /// panel resolution; HW bringup confirmed the axes need no swap).
     fn read(&mut self) -> Option<rsk_ui::Point> {
         let mut buf = [0u8; 7];
-        let pt = match self
-            .i2c
-            .blocking_write_read(CST328_ADDR, &[0xD0, 0x00], &mut buf)
-        {
+        let pt = match self.i2c.write_read(CST328_ADDR, &[0xD0, 0x00], &mut buf) {
             Ok(()) => rsk_ui::touch::parse_cst328(&buf),
-            Err(_) => None,
+            Err(()) => None,
         };
         // Clear register 0xD005 (write address + a 0 byte) to ack the report.
-        let _ = self.i2c.blocking_write(CST328_ADDR, &[0xD0, 0x05, 0x00]);
+        let _ = self.i2c.write(CST328_ADDR, &[0xD0, 0x05, 0x00]);
         pt
     }
 }
@@ -110,10 +158,11 @@ pub struct DisplayHooks {
     /// Backlight on GPIO16, driven as PWM for brightness control and held for the
     /// device's lifetime (dropping it disconnects the pad → black panel).
     bl: Pwm<'static>,
-    // The CST328 reset (GPIO17), held so its pad isn't disconnected on drop (an
-    // embassy `Output` sets funcsel = Null when dropped); never toggled after build.
+    // The CST328 reset (GPIO17 on the 2.8"), held so its pad isn't disconnected on
+    // drop (an embassy `Output` sets funcsel = Null when dropped); never toggled
+    // after build. `None` when the board shares the panel's reset pad.
     #[allow(dead_code)]
-    tp_rst: Output<'static>,
+    tp_rst: Option<Output<'static>>,
     /// The display-sleep wake button (the board's BAT_PWR / a `WAKE_PIN` GPIO) paired
     /// with its `active_high` polarity, or `None` when `WAKE_PIN=none` (touch-only
     /// wake). Polled while asleep.
@@ -271,13 +320,18 @@ pub fn build(
         crate::BUILD_DISPLAY_WIN_OFF,
     );
 
-    // CST328 reset pulse (high → low → high), then normal reporting mode.
-    tp_rst.set_high();
-    block_for(Duration::from_millis(10));
-    tp_rst.set_low();
-    block_for(Duration::from_millis(10));
-    tp_rst.set_high();
-    block_for(Duration::from_millis(50));
+    // CST328 reset pulse (high → low → high), then normal reporting mode. On a
+    // `tp_rst_shared` board there is no second pad: the panel's reset in
+    // `Panel::new` drove the shared line, with the longer low time the touch
+    // controller asks for (`display_panel::reset_and_init`).
+    if let Some(rst) = tp_rst.as_mut() {
+        rst.set_high();
+        block_for(Duration::from_millis(10));
+        rst.set_low();
+        block_for(Duration::from_millis(10));
+        rst.set_high();
+        block_for(Duration::from_millis(50));
+    }
     let mut touch = Touch { i2c };
     touch.normal_mode();
 

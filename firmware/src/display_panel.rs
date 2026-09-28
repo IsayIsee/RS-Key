@@ -203,23 +203,13 @@ impl Panel {
         self.cs.set_high();
     }
 
-    fn reset_and_init(&mut self, invert: ColorInversion) {
-        self._rst.set_low();
-        block_for(Duration::from_micros(10));
-        self._rst.set_high();
-        block_for(Duration::from_millis(150));
-        // MADCTL = the board's scan-direction bits (MY|MX|MV — 0 for the touch
-        // build's portrait panel, 0x70 for the GEEK's landscape 1.14") plus the
-        // BGR bit from the colour order; the composed byte is kept on the panel
-        // for the runtime 180° flip.
-        self.command(0x36, &[self.madctl]);
-        // The remainder is the Waveshare ST7789V2 init register set: the porch /
-        // gate / VCOM / gamma defaults that place a *partial* glass (240×135,
-        // 135×240, …) on this controller's larger GRAM. Omitting them leaves the
-        // panel's display window on the controller defaults, which misplace the
-        // frame and clip it (measured on the RP2350-GEEK: content shifted and
-        // cut at the top/left). The touch board's 240×320 glass shows these
-        // settings' full-GRAM defaults the same either way.
+    /// Waveshare's ST7789V2 register set: the porch / gate / VCOM / gamma
+    /// defaults that place a *partial* glass (240×135, 135×240, …) on this
+    /// controller's larger GRAM. Omitting them leaves the display window on the
+    /// controller defaults, which misplace the frame and clip it (measured on the
+    /// RP2350-GEEK: content shifted and cut at the top/left). A full-glass
+    /// 240×320 board shows these settings' defaults the same either way.
+    fn init_st7789v2(&mut self) {
         self.command(0x3A, &[PANEL_PIXEL_FORMAT_RGB565]);
         self.command(0xB2, &[0x0C, 0x0C, 0x00, 0x33, 0x33]); // porch control
         self.command(0xB7, &[0x35]); // gate control
@@ -242,6 +232,69 @@ impl Panel {
                 0xD0, 0x04, 0x0C, 0x11, 0x13, 0x2C, 0x3F, 0x44, 0x51, 0x2F, 0x1F, 0x1F, 0x20, 0x23,
             ],
         ); // negative gamma
+    }
+
+    /// Waveshare's ST7789T3 register set for the RP2350-Touch-LCD-2, transcribed
+    /// from that board's own example (`C/01-LCD/lib/LCD/LCD_2in.c`,
+    /// `LCD_2IN_InitReg`) — including its 0xF0 unlock pair, which a controller
+    /// that has not seen it ignores the rest of the sequence on. Register names
+    /// are the ones the datasheet and the V2 set above share; the example leaves
+    /// the others uncommented and they are kept verbatim.
+    fn init_st7789t3(&mut self) {
+        self.command(0x3A, &[0x05]);
+        self.command(0xF0, &[0xC3]); // command set control (unlock)
+        self.command(0xF0, &[0x96]);
+        self.command(0xB4, &[0x01]);
+        self.command(0xB7, &[0xC6]); // gate control
+        self.command(0xC0, &[0x80, 0x45]); // LCM control
+        self.command(0xC1, &[0x13]); // VRH set
+        self.command(0xC2, &[0xA7]); // VDV and VRH command enable
+        self.command(0xC5, &[0x0A]); // VCOM setting
+        self.command(0xE8, &[0x40, 0x8A, 0x00, 0x00, 0x29, 0x19, 0xA5, 0x33]);
+        self.command(
+            0xE0,
+            &[
+                0xD0, 0x08, 0x0F, 0x06, 0x06, 0x33, 0x30, 0x33, 0x47, 0x17, 0x13, 0x13, 0x2B, 0x31,
+            ],
+        ); // positive gamma
+        self.command(
+            0xE1,
+            &[
+                0xD0, 0x0A, 0x11, 0x0B, 0x09, 0x07, 0x2F, 0x33, 0x47, 0x38, 0x15, 0x16, 0x2C, 0x32,
+            ],
+        ); // negative gamma
+        self.command(0xF0, &[0x3C]); // command set control (relock)
+        self.command(0xF0, &[0x69]);
+        // The example waits here, before the inversion and sleep-out commands.
+        block_for(Duration::from_millis(120));
+    }
+
+    fn reset_and_init(&mut self, invert: ColorInversion) {
+        self._rst.set_low();
+        // On a `tp_rst_shared` board this pulse is the touch controller's too, and
+        // that controller asks for a 100 ms low time; the panel itself needs far
+        // less, so the longer pulse is safe for both.
+        if crate::BUILD_DISPLAY_TP_RST_SHARED {
+            block_for(Duration::from_millis(100));
+        } else {
+            block_for(Duration::from_micros(10));
+        }
+        self._rst.set_high();
+        block_for(Duration::from_millis(150));
+        // MADCTL = the board's scan-direction bits (MY|MX|MV — 0 for the touch
+        // build's portrait panel, 0x70 for the GEEK's landscape 1.14") plus the
+        // BGR bit from the colour order; the composed byte is kept on the panel
+        // for the runtime 180° flip.
+        self.command(0x36, &[self.madctl]);
+        // Two register sets, one per controller the fork ships: the ST7789V2 set
+        // the GEEK and the 2.8" run, and the ST7789T3 set the 2" runs (its own
+        // unlock pair and power/gamma values). The board file picks with
+        // `panel_init`; both leave the inversion and sleep-out tail below to the
+        // shared path.
+        match crate::BUILD_DISPLAY_PANEL_INIT {
+            1 => self.init_st7789t3(),
+            _ => self.init_st7789v2(),
+        }
         self.command(
             if matches!(invert, ColorInversion::Inverted) {
                 0x21
