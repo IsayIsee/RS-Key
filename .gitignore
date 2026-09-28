@@ -47,6 +47,14 @@ sram.bin*
 # them back up (they were purged from history for the same reason).
 /PACKAGING-NIX.md
 /GEEK-FOLLOWUPS.md
+/FORK-VERSIONING.md
+
+# Scratch: rollback-point snapshots, vendor packages and datasheets, build
+# and gate logs (`PACKAGING-NIX.md` §0 keeps rollback material here, and the
+# board port keeps the vendor examples here). Untracked by design, and a
+# working directory with tens of thousands of files in it is not something
+# `git add -A` should sweep.
+/temp/
 
 # Documentation site: build output and the mermaid assets that
 # `mdbook-mermaid install` generates next to book.toml (not committed).
