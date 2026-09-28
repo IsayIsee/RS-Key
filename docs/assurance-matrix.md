@@ -8,7 +8,7 @@
 
 Which security property is claimed about which buildable image. The rows are the P0-family properties of `assurance/properties.toml`; the columns are derived from `nix/firmware.nix`, `firmware/Cargo.toml` and `firmware/boards/`, so a new package, feature or board arrives as a column of `gap` cells rather than as silence. `scripts/matrix_gate.py` regenerates this page and `scripts/check.sh` diffs it.
 
-The point of the page is the thing a single-build claim hides: **the firmware is not one thing.** Four of the nineteen images remove the physical-consent gate the authorization properties are about, one swaps the CTAP large-blob surface with no flake package at all, and the board axis changes the flash geometry on which a whole KV store once survived a "successful" wipe.
+The point of the page is the thing a single-build claim hides: **the firmware is not one thing.** Four of the twenty-two images remove the physical-consent gate the authorization properties are about, one swaps the CTAP large-blob surface with no flake package at all, and the board axis changes the flash geometry on which a whole KV store once survived a "successful" wipe.
 
 These are the **committed** configurations, not the buildable ones. Every `mkFirmware` knob falls back to a like-named environment variable and `lib.mkFirmware` is exported, so `FLASH_SIZE=2M nix build --impure .#firmware` is an image no column below describes — including under a disposition whose reason says "no cargo feature and no build knob". What this page disposes of is what the flake ships and what CI builds; a one-off `--impure` combination is outside it by construction.
 
