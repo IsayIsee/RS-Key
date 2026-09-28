@@ -780,10 +780,10 @@ run "generated TLC configs"    python scripts/config_gen_gate.py
 run "formal citations"         python scripts/citation_gate.py
 run "assurance registry"       python scripts/assurance_gate.py
 # The registry above says WHAT is claimed; this says of WHICH IMAGE. `nix build`
-# makes nineteen, `largeblob-ext` swaps the CTAP surface with no flake package at
-# all, and four no-touch builds remove the consent gate the authorization
+# makes twenty-two, `largeblob-ext` swaps the CTAP surface with no flake package
+# at all, and four no-touch builds remove the consent gate the authorization
 # properties are about — so a claim proved on the default build was being
-# asserted about eighteen others by silence.
+# asserted about twenty-one others by silence.
 run "build-configuration matrix" python scripts/matrix_gate.py
 # And of WHICH THREAT. The threat model is the root of every evidence chain here
 # and was cited by the file name alone on 33 rows, which names no threat. This
