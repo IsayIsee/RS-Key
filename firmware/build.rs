@@ -87,6 +87,11 @@ struct BoardConfig {
     display_i2c_scl: Option<u8>,
     display_tp_rst_shared: Option<bool>,
     display_panel_init: Option<u8>,
+    display_touch_ic: Option<String>,
+    display_touch_x_min: Option<u16>,
+    display_touch_x_max: Option<u16>,
+    display_touch_y_min: Option<u16>,
+    display_touch_y_max: Option<u16>,
     /// `wake_pin = "none"` in a board file — no wake button at all, which is not
     /// the same as the key being absent (that keeps `WAKE_PIN`'s GPIO25 default).
     display_wake_none: bool,
@@ -143,6 +148,11 @@ fn parse_toml(raw: &str) -> BoardConfig {
         display_i2c_scl: None,
         display_tp_rst_shared: None,
         display_panel_init: None,
+        display_touch_ic: None,
+        display_touch_x_min: None,
+        display_touch_x_max: None,
+        display_touch_y_min: None,
+        display_touch_y_max: None,
         display_wake_none: false,
     };
     let mut sec = "";
@@ -279,6 +289,21 @@ fn parse_toml(raw: &str) -> BoardConfig {
             // ST7789V2 set (the GEEK and the 2.8"), 1 = the ST7789T3 set (the
             // 2"). Both live in `display_panel::Panel`.
             ("display", "panel_init") => c.display_panel_init = Some(u8(v)),
+            // The touch controller: `cst328` (the 2.8") or `cst816d` (the 2").
+            // The two share no register layout — 16-bit addresses against
+            // single-byte ones — so the firmware picks a driver with this.
+            ("display", "touch_ic") => match u(v) {
+                "cst328" => c.display_touch_ic = Some("cst328".into()),
+                "cst816d" => c.display_touch_ic = Some("cst816d".into()),
+                other => panic!("touch_ic: {other:?} (expected cst328 or cst816d)"),
+            },
+            // The calibrated touch range: the raw coordinates the controller
+            // reports at the glass's edges. Omitted on a board whose controller
+            // is configured at the panel resolution (the 2.8"'s CST328).
+            ("display", "touch_x_min") => c.display_touch_x_min = Some(u32(v) as u16),
+            ("display", "touch_x_max") => c.display_touch_x_max = Some(u32(v) as u16),
+            ("display", "touch_y_min") => c.display_touch_y_min = Some(u32(v) as u16),
+            ("display", "touch_y_max") => c.display_touch_y_max = Some(u32(v) as u16),
             _ => {}
         }
     }
@@ -625,6 +650,36 @@ fn main() {
         disp_cfg.and_then(|b| b.display_panel_init).unwrap_or(0)
     );
     disp!(
+        "PK_DISPLAY_TOUCH_IC",
+        match disp_cfg.and_then(|b| b.display_touch_ic.as_deref()) {
+            Some("cst816d") => 1,
+            _ => 0,
+        }
+    );
+    // The calibrated touch range, all four together or none at all: boards that
+    // do not declare one leave 0xFFFF, the sentinel `main.rs` reads as "the
+    // controller already reports panel pixels".
+    for (key, val) in [
+        (
+            "PK_DISPLAY_TOUCH_X_MIN",
+            disp_cfg.and_then(|b| b.display_touch_x_min),
+        ),
+        (
+            "PK_DISPLAY_TOUCH_X_MAX",
+            disp_cfg.and_then(|b| b.display_touch_x_max),
+        ),
+        (
+            "PK_DISPLAY_TOUCH_Y_MIN",
+            disp_cfg.and_then(|b| b.display_touch_y_min),
+        ),
+        (
+            "PK_DISPLAY_TOUCH_Y_MAX",
+            disp_cfg.and_then(|b| b.display_touch_y_max),
+        ),
+    ] {
+        disp!(key, val.unwrap_or(0xFFFF));
+    }
+    disp!(
         "PK_DISPLAY_I2C_FREQ_HZ",
         disp_cfg
             .and_then(|b| b.display_i2c_freq_hz)
@@ -697,6 +752,11 @@ fn main() {
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_I2C_SCL");
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_TP_RST_SHARED");
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_PANEL_INIT");
+    println!("cargo:rerun-if-env-changed=PK_DISPLAY_TOUCH_IC");
+    println!("cargo:rerun-if-env-changed=PK_DISPLAY_TOUCH_X_MIN");
+    println!("cargo:rerun-if-env-changed=PK_DISPLAY_TOUCH_X_MAX");
+    println!("cargo:rerun-if-env-changed=PK_DISPLAY_TOUCH_Y_MIN");
+    println!("cargo:rerun-if-env-changed=PK_DISPLAY_TOUCH_Y_MAX");
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_I2C_FREQ_HZ");
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_INVERT_COLORS");
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_COLOR_ORDER");

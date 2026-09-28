@@ -52,5 +52,16 @@ i2c_sda = 12
 i2c_scl = 13
 tp_rst = 20
 tp_rst_shared = true
+# CST816D, whose single-byte register layout reports in its own frame rather
+# than the panel's, so the calibrated range below is required (the firmware
+# refuses a `cst816d` board without one). These four are the values measured on
+# the unit this board replaced (2026-09-14); the mount differs between panels,
+# so re-measure on the replacement — a range that is merely off shows as taps
+# landing tens of pixels away at the edges, not as a dead touch pad.
+touch_ic = "cst816d"
+touch_x_min = 33
+touch_x_max = 225
+touch_y_min = 7
+touch_y_max = 327
 # No GPIO user key on this board (BOOTSEL and RESET only): touch-only wake.
 wake_pin = "none"

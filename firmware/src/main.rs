@@ -294,6 +294,40 @@ const BUILD_DISPLAY_TP_RST_SHARED: bool = env_u16(env!("PK_DISPLAY_TP_RST_SHARED
 /// 1 = ST7789T3 (the 2"). Both live in [`display_panel`].
 #[cfg(any(feature = "display", feature = "display-keys"))]
 const BUILD_DISPLAY_PANEL_INIT: u8 = env_u16(env!("PK_DISPLAY_PANEL_INIT")) as u8;
+/// The touch controller: the CST328 the 2.8" carries, or the CST816D on the 2".
+/// Their register layouts share nothing — 16-bit addresses against single-byte
+/// ones — so the driver dispatches on this.
+#[cfg(feature = "display")]
+const TOUCH_CST328: u8 = 0;
+#[cfg(feature = "display")]
+const TOUCH_CST816D: u8 = 1;
+#[cfg(feature = "display")]
+const BUILD_DISPLAY_TOUCH_IC: u8 = env_u16(env!("PK_DISPLAY_TOUCH_IC")) as u8;
+/// The calibrated touch range — the raw coordinates at the glass's edges — or
+/// `None` when the controller already reports panel pixels (the 2.8"'s CST328
+/// is configured at the panel resolution). Build.rs bakes 0xFFFF for "unset".
+#[cfg(feature = "display")]
+const BUILD_DISPLAY_TOUCH_RANGE: Option<rsk_ui::touch::TouchRange> = {
+    let x_min = env_u16(env!("PK_DISPLAY_TOUCH_X_MIN"));
+    if x_min == 0xFFFF {
+        None
+    } else {
+        Some(rsk_ui::touch::TouchRange {
+            x_min,
+            x_max: env_u16(env!("PK_DISPLAY_TOUCH_X_MAX")),
+            y_min: env_u16(env!("PK_DISPLAY_TOUCH_Y_MIN")),
+            y_max: env_u16(env!("PK_DISPLAY_TOUCH_Y_MAX")),
+        })
+    }
+};
+// A CST816D reports in its own frame rather than the panel's, so a board that
+// selects one without the calibrated range would map every tap through the
+// identity and land it in the wrong place. The two are required together.
+#[cfg(feature = "display")]
+const _: () = assert!(
+    BUILD_DISPLAY_TOUCH_IC != TOUCH_CST816D || BUILD_DISPLAY_TOUCH_RANGE.is_some(),
+    "a cst816d board must declare touch_x_min/touch_x_max/touch_y_min/touch_y_max"
+);
 #[cfg(feature = "display")]
 const BUILD_DISPLAY_I2C_FREQ_HZ: u32 = env_u32(env!("PK_DISPLAY_I2C_FREQ_HZ"));
 #[cfg(any(feature = "display", feature = "display-keys"))]

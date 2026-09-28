@@ -36,6 +36,8 @@ pub use rsk_display::{DeviceInfo, DeviceKeys, UI_YIELD_FLOOR_MS, piv_ref_title};
 
 /// CST328 7-bit I2C address.
 const CST328_ADDR: u16 = 0x1A;
+/// CST816D 7-bit I2C address (the CST816 family shares it).
+const CST816_ADDR: u16 = 0x15;
 
 /// This board's instance of the flow.
 pub type Ui = rsk_display::Ui<'static, Panel, Touch, DisplayHooks, FlashStorage, FidoRng>;
@@ -129,27 +131,57 @@ pub struct Touch {
 }
 
 impl Touch {
-    /// Leave normal reporting mode set after the reset pulse — write register
-    /// 0xD109 (REG_MODE_NORMAL) as a 2-byte big-endian address with no payload.
+    /// Leave the controller reporting after the reset pulse.
     fn normal_mode(&mut self) {
-        let _ = self.i2c.write(CST328_ADDR, &[0xD1, 0x09]);
+        match crate::BUILD_DISPLAY_TOUCH_IC {
+            crate::TOUCH_CST816D => {
+                // 0xFE = 1 turns the controller's auto-sleep off. Left on it
+                // would blank between polls and swallow the first touch after
+                // each one — the vendor example writes this on init and on every
+                // wake for the same reason.
+                let _ = self.i2c.write(CST816_ADDR, &[0xFE, 0x01]);
+            }
+            _ => {
+                // Register 0xD109 (REG_MODE_NORMAL) as a 2-byte big-endian
+                // address with no payload.
+                let _ = self.i2c.write(CST328_ADDR, &[0xD1, 0x09]);
+            }
+        }
     }
 }
 
 impl TouchPad for Touch {
     /// Read the first finger's coordinate, if any, then clear the report so the
-    /// controller serves the next one. Any I2C error reads as "no touch". The
-    /// coordinate is already in panel pixels (the controller is configured at the
-    /// panel resolution; HW bringup confirmed the axes need no swap).
+    /// controller serves the next one. Any I2C error reads as "no touch". What
+    /// comes back is in the *controller's* frame; [`TouchRange`] below maps it
+    /// onto the panel's.
     fn read(&mut self) -> Option<rsk_ui::Point> {
-        let mut buf = [0u8; 7];
-        let pt = match self.i2c.write_read(CST328_ADDR, &[0xD0, 0x00], &mut buf) {
-            Ok(()) => rsk_ui::touch::parse_cst328(&buf),
-            Err(()) => None,
+        let raw = match crate::BUILD_DISPLAY_TOUCH_IC {
+            crate::TOUCH_CST816D => {
+                // Six bytes from 0x01: gesture, finger count, X high/low, Y
+                // high/low — the family's single-byte register layout.
+                let mut buf = [0u8; 6];
+                match self
+                    .i2c
+                    .write_read(CST816_ADDR, &[rsk_ui::touch::CST816_BLOCK], &mut buf)
+                {
+                    Ok(()) => rsk_ui::touch::parse_cst816d(&buf),
+                    Err(()) => None,
+                }
+            }
+            _ => {
+                let mut buf = [0u8; 7];
+                let pt = match self.i2c.write_read(CST328_ADDR, &[0xD0, 0x00], &mut buf) {
+                    Ok(()) => rsk_ui::touch::parse_cst328(&buf),
+                    Err(()) => None,
+                };
+                // Clear register 0xD005 (write address + a 0 byte) to ack the report.
+                let _ = self.i2c.write(CST328_ADDR, &[0xD0, 0x05, 0x00]);
+                pt
+            }
         };
-        // Clear register 0xD005 (write address + a 0 byte) to ack the report.
-        let _ = self.i2c.write(CST328_ADDR, &[0xD0, 0x05, 0x00]);
-        pt
+        let range = crate::BUILD_DISPLAY_TOUCH_RANGE.unwrap_or(rsk_ui::touch::TouchRange::IDENTITY);
+        raw.and_then(|p| range.map(p))
     }
 }
 
