@@ -322,10 +322,21 @@ where
             self.wait_wake_release();
             return true;
         }
-        let Some(p) = self.armed_touch() else {
+        let poll = self.poll_touch();
+        if poll.present {
+            // A finger on the glass is a person at the device, whether or not the
+            // contact began on this screen: the auto-lock exists for the
+            // walked-away case, and a *held* contact is the one a tap alone misses
+            // — a finger that never lifts never arms a tap, so a hand resting on
+            // the panel (found on the 2" bench run, 2026-09-28) left the lock
+            // counting down under it. It does not make the contact a tap: that is
+            // `poll.tap`'s half, so a stale or held contact postpones the lock
+            // without pressing whatever it sits on.
+            note_local_activity();
+        }
+        let Some(p) = poll.tap else {
             return false;
         };
-        note_local_activity();
         if self.locked {
             self.tap_locked();
         } else if self.onboarding {

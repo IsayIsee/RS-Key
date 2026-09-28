@@ -13,12 +13,18 @@ fn a_finger_already_down_is_not_a_tap_on_what_just_appeared() {
     let env = Env::new();
     let p = center(rsk_ui::ONBOARD_SKIP_RECT);
     let mut ui = env.ui(Pad::script(&[Some(p), Some(p), None, Some(p), Some(p)]));
-    assert_eq!(ui.armed_touch(), None, "the contact predates the screen");
-    assert_eq!(ui.armed_touch(), None, "and still does");
-    assert_eq!(ui.armed_touch(), None, "an untouched sample only arms");
-    assert_eq!(ui.armed_touch(), Some(p), "now it is a deliberate tap");
+    let poll = ui.poll_touch();
+    assert!(poll.present, "the contact is on the glass");
+    assert_eq!(poll.tap, None, "but predates the screen");
+    let poll = ui.poll_touch();
+    assert!(poll.present, "and still is");
+    assert_eq!(poll.tap, None, "still not a tap on it");
+    let poll = ui.poll_touch();
+    assert!(!poll.present, "an untouched sample only arms");
+    assert_eq!(poll.tap, None);
+    assert_eq!(ui.poll_touch().tap, Some(p), "now it is a deliberate tap");
     assert_eq!(
-        ui.armed_touch(),
+        ui.poll_touch().tap,
         Some(p),
         "and stays deliberate until a repaint"
     );

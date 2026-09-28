@@ -242,6 +242,13 @@ impl Pad {
         Self::from(vec![None], Some(p))
     }
 
+    /// A contact already on the glass at the first poll and never lifting — the
+    /// shape [`hold`](Self::hold) cannot express, because its leading untouched
+    /// sample arms the contact it holds as a tap.
+    pub fn resting(p: rsk_ui::Point) -> Self {
+        Self::from(vec![], Some(p))
+    }
+
     /// The exact sample sequence, for a case the shapes above do not describe.
     pub fn script(samples: &[Option<rsk_ui::Point>]) -> Self {
         Self::from(samples.to_vec(), None)

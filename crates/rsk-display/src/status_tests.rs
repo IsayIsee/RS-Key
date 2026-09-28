@@ -241,6 +241,29 @@ fn a_tap_that_hits_nothing_is_still_a_local_interaction() {
 }
 
 #[test]
+fn a_resting_contact_postpones_the_lock_without_pressing_anything() {
+    // Bench-found on the 2" build (2026-09-28): a finger that never lifts never
+    // arms a tap — that needs an observed release — so a hand resting on the glass,
+    // or taps faster than the 100 ms poll sees a release, left the auto-lock
+    // counting down under it and locked the user out with their hand on the panel.
+    // Presence is what the deadline measures; acting stays the armed tap's half.
+    let env = Env::new();
+    let tab = center(rsk_ui::nav_tab_rect(1));
+    let mut ui = env.ui(Pad::resting(tab));
+    ui.onboarding = false;
+    let before = ui.shown;
+    backdate_local(DEFAULT_SLEEP_MS);
+    let stale = LAST_LOCAL_MS.load(Ordering::Relaxed);
+    assert!(!ui.handle_local_input(StatusKind::Idle));
+    assert_ne!(
+        LAST_LOCAL_MS.load(Ordering::Relaxed),
+        stale,
+        "a hand on the glass is presence"
+    );
+    assert_eq!(ui.shown, before, "…and it pressed nothing");
+}
+
+#[test]
 fn the_panel_blanks_after_the_sleep_timeout() {
     let env = Env::new();
     let mut ui = env.ui(Pad::idle());
