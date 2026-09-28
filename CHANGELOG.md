@@ -38,6 +38,58 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
 
 ## [Unreleased]
 
+## [0.4.11-isk.1] - 2026-09-28
+
+### Changed
+
+- **The fork moves its base onto upstream `0.4.11`.** That section, below, is
+  the whole of it — the flash probe that read a *failed* read as an absent
+  record and was swept as a class, the CTAP 2.2/2.3 gap against a YubiKey 5.8,
+  `FW_VERSION` 5.8.0, FIDO over the card interface — and this fork's own line
+  sits on top of it unchanged: the Waveshare RP2350-GEEK `display-keys` image
+  and its two security-posture variants are still the flavors published here,
+  built only for the board this fork exists for. `bcdDevice` follows upstream,
+  `0x098F` → **`0x09DA`**. The working branch is `my_main` now (it was
+  `my_dev`): the workflow triggers, the release tag check and the docs site's
+  root version follow the name GitHub carries.
+
+> ### ⚠️ Upgrading a 16 MB key provisioned before 0.4.8 still wipes it
+>
+> **Export your seed first** ([seed backup](docs/guides/seed-backup.md)). 0.4.8
+> moved the store 4 KB down on 16 MB parts to clear the RP2350-E10 block, so a
+> key provisioned by an older 16 MB build comes up factory-empty. The `display`
+> and `16mb` flavors and the `abrobot-16m` / `waveshare-touch-lcd` presets are
+> the affected ones; **4 MB and 2 MB keys upgrade in place.**
+
+### Fixed
+
+- **The GEEK panel build compiles against 0.4.11's system-clock constant.**
+  0.4.11 added `BUILD_DISPLAY_SYS_CLOCK_HZ` under `#[cfg(feature = "display")]`
+  while this fork's `display-keys` panel clocks the same 80 MHz SPI / 160 MHz
+  system pair, so the touchless build stopped compiling. The constant and its
+  2:1 assert gate on either display feature now — which is also what keeps a
+  board file from moving one half of the pair without the other. Neither build
+  changes behaviour.
+- **The no-host menu's OTP slot status follows upstream's `read_slot` rename.**
+  The 0.4.11 merge turned `read_slot` into `try_read_slot` returning
+  `Result<Option<usize>>`, and the fork's `slot_status` still called the old
+  name; the conflict block around the slot tests had also left one closing
+  brace outside the fork's function. The unseal path is unchanged — the caller
+  reads `Ok(Some(len))` where it read `Some(_)` — and the menu's rows read the
+  same.
+- **`docs/verified-compilation.md` states the fork's row counts again.** The
+  board rows (`clippy (display keys)`, `rustdoc (firmware keys)`, `build
+  firmware (display keys)`) had moved four numbers the page states about the
+  gate's own shape — 124 rows / 55 cargo / 19 clippy / 8 rustdoc is now 127 /
+  58 / 20 / 9 — and `scripts/level11c_gate.py` re-derives every one of them.
+  Numbers only: the argument around them reads the same.
+- **The gate rows the board work left behind.** `assurance/configurations.toml`
+  carries the four `display-keys` columns as `gap` cells with settling
+  questions, the `comutants` anchor the last merge had resolved away is back
+  (`GestureWait::wait` opens with the same comment and the same two lines as
+  `ButtonWait::wait`, so only its return type tells them apart), and the model
+  citations the board work moved were re-taken.
+
 ## [0.4.10-isk.2] - 2026-09-14
 
 ### Fixed
@@ -13866,6 +13918,7 @@ family that keeps the "enterprise" features in the open tree.
   [docs/releases.md](docs/releases.md) to verify a download.
 
 [Unreleased]: https://github.com/TheMaxMur/RS-Key/compare/v0.4.11...HEAD
+[0.4.11-isk.1]: https://github.com/IsayIsee/RS-Key/releases/tag/v0.4.11-isk.1
 [0.4.10-isk.2]: https://github.com/IsayIsee/RS-Key/releases/tag/v0.4.10-isk.2
 [0.4.10-isk.1]: https://github.com/IsayIsee/RS-Key/releases/tag/v0.4.10-isk.1
 [0.4.11]: https://github.com/TheMaxMur/RS-Key/compare/v0.4.10...v0.4.11
