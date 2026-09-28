@@ -908,12 +908,14 @@ pub fn step_sleep(cur_secs: u16, delta: i8) -> u16 {
     SLEEP_CHOICES[ni]
 }
 
-/// Lowercase-hex nibble (`0-9a-f`).
+/// Uppercase-hex nibble (`0-9A-F`). The screen writes these numbers the way the
+/// rest of the project does — `0x09DA` in the SOP and the docs, `REV_09DA` in the
+/// USB hardware id — so a value read off the panel matches one read off a host.
 const fn hex_nibble(n: u8) -> u8 {
-    if n < 10 { b'0' + n } else { b'a' + (n - 10) }
+    if n < 10 { b'0' + n } else { b'A' + (n - 10) }
 }
 
-/// Lowercase-hex a `u16` into a fixed 4-byte buffer — no alloc, for the Info screen.
+/// Uppercase-hex a `u16` into a fixed 4-byte buffer — no alloc, for the Info screen.
 /// Always printable ASCII, so [`core::str::from_utf8`] on it never fails.
 pub fn hex_u16(v: u16) -> [u8; 4] {
     let mut out = [0u8; 4];
@@ -925,7 +927,7 @@ pub fn hex_u16(v: u16) -> [u8; 4] {
     out
 }
 
-/// Lowercase-hex a `u64` into a fixed 16-byte buffer — no alloc, for the Info screen.
+/// Uppercase-hex a `u64` into a fixed 16-byte buffer — no alloc, for the Info screen.
 pub fn hex_u64(v: u64) -> [u8; 16] {
     let mut out = [0u8; 16];
     let mut i = 0;

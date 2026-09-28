@@ -366,13 +366,13 @@ fn adjust_controls_hit_their_keys() {
 }
 
 #[test]
-fn hex_helpers_are_lowercase_ascii() {
-    assert_eq!(core::str::from_utf8(&hex_u16(0x078A)).unwrap(), "078a");
+fn hex_helpers_are_uppercase_ascii() {
+    assert_eq!(core::str::from_utf8(&hex_u16(0x078A)).unwrap(), "078A");
     assert_eq!(core::str::from_utf8(&hex_u16(0)).unwrap(), "0000");
-    assert_eq!(core::str::from_utf8(&hex_u16(0xFFFF)).unwrap(), "ffff");
+    assert_eq!(core::str::from_utf8(&hex_u16(0xFFFF)).unwrap(), "FFFF");
     assert_eq!(
         core::str::from_utf8(&hex_u64(0x0123_4567_89ab_cdef)).unwrap(),
-        "0123456789abcdef"
+        "0123456789ABCDEF"
     );
 }
 
