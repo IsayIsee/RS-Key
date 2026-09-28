@@ -319,26 +319,26 @@ covers = ["slice:TCB-1", "slice:AS-RAM-4", "slice:AS-CRED-7", "slice:AS-RESET-9"
 [[assumption]]
 id = "PLAT-TOOLCHAIN-002"
 class = "toolchain"
-statement = "docs/unsafe.md is the enumeration of the first-party `unsafe` sites: every site the tree carries has a justification there, and every justification is about a site the tree still has. What that enumeration does NOT establish is that any one justification is CORRECT — that is a reading per site, and the twelve PLAT-UNSAFE rows below are where each one is written down and can be refuted."
-discharge = "Two halves, and only the first is mechanical. MEMBERSHIP is derived: scripts/platform_gate.py produces one candidate per `unsafe` site and refuses both an unclaimed site and a claim on a site that is gone, and it compares that page's own `Runtime sites` count and its file list against the tree. The READING half is the twelve rows that refine this one; this entry is settled when they are. It deliberately covers no candidate of its own, so that it cannot stand in for a site nobody read."
+statement = "docs/unsafe.md is the enumeration of the first-party `unsafe` sites: every site the tree carries has a justification there, and every justification is about a site the tree still has. What that enumeration does NOT establish is that any one justification is CORRECT — that is a reading per site, and the thirteen PLAT-UNSAFE rows below are where each one is written down and can be refuted."
+discharge = "Two halves, and only the first is mechanical. MEMBERSHIP is derived: scripts/platform_gate.py produces one candidate per `unsafe` site and refuses both an unclaimed site and a claim on a site that is gone, and it compares that page's own `Runtime sites` count and its file list against the tree. The READING half is the thirteen rows that refine this one; this entry is settled when they are. It deliberately covers no candidate of its own, so that it cannot stand in for a site nobody read."
 discharge_owner = "contributor"
 status = "pending"
 failure_direction = "security: the one class of memory-corruption defect safe Rust does not rule out, and — before this row was split — a whole page of justifications standing behind a single registry entry"
 # This row covered SEVEN candidates, one per FILE, until the derivation moved to
 # sites. Seven files, thirty-one sites, twenty-one numbered justifications: a new
 # `unsafe` in a file that already had one changed no candidate and was exit 0.
-# It now covers none, and is anchored by the twelve `refines` edges below — a
+# It now covers none, and is anchored by the thirteen `refines` edges below — a
 # roof row nothing points at is one a review deletes with the gate still green.
 
 # ---- The unsafe sites, one row per obligation --------------------------------
 #
-# Twelve rows over thirty-one sites, and the grouping is by what could be FALSE
-# rather than by file or by count. Eight of the sites are one obligation (the
-# GPIO type-erasures: each stolen pad has exactly one owner), three are another
-# (the sieves never alias across cores). The coverage relation is the registry's
-# own both-ways rule and needs nothing new: a ninth `AnyPin::steal` derives a
-# candidate no row claims and the gate goes red, and a row naming a site that
-# has been deleted or rewritten goes red the other way.
+# Thirteen rows over thirty-three sites, and the grouping is by what could be
+# FALSE rather than by file or by count. Nine of the sites are one obligation
+# (the GPIO type-erasures: each stolen pad has exactly one owner), three are
+# another (the sieves never alias across cores). The coverage relation is the
+# registry's own both-ways rule and needs nothing new: a tenth `AnyPin::steal`
+# derives a candidate no row claims and the gate goes red, and a row naming a
+# site that has been deleted or rewritten goes red the other way.
 
 [[assumption]]
 id = "PLAT-UNSAFE-001"
