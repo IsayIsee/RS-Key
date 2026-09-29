@@ -76,25 +76,28 @@ fn an_edge_off_the_controller_scale_is_refused() {
 }
 
 #[test]
-fn state_records_taps_against_the_targets_in_order() {
+fn state_records_the_samples_against_the_targets_in_order() {
     let mut state = CalibState::new();
     assert_eq!(state.next_target(), Some(TARGETS[0]));
     assert_eq!(state.range(), None);
 
     for (i, panel) in TARGETS.iter().enumerate() {
-        assert_eq!(state.next_target(), Some(*panel));
-        let done = state.record(Point::new(panel.x * 2, panel.y * 2));
-        assert_eq!(
-            done,
-            i == TARGETS.len() - 1,
-            "only the fourth tap completes"
-        );
+        for k in 0..SAMPLES_PER_TARGET {
+            assert_eq!(state.next_target(), Some(*panel), "target {i}");
+            assert_eq!(state.samples_so_far(), k);
+            let done = state.record(Point::new(panel.x * 2, panel.y * 2));
+            assert_eq!(
+                done,
+                i == TARGETS.len() - 1 && k == SAMPLES_PER_TARGET - 1,
+                "only the last sample of the last target completes"
+            );
+        }
         assert_eq!(state.tap(i).map(|t| t.panel), Some(*panel));
         assert_eq!(state.next_target(), TARGETS.get(i + 1).copied());
     }
 
     assert!(state.is_done());
-    let range = state.range().expect("four taps solve");
+    let range = state.range().expect("four targets solve");
     // raw = 2·panel: the panel edges sit at raw 0 and 2·(edge).
     assert_eq!(range.x_min, 0);
     assert_eq!(range.x_max, 2 * (crate::PANEL_W - 1));
@@ -104,19 +107,47 @@ fn state_records_taps_against_the_targets_in_order() {
 fn a_reading_after_the_last_target_is_ignored() {
     let mut state = CalibState::new();
     for panel in TARGETS {
-        state.record(panel);
+        for _ in 0..SAMPLES_PER_TARGET {
+            state.record(Point::new(panel.x * 2, panel.y * 2));
+        }
     }
-    let solved = state.range();
+    let solved = state.range().expect("the taps solve");
     assert!(state.record(Point::new(1, 1)));
-    assert_eq!(state.range(), solved);
+    assert_eq!(state.range(), Some(solved));
 }
 
 #[test]
 fn unrecoverable_taps_leave_the_range_unsolved() {
     let mut state = CalibState::new();
-    for _ in TARGETS {
+    for _ in 0..TARGETS.len() * SAMPLES_PER_TARGET {
         state.record(Point::new(7, 7));
     }
     assert!(state.is_done());
     assert_eq!(state.range(), None);
+}
+
+/// One reading per target that landed off-centre — or was mis-read — must not move the
+/// solution: the median of three is what the tool keeps, and the corner that used to need
+/// several taps to register is exactly the reading this discards (2026-09-29).
+#[test]
+fn one_off_centre_reading_does_not_move_the_solution() {
+    let clean = |p: Point| Point::new(p.x * 2, p.y * 2);
+    let mut with_outlier = CalibState::new();
+    let mut reference = CalibState::new();
+    for panel in TARGETS {
+        // A wild first reading, then two that agree — the median is the clean pair.
+        with_outlier.record(Point::new(panel.x * 2 + 300, panel.y * 2 + 300));
+        for _ in 0..SAMPLES_PER_TARGET {
+            reference.record(clean(panel));
+        }
+        for _ in 0..SAMPLES_PER_TARGET - 1 {
+            with_outlier.record(clean(panel));
+        }
+    }
+    assert!(with_outlier.is_done() && reference.is_done());
+    assert_eq!(
+        with_outlier.range(),
+        reference.range(),
+        "one outlier reading moved the solved range"
+    );
 }

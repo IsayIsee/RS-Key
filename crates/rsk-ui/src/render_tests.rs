@@ -2385,7 +2385,7 @@ fn a_truncated_cardholder_value_paints_its_marker() {
 fn the_calibration_screen_paints_a_target_per_corner_and_no_result_yet() {
     use crate::calib::{CalibState, TARGETS};
     let mut d = Rec::new();
-    render_calib(&mut d, &CalibState::new(), None).unwrap();
+    render_calib(&mut d, &CalibState::new(), None, 0).unwrap();
     for target in TARGETS {
         let ring = Rect::new(target.x - 17, target.y - 17, 34, 34);
         assert!(d.any_non_bg_in(ring), "target at {target:?} is painted");
@@ -2401,11 +2401,13 @@ fn the_calibration_screen_paints_a_target_per_corner_and_no_result_yet() {
 /// the one the panel wants.
 #[test]
 fn a_solved_calibration_shows_the_range_and_follows_the_finger() {
-    use crate::calib::{CalibState, TARGETS};
+    use crate::calib::{CalibState, SAMPLES_PER_TARGET, TARGETS};
     let mut d = Rec::new();
     let mut state = CalibState::new();
     for panel in TARGETS {
-        state.record(panel); // raw == panel, so the solved range is the identity
+        for _ in 0..SAMPLES_PER_TARGET {
+            state.record(panel); // raw == panel, so the solved range is the identity
+        }
     }
     assert_eq!(
         state.range(),
@@ -2413,7 +2415,7 @@ fn a_solved_calibration_shows_the_range_and_follows_the_finger() {
         "aligned taps must solve back to the identity"
     );
 
-    render_calib(&mut d, &state, Some(Point::new(120, 160))).unwrap();
+    render_calib(&mut d, &state, Some(Point::new(120, 160)), 0).unwrap();
 
     // A reading under the top-left target, where the guided screen puts it.
     assert!(
@@ -2436,14 +2438,14 @@ fn a_solved_calibration_shows_the_range_and_follows_the_finger() {
 /// for a retry instead of handing back numbers that would misplace every tap.
 #[test]
 fn an_unsolvable_calibration_shows_no_range() {
-    use crate::calib::{CalibState, TARGETS};
+    use crate::calib::{CalibState, SAMPLES_PER_TARGET, TARGETS};
     let mut d = Rec::new();
     let mut state = CalibState::new();
-    for _ in TARGETS {
+    for _ in 0..TARGETS.len() * SAMPLES_PER_TARGET {
         state.record(Point::new(77, 88));
     }
     assert!(state.is_done());
-    render_calib(&mut d, &state, Some(Point::new(120, 160))).unwrap();
+    render_calib(&mut d, &state, Some(Point::new(120, 160)), 0).unwrap();
     assert_eq!(state.range(), None);
     assert!(
         !d.any_non_bg_in(Rect::new(0, 168, PANEL_W, 48)),

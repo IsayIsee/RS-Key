@@ -15,10 +15,12 @@
 //! off the panel and written into the board file by hand.
 
 use core::cell::RefCell;
+use core::sync::atomic::{AtomicU16, Ordering};
 
+use embassy_rp::gpio::Input;
 use embassy_time::Timer;
 
-use rsk_display::{BL_TOP, Hooks as _};
+use rsk_display::Hooks as _;
 use rsk_ui::Point;
 use rsk_ui::calib::CalibState;
 
@@ -28,6 +30,31 @@ use crate::display::Ui;
 /// tracks a finger, slow enough that a full-frame repaint (~15 ms of SPI) does
 /// not saturate the task.
 const FRAME_MS: u64 = 30;
+
+/// Backlight duty the tool holds: mid-range, where the LED current is actually
+/// chopped. The panel's own false frames are read at every brightness, but the
+/// chopper multiplies their rate — at full duty the pin is a steady level with no
+/// current edges and they thin out (bench, 2026-09-29), the opposite of what a
+/// probe wants. Light enough to read, chopped enough to provoke.
+const PROBE_DUTY: u16 = 91;
+
+/// Rising edges seen on the panel's Touch_INT since boot. The controller announces
+/// each report it has for the host with a pulse there (~100 µs, `IrqPluseWidth`), so
+/// the tool can ask the one question polling cannot: did the frame it just read come
+/// with one? A frame the chip never announced is not a touch — that is what the
+/// out-of-range refusal in `rsk_ui::touch` turns away (bench, 2026-09-29).
+static IRQ_EDGES: AtomicU16 = AtomicU16::new(0);
+
+/// Latch Touch_INT's rising edges. The RP2350 latches an edge in the bank's
+/// write-1-to-clear `INTR` until the GPIO handler reads it, so the count survives a
+/// pulse far shorter than any poll — a level poll would miss every one of them.
+#[embassy_executor::task]
+pub async fn irq_task(mut irq: Input<'static>) {
+    loop {
+        irq.wait_for_rising_edge().await;
+        IRQ_EDGES.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 /// Whether the finger is down from the previous tick. The controller reports
 /// level, not edges: without this, one contact would be recorded against every
@@ -46,8 +73,9 @@ pub async fn calib_task(ui: &'static RefCell<Ui>) {
     let mut state = CalibState::new();
     let mut flow = Flow::AwaitTap;
     // What the panel is showing, so a still finger does not repaint it 33 times a
-    // second. `None` until the first frame.
-    let mut painted: Option<(CalibState, Option<Point>)> = None;
+    // second. The IRQ count is part of it — it is on screen, and a rising edge with
+    // nothing else changed still has to reach the panel. `None` until the first frame.
+    let mut painted: Option<(CalibState, Option<Point>, u16)> = None;
     let mut lit = false;
 
     loop {
@@ -56,7 +84,7 @@ pub async fn calib_task(ui: &'static RefCell<Ui>) {
             if !lit {
                 // The panel-owning flow restores the *persisted* brightness, which
                 // can be a dim level; a calibration screen has to be readable.
-                hooks.set_backlight(BL_TOP);
+                hooks.set_backlight(PROBE_DUTY);
                 lit = true;
             }
 
@@ -70,9 +98,10 @@ pub async fn calib_task(ui: &'static RefCell<Ui>) {
                 _ => {}
             }
 
-            if painted != Some((state, raw)) {
-                let _ = rsk_ui::render_calib(panel, &state, raw);
-                painted = Some((state, raw));
+            let irq = IRQ_EDGES.load(Ordering::Relaxed);
+            if painted != Some((state, raw, irq)) {
+                let _ = rsk_ui::render_calib(panel, &state, raw, irq);
+                painted = Some((state, raw, irq));
             }
         }
         Timer::after_millis(FRAME_MS).await;

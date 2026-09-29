@@ -14,10 +14,19 @@
 use crate::Point;
 use crate::touch::TouchRange;
 
-/// Distance of each target's centre from the panel edge, in pixels. Far enough in
-/// that a fingertip reaches it even on a touch area narrower than the glass, and
-/// close enough that extrapolating to the edge stays near the measured segment.
+/// Distance of each target's centre from the panel edge, in pixels. It has to sit **inside
+/// the controller's active area**: outside it the readings stop being proportional to the
+/// glass and clamp at the sensor's edge, and a fit through those points describes no
+/// panel — at 24 px the 2" solved to nothing at all. The cost of being this far in is that
+/// the solve extrapolates out to the edges, where the readings are exactly the
+/// non-proportional ones; `TouchRange::map` answers that by pinning such a reading to the
+/// edge it left rather than refusing it (2026-09-29).
 pub const TARGET_MARGIN: u16 = 40;
+
+/// Readings taken per target, and [`CalibState::record`] keeps their median. One reading
+/// carries the whole error of that one fingertip placement, and the solve extrapolates from
+/// it: three of them, combined by median, is what a single off-centre tap can no longer move.
+pub const SAMPLES_PER_TARGET: usize = 3;
 
 /// The four targets in tap order — top-left, top-right, bottom-right, bottom-left.
 /// Clockwise, so the guided screen reads naturally; the pairs the solver averages
@@ -39,11 +48,12 @@ pub struct CalibTap {
     pub raw: Point,
 }
 
-/// How far the taps have got: which target is next, what has been read, and the
-/// range once every target has one.
+/// How far the taps have got: which target is next, the readings taken for it, and the
+/// range once every target has its samples.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CalibState {
-    taps: [Option<CalibTap>; 4],
+    samples: [[Point; SAMPLES_PER_TARGET]; 4],
+    counts: [u8; 4],
     next: usize,
     range: Option<TouchRange>,
 }
@@ -57,37 +67,47 @@ impl Default for CalibState {
 impl CalibState {
     pub const fn new() -> Self {
         Self {
-            taps: [None; 4],
+            samples: [[Point::new(0, 0); SAMPLES_PER_TARGET]; 4],
+            counts: [0; 4],
             next: 0,
             range: None,
         }
     }
 
-    /// The target waiting for a tap, or `None` once all four are recorded.
+    /// The target waiting for a tap, or `None` once all four have their samples.
     pub fn next_target(&self) -> Option<Point> {
         TARGETS.get(self.next).copied()
     }
 
-    /// How many targets have been recorded, `0..=4` — the guided screen's index
-    /// into its prompts.
+    /// How many targets are done, `0..=4` — the guided screen's index into its rings.
     pub fn next_index(&self) -> usize {
         self.next
     }
 
-    /// Record a reading against the waiting target and advance; after the fourth
-    /// the range is solved. Returns whether the state is now complete.
+    /// How many readings the waiting target has so far, `0..SAMPLES_PER_TARGET`.
+    pub fn samples_so_far(&self) -> usize {
+        *self.counts.get(self.next).unwrap_or(&0) as usize
+    }
+
+    /// Record a reading against the waiting target; once it has
+    /// [`SAMPLES_PER_TARGET`] of them the next target is waiting, and after the fourth the
+    /// range is solved from their medians. Returns whether the state is complete.
     pub fn record(&mut self, raw: Point) -> bool {
-        let Some(panel) = self.next_target() else {
+        if self.next >= TARGETS.len() {
             return true;
-        };
-        self.taps[self.next] = Some(CalibTap { panel, raw });
-        self.next += 1;
-        if self.next == TARGETS.len() {
-            let [Some(a), Some(b), Some(c), Some(d)] = self.taps else {
-                // Unreachable: `next` only reaches `len()` through the writes above.
-                return true;
-            };
-            self.range = solve_range(&[a, b, c, d]);
+        }
+        let at = self.counts[self.next] as usize;
+        self.samples[self.next][at] = raw;
+        self.counts[self.next] += 1;
+        if self.counts[self.next] as usize == SAMPLES_PER_TARGET {
+            self.next += 1;
+            if self.next == TARGETS.len() {
+                let taps = core::array::from_fn(|i| CalibTap {
+                    panel: TARGETS[i],
+                    raw: median(&self.samples[i]),
+                });
+                self.range = solve_range(&taps);
+            }
         }
         self.is_done()
     }
@@ -96,14 +116,32 @@ impl CalibState {
         self.next == TARGETS.len()
     }
 
-    /// A recorded tap by target index, for the guided screen's readout.
+    /// A target's most recent reading, for the guided screen's readout.
     pub fn tap(&self, index: usize) -> Option<CalibTap> {
-        self.taps.get(index).copied().flatten()
+        let count = *self.counts.get(index)? as usize;
+        if count == 0 {
+            return None;
+        }
+        Some(CalibTap {
+            panel: *TARGETS.get(index)?,
+            raw: self.samples[index][count - 1],
+        })
     }
 
     pub fn range(&self) -> Option<TouchRange> {
         self.range
     }
+}
+
+/// The per-axis median of a target's readings — one reading, not an average of two, because
+/// [`SAMPLES_PER_TARGET`] is odd by construction. A single tap that landed off-centre or was
+/// mis-read is what this is here to discard.
+fn median(points: &[Point; SAMPLES_PER_TARGET]) -> Point {
+    fn axis(mut v: [u16; SAMPLES_PER_TARGET]) -> u16 {
+        v.sort_unstable();
+        v[SAMPLES_PER_TARGET / 2]
+    }
+    Point::new(axis(points.map(|p| p.x)), axis(points.map(|p| p.y)))
 }
 
 /// Fixed-point scale for the slope, so a raw unit per panel pixel keeps its

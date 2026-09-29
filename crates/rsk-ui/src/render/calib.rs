@@ -11,7 +11,7 @@
 //! are the ones [`crate::calib`] solves against, so the two cannot drift.
 
 use super::*;
-use crate::calib::{CalibState, TARGETS};
+use crate::calib::{CalibState, SAMPLES_PER_TARGET, TARGETS};
 
 /// Diameter of a target's ring, and the diameter of the dot at its centre.
 const TARGET_DIA: u32 = 34;
@@ -31,20 +31,45 @@ const HINT_Y: i32 = 140;
 const RANGE_Y: i32 = 180;
 const RANGE_GAP: i32 = 22;
 
-/// The prompt per tap count, plus the two resting states: solved (check by touch)
-/// and unsolved (the taps could not describe a mapping, so start over).
-const HINTS: [&str; 4] = [
-    "Tap target 1 of 4",
-    "Tap target 2 of 4",
-    "Tap target 3 of 4",
-    "Tap target 4 of 4",
+/// The Touch_INT edge count's row — under the bottom target row, in the only band no target,
+/// reading or the solved range claims. It is the tool's own instrument, not a reading, so it
+/// stays out of the middle band entirely (see the test that holds that band empty until taps
+/// have supplied something).
+const IRQ_Y: i32 = 308;
+
+/// The prompt per tap, plus the two resting states: solved (check by touch) and unsolved (the
+/// taps could not describe a mapping, so start over). One entry per *sample*, not per target
+/// — each target is tapped [`SAMPLES_PER_TARGET`] times and the tool keeps the median — so
+/// the count on screen is the count the tool is holding.
+const HINTS: [&str; 4 * SAMPLES_PER_TARGET] = [
+    "Target 1 of 4, tap 1 of 3",
+    "Target 1 of 4, tap 2 of 3",
+    "Target 1 of 4, tap 3 of 3",
+    "Target 2 of 4, tap 1 of 3",
+    "Target 2 of 4, tap 2 of 3",
+    "Target 2 of 4, tap 3 of 3",
+    "Target 3 of 4, tap 1 of 3",
+    "Target 3 of 4, tap 2 of 3",
+    "Target 3 of 4, tap 3 of 3",
+    "Target 4 of 4, tap 1 of 3",
+    "Target 4 of 4, tap 2 of 3",
+    "Target 4 of 4, tap 3 of 3",
 ];
 const HINT_CHECK: &str = "Solved - tap anywhere to check";
 const HINT_FAILED: &str = "No mapping - reset to retry";
 
 /// Paint the calibration screen for `state`, with the finger's raw reading (when
-/// one is down) drawn through the solved range as a cross.
-pub fn render_calib<D>(t: &mut D, state: &CalibState, finger: Option<Point>) -> Result<(), D::Error>
+/// one is down) drawn through the solved range as a cross. `irq_edges` is the
+/// controller's Touch_INT rising-edge count since boot, drawn as `i N`: the chip
+/// announces each report with a pulse there, so a frame read *without* the count
+/// having moved is one the chip never announced — the tool's own reading of the
+/// false frames `TouchRange::map` refuses.
+pub fn render_calib<D>(
+    t: &mut D,
+    state: &CalibState,
+    finger: Option<Point>,
+    irq_edges: u16,
+) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
@@ -62,6 +87,16 @@ where
         EgPoint::new(MIDX, HINT_Y),
         Role::Body,
         MUTED,
+    )?;
+
+    let mut irqbuf = [0u8; 8];
+    font::centered(
+        t,
+        num_line(b'i', irq_edges, &mut irqbuf),
+        EgPoint::new(MIDX, IRQ_Y),
+        Role::MonoSmall,
+        theme::TEXT_2,
+        BG,
     )?;
 
     for (i, target) in TARGETS.iter().enumerate() {
@@ -135,7 +170,8 @@ where
 /// The prompt line for the state: the tap counter while targets remain, then the
 /// solved/unsolved verdict.
 fn hint(state: &CalibState) -> &'static str {
-    match HINTS.get(state.next_index()) {
+    let at = state.next_index() * SAMPLES_PER_TARGET + state.samples_so_far();
+    match HINTS.get(at) {
         Some(hint) => hint,
         None if state.range().is_some() => HINT_CHECK,
         None => HINT_FAILED,
