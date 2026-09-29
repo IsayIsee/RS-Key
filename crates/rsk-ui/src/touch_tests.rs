@@ -105,17 +105,16 @@ fn a_reversed_range_is_the_mirror() {
 }
 
 #[test]
-fn a_raw_value_outside_the_range_clamps_to_the_edge() {
+fn a_raw_value_just_outside_the_range_pins_to_the_edge_it_left() {
     let r = TouchRange {
         x_min: 33,
         x_max: 225,
         ..TouchRange::IDENTITY
     };
-    assert_eq!(r.map(Point::new(0, 0)), Some(Point::new(0, 0)));
-    assert_eq!(
-        r.map(Point::new(400, 0)),
-        Some(Point::new(crate::PANEL_W - 1, 0))
-    );
+    // A fingertip that ran off the glass: the contact's centre can leave the panel, so a
+    // reading a little outside the span belongs to the edge it left, not to nowhere.
+    assert_eq!(r.map(Point::new(20, 0)), Some(Point::new(0, 0)));
+    assert_eq!(r.map(Point::new(240, 0)), Some(Point::new(239, 0)));
 }
 
 #[test]
@@ -126,4 +125,31 @@ fn a_degenerate_axis_is_none() {
         ..TouchRange::IDENTITY
     };
     assert_eq!(r.map(Point::new(100, 0)), None);
+}
+
+/// The 2" bench's frames, and the two ends of the panel they land on. A raw `y` past the
+/// calibrated maximum (323) is refused however small the excess: the panel's bottom edge is
+/// the nav bar's Home cell, and the frame the controller still holds after a contact ends
+/// reads there (measured raw y = 3584 against that maximum, 2026-09-29). A corner press —
+/// which reports *below* the calibration's minimum on **both** axes, because a fingertip's
+/// centre can leave the glass — is pinned to the corner instead: refusing it is what made
+/// the top-left take several taps to register.
+#[test]
+fn past_the_calibrated_maximum_is_never_a_touch_and_a_corner_is() {
+    let range = TouchRange {
+        x_min: 18,
+        x_max: 223,
+        y_min: 2,
+        y_max: 323,
+    };
+    // No tolerance at this end at all — one unit past is already not a touch.
+    assert_eq!(range.map(Point::new(100, 324)), None);
+    assert_eq!(range.map(Point::new(18, 330)), None);
+    assert_eq!(range.map(Point::new(18, 4095)), None);
+    // The corner: both axes below the calibrated minimum, pinned rather than refused.
+    assert_eq!(range.map(Point::new(12, 0)), Some(Point::new(0, 0)));
+    // Past the edge slop it is not a fingertip either.
+    assert_eq!(range.map(Point::new(4095, 160)), None);
+    assert_eq!(range.map(Point::new(18, 2)), Some(Point::new(0, 0)));
+    assert_eq!(range.map(Point::new(223, 323)), Some(Point::new(239, 319)));
 }

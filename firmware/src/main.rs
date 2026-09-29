@@ -330,6 +330,11 @@ const _: () = assert!(
     BUILD_DISPLAY_TOUCH_IC != TOUCH_CST816D || BUILD_DISPLAY_TOUCH_RANGE.is_some(),
     "a cst816d board must declare touch_x_min/touch_x_max/touch_y_min/touch_y_max"
 );
+/// The controller's Touch_INT pad, or `u8::MAX` for a board that wires none — which is
+/// every display board but the 2". The calibration tool counts the reports the
+/// controller announces on it (`display_calib`); the flow itself does not read the line.
+#[cfg(feature = "display")]
+const BUILD_DISPLAY_TOUCH_IRQ: u8 = env_u16(env!("PK_DISPLAY_TOUCH_IRQ")) as u8;
 #[cfg(feature = "display")]
 const BUILD_DISPLAY_I2C_FREQ_HZ: u32 = env_u32(env!("PK_DISPLAY_I2C_FREQ_HZ"));
 #[cfg(any(feature = "display", feature = "display-keys"))]
@@ -353,12 +358,20 @@ pub(crate) const BUILD_DISPLAY_WIN_OFF: (u16, u16) = (
 // by both panel builds; the wake-button overlap check is touch-build-only.
 #[cfg(any(feature = "display", feature = "display-keys"))]
 const _: () = {
+    // The controller's announcement line, where the board wires one — and the sentinel
+    // otherwise, which no real pad can collide with (the touchless build has none).
+    #[cfg(feature = "display")]
+    const TOUCH_IRQ_PIN: u8 = BUILD_DISPLAY_TOUCH_IRQ;
+    #[cfg(feature = "display-keys")]
+    const TOUCH_IRQ_PIN: u8 = u8::MAX;
+
     const DISPLAY_CTLS: &[u8] = &[
         BUILD_DISPLAY_CS,
         BUILD_DISPLAY_DC,
         BUILD_DISPLAY_RST,
         BUILD_DISPLAY_TP_RST,
         BUILD_DISPLAY_BL_PIN,
+        TOUCH_IRQ_PIN,
     ];
     // Pins the panel's serial link and the touch bus own, from the board config:
     // GP10/11 and GP6/7 on the 2.8", GP18/19 and GP12/13 on the 2". The touchless
@@ -577,6 +590,12 @@ static PHY_MANUFACTURER: StaticCell<[u8; 64]> = StaticCell::new();
 /// invariant as FS/RNG above — borrows never span `.await`.
 #[cfg(feature = "display")]
 static UI: StaticCell<RefCell<display::Ui>> = StaticCell::new();
+/// The touch controller's I2C bus, shared by the flow's polls and by the task that reads it
+/// at the controller's own announcement (`display::TouchHw` says why). A `RefCell` is the
+/// whole of the synchronization: both readers run on the thread executor, and the UI's own
+/// cell — which a modal holds for a whole screen — is a different one.
+#[cfg(feature = "display")]
+static TOUCH_BUS: StaticCell<RefCell<display::TouchI2c>> = StaticCell::new();
 #[cfg(feature = "display-keys")]
 static KEY_UI: StaticCell<display_keys::SharedPanel> = StaticCell::new();
 
@@ -1286,7 +1305,11 @@ async fn main(spawner: Spawner) {
             rst,
             bl,
         };
-        let touch = display::TouchHw { i2c, rst: tp_rst };
+        let bus: &'static RefCell<display::TouchI2c> = TOUCH_BUS.init(RefCell::new(i2c));
+        let touch = display::TouchHw {
+            i2c: bus,
+            rst: tp_rst,
+        };
         let info = display::DeviceInfo {
             version: device_release,
             chipid: u64::from_le_bytes(serial_id),
@@ -1306,8 +1329,29 @@ async fn main(spawner: Spawner) {
         let ui: &'static RefCell<display::Ui> = UI.init(RefCell::new(display::build(
             panel, touch, info, fs_ref, keys, rng_ref, wake_btn,
         )));
-        // The calibration build swaps the ambient status loop for the tool's own;
-        // the flow that would repaint over its screen is never started.
+        // The controller's announcement line, where the board wires one — the build bakes
+        // `u8::MAX` for a board without it. Both readers want it: the flow reads the report
+        // *at* each announcement, which is where the vendor's own driver reads it, and the
+        // calibration tool counts the announcements instead. It is one pad, so either build
+        // spawns one task or the other.
+        if BUILD_DISPLAY_TOUCH_IRQ != u8::MAX {
+            use embassy_rp::gpio::{Input, Pull};
+            // Board data is a const, so the pad is claimed by number — the route
+            // CS/DC/RST/TP_RST already take. Pulled **up**: the vendor configures this
+            // line that way (`pinMode(Touch_INT_PIN, INPUT_PULLUP)` in the Arduino example,
+            // `DEV_KEY_Config` in the C ones), so the pull is part of the hardware
+            // reference this fork had no reason to drive the other way (2026-09-29).
+            let irq = Input::new(
+                unsafe { embassy_rp::gpio::AnyPin::steal(BUILD_DISPLAY_TOUCH_IRQ) },
+                Pull::Up,
+            );
+            #[cfg(feature = "display-calib")]
+            spawner.spawn(display_calib::irq_task(irq).unwrap());
+            #[cfg(not(feature = "display-calib"))]
+            spawner.spawn(display::touch_irq_task(irq, bus).unwrap());
+        }
+        // The calibration build swaps the ambient status loop for the tool's own; the
+        // flow that would repaint over its screen is never started.
         #[cfg(feature = "display-calib")]
         spawner.spawn(display_calib::calib_task(ui).unwrap());
         #[cfg(not(feature = "display-calib"))]

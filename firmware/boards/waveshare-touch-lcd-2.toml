@@ -55,14 +55,24 @@ tp_rst_shared = true
 # CST816D, whose single-byte register layout reports in its own frame rather
 # than the panel's, so the calibrated range below is required (the firmware
 # refuses a `cst816d` board without one). These four were measured on this unit
-# with the guided calibration build (`--features display-calib`, 2026-09-29); the
-# mount differs between panels, so re-measure on a replacement — a range that is
-# merely off shows as taps landing tens of pixels away at the edges, not as a
-# dead touch pad.
+# with the guided calibration build (`--features display-calib`, 2026-09-29),
+# three taps per target combined by median: the single-tap solve before that
+# over-claimed the active area by 7 raw units in x and 20 in y, and a reading
+# outside the real area is clamped at the sensor's edge rather than proportional
+# — which is why the glass's outer band is handled by `TouchRange::map`'s
+# pin-to-edge rule instead. The mount differs between panels, so re-measure on a
+# replacement: a range merely off shows as taps landing tens of pixels away at
+# the edges, not as a dead touch pad.
 touch_ic = "cst816d"
-touch_x_min = 18
+touch_x_min = 25
 touch_x_max = 223
-touch_y_min = 2
-touch_y_max = 323
+touch_y_min = 16
+touch_y_max = 317
+# CST816D Touch_INT (the vendor example's Touch_INT_PIN). The controller writes a
+# coordinate into its report block whether or not it has anything to say, and
+# announces a real report with a pulse here — so without this line a poll reads the
+# block's idle contents as a touch. On this board that showed as one frame at raw
+# y=3584 (the axis ends at 323) becoming a tap on the nav bar (2026-09-29).
+touch_irq = 29
 # No GPIO user key on this board (BOOTSEL and RESET only): touch-only wake.
 wake_pin = "none"

@@ -92,6 +92,7 @@ struct BoardConfig {
     display_touch_x_max: Option<u16>,
     display_touch_y_min: Option<u16>,
     display_touch_y_max: Option<u16>,
+    display_touch_irq: Option<u8>,
     /// `wake_pin = "none"` in a board file — no wake button at all, which is not
     /// the same as the key being absent (that keeps `WAKE_PIN`'s GPIO25 default).
     display_wake_none: bool,
@@ -153,6 +154,7 @@ fn parse_toml(raw: &str) -> BoardConfig {
         display_touch_x_max: None,
         display_touch_y_min: None,
         display_touch_y_max: None,
+        display_touch_irq: None,
         display_wake_none: false,
     };
     let mut sec = "";
@@ -289,6 +291,11 @@ fn parse_toml(raw: &str) -> BoardConfig {
             // ST7789V2 set (the GEEK and the 2.8"), 1 = the ST7789T3 set (the
             // 2"). Both live in `display_panel::Panel`.
             ("display", "panel_init") => c.display_panel_init = Some(u8(v)),
+            // The controller's Touch_INT pad, where the board wires one. The
+            // controller writes its report block whether or not it has anything to
+            // say and announces a real report here, so the driver believes a reading
+            // only when this line has pulsed. Absent on the 2.8", which wires none.
+            ("display", "touch_irq") => c.display_touch_irq = Some(u8(v)),
             // The touch controller: `cst328` (the 2.8") or `cst816d` (the 2").
             // The two share no register layout — 16-bit addresses against
             // single-byte ones — so the firmware picks a driver with this.
@@ -649,6 +656,21 @@ fn main() {
         "PK_DISPLAY_PANEL_INIT",
         disp_cfg.and_then(|b| b.display_panel_init).unwrap_or(0)
     );
+    // The controller's Touch_INT pad, or the `0xFF` sentinel for a board that wires
+    // none — which `main.rs` reads as "the report block is all there is" (the 2.8").
+    // A real pad is a GPIO, so the sentinel cannot collide with one.
+    {
+        let v = disp_cfg
+            .and_then(|b| b.display_touch_irq)
+            .unwrap_or(u8::MAX);
+        assert!(
+            v == u8::MAX || v <= MAX_GPIO,
+            "display.touch_irq must be a GPIO 0..={}: {}",
+            MAX_GPIO,
+            v
+        );
+        disp!("PK_DISPLAY_TOUCH_IRQ", v);
+    }
     disp!(
         "PK_DISPLAY_TOUCH_IC",
         match disp_cfg.and_then(|b| b.display_touch_ic.as_deref()) {

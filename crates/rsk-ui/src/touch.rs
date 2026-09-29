@@ -79,11 +79,20 @@ impl TouchRange {
         y_max: crate::PANEL_H - 1,
     };
 
-    /// Map a raw report onto panel pixels, clamping a raw value that lands
-    /// outside the calibrated range (a fingertip at the very edge does). `None`
-    /// for a degenerate axis: a hand-written board file that collapses one would
-    /// otherwise divide by zero in a poll driven by the touch interrupt.
+    /// Map a raw report onto panel pixels. A reading a little outside the calibrated span is
+    /// a fingertip that ran off the glass — a corner press reports past the edge the
+    /// calibration extrapolated to — and is pinned to the edge it left, which is what the
+    /// corner and edge of the panel need to stay reachable. A reading past the panel's
+    /// **bottom** edge is refused outright instead: that edge is the nav bar, and the frame
+    /// the controller still holds after a contact ends reads there (raw y = 3584 against a
+    /// calibrated maximum of 323, measured 2026-09-29). `None` for that, for a reading past
+    /// the edge slop, and for a degenerate axis.
     pub fn map(&self, raw: Point) -> Option<Point> {
+        // Whichever end of `y` is numerically larger is the panel's bottom, mirrored axis or
+        // not — and that end admits nothing at all.
+        if raw.y > self.y_min.max(self.y_max) {
+            return None;
+        }
         Some(Point::new(
             scale(raw.x, self.x_min, self.x_max, crate::PANEL_W)?,
             scale(raw.y, self.y_min, self.y_max, crate::PANEL_H)?,
@@ -91,8 +100,23 @@ impl TouchRange {
     }
 }
 
-/// `raw` in `lo..=hi` onto `0..=len-1`, clamped into that span. `None` when the
-/// range is degenerate (`lo == hi`).
+/// `raw` in `lo..=hi` onto `0..=len-1`, refusing anything outside that span. `None` for a
+/// reading outside it, and for a degenerate axis (`lo == hi`).
+///
+/// There is deliberately no clamping. Pinning an out-of-range reading to the edge decides
+/// *where* an impossible frame lands, and the panel's bottom edge is the nav bar: the 2"
+/// read raw y = 3584 against a calibrated maximum of 323 once (eleven times the axis), and
+/// a milder one of the same kind — a few units past that maximum, inside any generous edge
+/// tolerance — pinned to the last row and tapped the nav bar's Home cell every time a
+/// contact ended (2026-09-29). The range already describes a fingertip *at* the glass: the
+/// calibration targets sit inside the panel and the solve extrapolates out to its edge, so
+/// nothing a real finger produces lands outside it.
+/// How far outside the calibrated span a reading may still be a fingertip that ran off the
+/// glass, as a divisor of the axis' own span. Past that it describes no contact at all.
+const EDGE_SLOP_DIVISOR: i32 = 8;
+
+/// `raw` in `lo..=hi` onto `0..=len-1`, pinning a reading within the edge slop onto the edge
+/// it left and refusing one past it. `None` for a refusal, and for a degenerate axis.
 fn scale(raw: u16, lo: u16, hi: u16, len: u16) -> Option<u16> {
     let span = hi as i32 - lo as i32;
     if span == 0 {
@@ -100,6 +124,10 @@ fn scale(raw: u16, lo: u16, hi: u16, len: u16) -> Option<u16> {
     }
     let last = (len - 1) as i32;
     let mapped = (raw as i32 - lo as i32) * last / span;
+    let slop = (span / EDGE_SLOP_DIVISOR).max(1);
+    if !(-slop..=last + slop).contains(&mapped) {
+        return None;
+    }
     Some(mapped.clamp(0, last) as u16)
 }
 

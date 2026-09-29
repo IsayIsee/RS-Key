@@ -12,6 +12,7 @@
 //! PWM, the wake button and the firmware's own globals back in.
 
 use core::cell::RefCell;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use embassy_rp::gpio::{Input, Output};
 use embassy_rp::i2c::{Blocking as I2cBlocking, I2c};
@@ -99,8 +100,15 @@ impl TouchI2c {
 /// The touch controller's I2C bus + reset pin. `rst` is `None` on a board that
 /// wires Touch_RST to the panel's own reset pad (`tp_rst_shared`): there the
 /// panel's reset pulse is the controller's, and the pad has a single owner.
+///
+/// `i2c` is a *shared* cell because two things read the controller: the flow, on its poll
+/// (our screens need a level, so they cannot be driven by announcements alone), and
+/// [`touch_irq_task`], which reads it on the controller's own announcement the way the
+/// vendor's driver does. Both run on the thread executor, so a `RefCell` is the whole of
+/// the synchronization — the modal loops hold the *Ui*'s cell for a whole screen, which is
+/// why the bus needed a cell of its own.
 pub struct TouchHw {
-    pub i2c: TouchI2c,
+    pub i2c: &'static RefCell<TouchI2c>,
     pub rst: Option<Output<'static>>,
 }
 
@@ -117,6 +125,9 @@ pub fn backlight_cfg(duty: u16) -> PwmConfig {
     // storage delay is a third of that period — so the duty range compresses at the
     // top (measured on the 2": duty 135 and duty 255 are indistinguishable). ×16 puts
     // the period at 25.6 µs, where the delay is ~2% of it: 39 kHz, far above flicker.
+    // The chopper also couples into the touch controller: on the 2" bench the false
+    // frames a poll occasionally reads are noticeably rarer at full duty — a steady
+    // level, so no current edges at all — than at any dimmed one (2026-09-29).
     cfg.divider = cfg.divider * 16;
     // The compare register is per channel, and a channel whose compare stays 0 is
     // held low for the whole period — so a board whose backlight hangs off
@@ -130,72 +141,138 @@ pub fn backlight_cfg(duty: u16) -> PwmConfig {
     cfg
 }
 
-/// The CST328 touch controller on this board's I2C bus. Owns only the bus; the
-/// reset pin is pulsed once during [`build`] (or left to the panel on a
-/// `tp_rst_shared` board).
+/// The report the controller last announced on its Touch_INT, packed as `x << 12 | y`, or
+/// [`NO_REPORT`]. Written by [`touch_irq_task`] at the pulse and taken by the next
+/// [`TouchPad::read`].
+static ANNOUNCED_REPORT: AtomicU32 = AtomicU32::new(NO_REPORT);
+
+/// The packed-report value that means "nothing announced": a 12-bit coordinate pair can
+/// never produce it.
+const NO_REPORT: u32 = u32::MAX;
+
+/// Latch the touch controller's Touch_INT and read the report there, which is where the
+/// vendor's driver reads it. The pulse is ~100 µs — far shorter than any poll — but the
+/// RP2350 holds the edge in the bank's write-1-to-clear `INTR` until the GPIO handler
+/// reads it, so none is missed; and reading *at* the pulse is what keeps a tap shorter than
+/// our poll interval from vanishing. Spawned only where the board wires the line.
+#[embassy_executor::task]
+pub async fn touch_irq_task(mut irq: Input<'static>, bus: &'static RefCell<TouchI2c>) {
+    loop {
+        irq.wait_for_rising_edge().await;
+        // `try_borrow_mut`: the flow may be mid-transfer, and a dropped pulse costs nothing
+        // — the next one is along in a scan period.
+        if let Some(p) = bus
+            .try_borrow_mut()
+            .ok()
+            .and_then(|mut b| read_report(&mut b))
+        {
+            ANNOUNCED_REPORT.store(pack(p), Ordering::Relaxed);
+        }
+    }
+}
+
+/// Pack a raw point for [`ANNOUNCED_REPORT`]: both axes are 12-bit.
+fn pack(p: rsk_ui::Point) -> u32 {
+    ((p.x as u32 & 0x0FFF) << 12) | (p.y as u32 & 0x0FFF)
+}
+
+/// The CST328 touch controller on this board's I2C bus. The reset pin is pulsed once
+/// during [`build`] (or left to the panel on a `tp_rst_shared` board); the bus is the
+/// shared cell [`TouchHw`] carries.
 pub struct Touch {
-    i2c: TouchI2c,
+    bus: &'static RefCell<TouchI2c>,
+}
+
+impl Touch {
+    pub fn new(bus: &'static RefCell<TouchI2c>) -> Self {
+        Self { bus }
+    }
 }
 
 impl Touch {
     /// Leave the controller reporting after the reset pulse.
     fn normal_mode(&mut self) {
+        let i2c = &mut *self.bus.borrow_mut();
         match crate::BUILD_DISPLAY_TOUCH_IC {
             crate::TOUCH_CST816D => {
-                // 0xFE = 1 turns the controller's auto-sleep off. Left on it
-                // would blank between polls and swallow the first touch after
-                // each one — the vendor example writes this on init and on every
-                // wake for the same reason.
-                let _ = self.i2c.write(CST816_ADDR, &[0xFE, 0x01]);
+                // The vendor's init, in the vendor's order: DisAutoSleep (left off, it
+                // blanks between polls and swallows the first touch after each one), then
+                // the report and scan registers. A/B'd on the 2" 2026-09-29: they do *not*
+                // stop its occasional false frame — the refusal in `touch::scale` does.
+                let _ = i2c.write(CST816_ADDR, &[0xFE, 0x01]); // DisAutoSleep
+                let _ = i2c.write(CST816_ADDR, &[0xFA, 0x41]); // IrqCtl, point mode
+                let _ = i2c.write(CST816_ADDR, &[0xED, 0x01]); // IrqPluseWidth
+                let _ = i2c.write(CST816_ADDR, &[0xEE, 0x01]); // NorScanPer
             }
             _ => {
                 // Register 0xD109 (REG_MODE_NORMAL) as a 2-byte big-endian
                 // address with no payload.
-                let _ = self.i2c.write(CST328_ADDR, &[0xD1, 0x09]);
+                let _ = i2c.write(CST328_ADDR, &[0xD1, 0x09]);
             }
         }
     }
-}
 
-impl Touch {
     /// One report in the *controller's* own frame, with no board range applied:
     /// the numbers the calibration flow solves a board's range from. Every other
     /// caller wants the panel pixels [`TouchPad::read`] returns instead.
     pub fn read_raw(&mut self) -> Option<rsk_ui::Point> {
-        match crate::BUILD_DISPLAY_TOUCH_IC {
-            crate::TOUCH_CST816D => {
-                // Six bytes from 0x01: gesture, finger count, X high/low, Y
-                // high/low — the family's single-byte register layout.
-                let mut buf = [0u8; 6];
-                match self
-                    .i2c
-                    .write_read(CST816_ADDR, &[rsk_ui::touch::CST816_BLOCK], &mut buf)
-                {
-                    Ok(()) => rsk_ui::touch::parse_cst816d(&buf),
-                    Err(()) => None,
+        read_report(&mut self.bus.borrow_mut())
+    }
+}
+
+/// The board's read of the controller — the one place either reader goes through, so the
+/// flow's polls and the announcement in [`touch_irq_task`] cannot drift apart. In the
+/// *controller's* own frame, with no board range applied.
+fn read_report(i2c: &mut TouchI2c) -> Option<rsk_ui::Point> {
+    match crate::BUILD_DISPLAY_TOUCH_IC {
+        crate::TOUCH_CST816D => {
+            // One register per transfer. All three of the vendor's own drivers for this
+            // board read this controller that way — single-byte `I2C_Read(reg)` calls,
+            // never a block read — and the registers are the family's single-byte layout
+            // from `CST816_BLOCK`: gesture, finger count, X high/low, Y high/low. The
+            // controller is the one part of this panel whose physical behaviour we cannot
+            // change, so its read lives in this board's branch rather than in a shape
+            // shared with the CST328 (2026-09-29).
+            let mut buf = [0u8; 6];
+            for i in 0..buf.len() {
+                let mut byte = [0u8; 1];
+                let reg = rsk_ui::touch::CST816_BLOCK + i as u8;
+                match i2c.write_read(CST816_ADDR, &[reg], &mut byte) {
+                    Ok(()) => buf[i] = byte[0],
+                    Err(()) => return None,
                 }
             }
-            _ => {
-                let mut buf = [0u8; 7];
-                let pt = match self.i2c.write_read(CST328_ADDR, &[0xD0, 0x00], &mut buf) {
-                    Ok(()) => rsk_ui::touch::parse_cst328(&buf),
-                    Err(()) => None,
-                };
-                // Clear register 0xD005 (write address + a 0 byte) to ack the report.
-                let _ = self.i2c.write(CST328_ADDR, &[0xD0, 0x05, 0x00]);
-                pt
-            }
+            rsk_ui::touch::parse_cst816d(&buf)
+        }
+        _ => {
+            let mut buf = [0u8; 7];
+            let pt = match i2c.write_read(CST328_ADDR, &[0xD0, 0x00], &mut buf) {
+                Ok(()) => rsk_ui::touch::parse_cst328(&buf),
+                Err(()) => None,
+            };
+            // Clear register 0xD005 (write address + a 0 byte) to ack the report.
+            let _ = i2c.write(CST328_ADDR, &[0xD0, 0x05, 0x00]);
+            pt
         }
     }
 }
 
 impl TouchPad for Touch {
-    /// Read the first finger's coordinate, if any, then clear the report so the
-    /// controller serves the next one. Any I2C error reads as "no touch". What
-    /// comes back is in the *controller's* frame; the board's range maps it onto
-    /// the panel's.
+    /// Read the first finger's coordinate, if any. What comes back is in the *controller's*
+    /// frame; the board's range maps it onto the panel's, refusing a reading outside that
+    /// range rather than pinning it to the edge (`scale`).
+    ///
+    /// A report the controller announced comes first — that is where the vendor's own driver
+    /// reads, and the only trace a tap shorter than our poll interval leaves. Past it this is
+    /// the poll our screens need for a *level*: they hold a press for as long as the finger
+    /// is down, and the announcement rate is not a contract to build that on.
     fn read(&mut self) -> Option<rsk_ui::Point> {
         let range = crate::BUILD_DISPLAY_TOUCH_RANGE.unwrap_or(rsk_ui::touch::TouchRange::IDENTITY);
+        let announced = ANNOUNCED_REPORT.swap(NO_REPORT, Ordering::Relaxed);
+        if announced != NO_REPORT {
+            let p = rsk_ui::Point::new((announced >> 12) as u16, (announced & 0x0FFF) as u16);
+            return range.map(p);
+        }
         self.read_raw().and_then(|p| range.map(p))
     }
 }
@@ -379,7 +456,7 @@ pub fn build(
         rst.set_high();
         block_for(Duration::from_millis(50));
     }
-    let mut touch = Touch { i2c };
+    let mut touch = Touch::new(i2c);
     touch.normal_mode();
 
     let hooks = DisplayHooks {
