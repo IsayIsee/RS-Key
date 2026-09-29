@@ -311,6 +311,23 @@ in
         "display"
       ];
     };
+    # Trusted-display flavor for the Waveshare RP2350-Touch-LCD-2" (SKU 30711),
+    # same posture as `firmware-display` but a board of its own: the PIO link is
+    # on spi0 (GP18/19, not GP10/11), the touch controller is a CST816D on i2c0
+    # (GP12/13, not a CST328 on I2C1), the backlight is on GP15 slice 7 channel
+    # B, and LCD_RST shares GP20 with Touch_RST. The board file carries all of
+    # it; this package exists so an adapted board has a published image rather
+    # than sending its owner to a build environment.
+    firmware-display-lcd2 = mkFirmware {
+      name = "firmware-display-lcd2";
+      board = "waveshare-touch-lcd-2";
+      flashSize = "16M";
+      ledKind = "none";
+      cargoFlags = [
+        "--features"
+        "display"
+      ];
+    };
     # Touchless screen + button flavor for the Waveshare RP2350-GEEK (and, going
     # forward, every board of this form): the ST7789 panel is the status
     # indicator and the trusted confirm page, and the single BOOTSEL button is

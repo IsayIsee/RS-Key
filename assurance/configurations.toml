@@ -1043,3 +1043,35 @@ board is a 240×320 ST7789T3 with a CST816D on i2c0 — same geometry, a differe
 controller and a different touch part — so does a second trusted-display board \
 inherit those cells, or start as `gap` the way the GEEK's column did? Which row \
 would settle it is itself open."""
+
+[[question]]
+column = "firmware-display-lcd2"
+owner = "maintainer"
+settled_by = "ruling"
+text = """
+The 2" touch display as a shipped flavor (`BOARD=waveshare-touch-lcd-2`, \
+`--features display`, 16 MB, `LED_KIND=none`): the preset the \
+`waveshare-touch-lcd-2` column above describes, with the feature that actually \
+compiles the touch flow. That column is wholly unexercised because no row built \
+the preset; this one is the build the release ships, so the two now differ in \
+exactly the way that question is about. Its `SEC-DISP-*` cells are the same \
+open question — whether a second trusted-display board inherits the 2.8"'s \
+measured cells, given a CST816D on i2c0 in place of a CST328 on I2C1 on the same \
+240×320 geometry — and this column makes it sharper: the released image is \
+where those cells would have to hold. Whether the preset column survives once \
+the flavor exists, or the two collapse into one, is the ruling this asks for."""
+
+[[question]]
+column = "display-calib"
+owner = "maintainer"
+settled_by = "ruling"
+text = """
+The bench-only calibration build (`--features display-calib`, never shipped): \
+the display flow with the ambient status loop replaced by the tool's own, so the \
+panel walks four targets at known coordinates and shows the touch range solved \
+from the taps — the four numbers a board file needs and that no automated row \
+can produce. No row in `check.sh` builds it and no release ships it, so the \
+column is real and WHOLLY UNEXERCISED. The question is which P0-family rows a \
+build whose only job is reading the raw touch report can move at all — it drives \
+the panel and the I2C bus and nothing else — and whether a bench tool belongs as \
+a column in this matrix or beside the other never-shipped flavors."""

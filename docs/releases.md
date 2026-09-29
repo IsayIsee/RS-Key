@@ -7,11 +7,12 @@ It builds every artifact reproducibly, hashes it, and signs the manifest.
 
 ## What a release contains
 
-> **This fork** publishes only the GEEK images (`display-keys` and its two
-> posture variants); the wider table below describes upstream's full release
-> set, which this fork does not build.
+> **This fork** publishes only the images for the boards it has adapted: the
+> GEEK (`display-keys` and its two posture variants) and the 2" touch display
+> (`display-lcd2`). The wider table below describes upstream's full release set,
+> which this fork does not build.
 
-- **Seventeen firmware images**: `rs-key-<tag>-<flavor>.uf2`. Every published image
+- **Eighteen firmware images**: `rs-key-<tag>-<flavor>.uf2`. Every published image
   requires a physical touch; the `no-touch` test builds are never released (a
   signed presence-bypass asset would remove the consent gate):
 
@@ -31,11 +32,12 @@ It builds every artifact reproducibly, hashes it, and signs the manifest.
   | `display-keys` | + display-keys, `BOARD=waveshare-geek` | experimental touchless screen + button build (Waveshare RP2350-GEEK: ambient status, one-key confirm, no-host idle menu; [guides/display.md](guides/display.md)) |
   | `display-keys-strong-pin` | + display-keys,strong-pin | the GEEK image with the 6-code-point PIN floor + trivial-PIN block ([build.md](build.md)) |
   | `display-keys-always-uv` | + display-keys,always-uv | the GEEK image with CTAP 2.1 `alwaysUv` baked on (a PIN for every operation; U2F disabled) |
+  | `display-lcd2` | + display, `BOARD=waveshare-touch-lcd-2` | experimental trusted-display build for the Waveshare RP2350-Touch-LCD-2" (240×320 ST7789T3 + CST816D touch; [guides/display.md](guides/display.md)) |
   | `2mb` | `FLASH_SIZE=2M KVMAIN=896K` | 2 MB boards (Seeed XIAO RP2350, Waveshare RP2350-Zero-CM) |
   | `16mb` | `FLASH_SIZE=16M` | 16 MB boards (e.g. TenStar RP2350-USB) |
   | `strict-config` | + strict-config | the historical strict admin-write posture: config writes stay presence/PIN-gated and the ungated transport writes are refused ([build.md](build.md), [threat-model.md](threat-model.md)). The `default` build is now the permissive full-ykman admin surface |
 
-  All seventeen present the default **RS-Key** USB identity (`0x1209:0x0001`). For the
+  All eighteen present the default **RS-Key** USB identity (`0x1209:0x0001`). For the
   YubiKey-interop identity, build `VIDPID=Yubikey5` yourself ([build.md](build.md)).
 - **`SHA256SUMS`**: a checksum for every image and the SBOM.
 - **`SHA256SUMS.sigstore.json`**: a keyless [cosign](https://docs.sigstore.dev/)
@@ -89,8 +91,10 @@ rebuild them yourself and compare (no need to trust the published binary):
 
 ```sh
 git checkout <tag>
-nix build .#firmware-display-keys             # this fork's flavor (also: -strong-pin, -always-uv)
+nix build .#firmware-display-keys             # this fork's flavors: also -strong-pin, -always-uv
 sha256sum result/firmware-display-keys.uf2    # compare against SHA256SUMS for rs-key-<tag>-display-keys.uf2
+nix build .#firmware-display-lcd2             # the 2" touch display flavor
+sha256sum result/firmware-display-lcd2.uf2    # …for rs-key-<tag>-display-lcd2.uf2
 ```
 
 A match on Linux reproduces the CI-built artifact exactly. (Cross-platform

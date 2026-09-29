@@ -66,6 +66,12 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
   cases: **"No USB host"** until a host has configured the device, **"USB host
   set up"** after (a device that was set up stays set up when the cable comes
   out).
+- **The 2" touch display has a published image.** `firmware-display-lcd2`
+  (`BOARD=waveshare-touch-lcd-2`, `--features display`, 16 MB, `LED_KIND=none`)
+  joins the flavors this fork builds — the nix package, the CI board row, and
+  both loops of the release workflow — so a board this fork adapted no longer
+  needs a build environment to be usable. Packaging only: no firmware behaviour
+  changed, and no `bcdDevice` bump.
 
 ## [0.4.11-isk.1] - 2026-09-28
 

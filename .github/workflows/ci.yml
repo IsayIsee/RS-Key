@@ -266,6 +266,13 @@ jobs:
           - name: board-waveshare-touch-lcd
             args: "--features display"
             env: "BOARD=waveshare-touch-lcd"
+          # The 2" is the same form as the 2.8" — a touch panel on the `display`
+          # feature — but a board of its own: different PIO/I2C pins, a CST816D
+          # instead of a CST328, and the backlight on another PWM slice. This
+          # row is what builds its board file on every push.
+          - name: board-waveshare-touch-lcd-2
+            args: "--features display"
+            env: "BOARD=waveshare-touch-lcd-2"
           - name: board-abrobot-4m
             args: ""
             env: "BOARD=abrobot-4m"
