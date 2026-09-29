@@ -154,7 +154,10 @@ const NO_REPORT: u32 = u32::MAX;
 /// vendor's driver reads it. The pulse is ~100 µs — far shorter than any poll — but the
 /// RP2350 holds the edge in the bank's write-1-to-clear `INTR` until the GPIO handler
 /// reads it, so none is missed; and reading *at* the pulse is what keeps a tap shorter than
-/// our poll interval from vanishing. Spawned only where the board wires the line.
+/// our poll interval from vanishing. Spawned only where the board wires the line, and only
+/// by the flow build: the calibration tool keeps counts of the same edges instead, so this
+/// task is not compiled there.
+#[cfg(not(feature = "display-calib"))]
 #[embassy_executor::task]
 pub async fn touch_irq_task(mut irq: Input<'static>, bus: &'static RefCell<TouchI2c>) {
     loop {
@@ -172,6 +175,7 @@ pub async fn touch_irq_task(mut irq: Input<'static>, bus: &'static RefCell<Touch
 }
 
 /// Pack a raw point for [`ANNOUNCED_REPORT`]: both axes are 12-bit.
+#[cfg(not(feature = "display-calib"))]
 fn pack(p: rsk_ui::Point) -> u32 {
     ((p.x as u32 & 0x0FFF) << 12) | (p.y as u32 & 0x0FFF)
 }

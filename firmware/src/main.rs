@@ -305,6 +305,11 @@ const TOUCH_CST328: u8 = 0;
 const TOUCH_CST816D: u8 = 1;
 #[cfg(feature = "display")]
 const BUILD_DISPLAY_TOUCH_IC: u8 = env_u16(env!("PK_DISPLAY_TOUCH_IC")) as u8;
+// The board file's `touch_ic` reaches the driver as `PK_DISPLAY_TOUCH_IC`, which the dispatch
+// in `display::read_report` compares against these two names — pinned here so the encoding
+// is stated once and neither name is left unreferenced by the arm that names only one.
+#[cfg(feature = "display")]
+const _: () = assert!(TOUCH_CST328 == 0 && TOUCH_CST816D == 1);
 /// The calibrated touch range — the raw coordinates at the glass's edges — or
 /// `None` when the controller already reports panel pixels (the 2.8"'s CST328
 /// is configured at the panel resolution). Build.rs bakes 0xFFFF for "unset".
