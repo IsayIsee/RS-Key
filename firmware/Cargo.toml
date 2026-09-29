@@ -182,6 +182,13 @@ display = ["rsk-device/display", "dep:rsk-display", "dep:rsk-ui", "dep:rsk-bip39
 # fips/strong-pin/strict-config UI-layer propagation of `display` does not apply
 # here either. Build with `LED_KIND=none ... --features display-keys`.
 display-keys = ["dep:rsk-ui", "dep:mipidsi", "dep:embedded-graphics"]
+# Touch-calibration tool build for a screen+touch board — BENCH ONLY, never
+# shipped: instead of the trusted-display flow, the panel walks four targets at
+# known coordinates and shows the touch range solved from the taps (see
+# `display_calib`). Its output is four numbers for the board file, so it is built
+# by hand when a panel is replaced or a new board is brought up, and it is not in
+# the release matrix. Implies `display` (it drives the same panel and touch).
+display-calib = ["display", "rsk-display/display-calib"]
 
 [[bin]]
 name = "firmware"

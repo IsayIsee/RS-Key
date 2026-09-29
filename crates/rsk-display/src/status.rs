@@ -58,8 +58,13 @@ fn same_surface(prev: Option<Screen>, next: Screen) -> bool {
                 status: _,
                 pin_set,
                 passkeys,
+                no_host_info,
             } = a;
-            pin_set == b.pin_set && passkeys == b.passkeys
+            // The no-host flag is compared, not ignored: spinner ↔ card is a different
+            // surface under the finger, and the screen that just replaced it has not
+            // been touched yet (so the tap that woke or arrived must not be read as
+            // deliberate).
+            pin_set == b.pin_set && passkeys == b.passkeys && no_host_info == b.no_host_info
         }
         (Some(a), b) => a == b,
         (None, _) => false,
@@ -136,7 +141,39 @@ where
             status: status_to_kind(self.hooks.led_status()),
             pin_set: self.home_pin_set,
             passkeys: self.home_passkeys,
+            no_host_info: self.no_host_info,
         })
+    }
+
+    /// Age the no-host clock: how long the panel has been waiting for a host that has
+    /// never set this device up.
+    ///
+    /// A key with no host — on a charger, in a drawer — has no SET_CONFIGURATION to
+    /// answer, so the status engine sits in its boot state and Home spins for ever,
+    /// with a "Starting…" label and a 10 Hz repaint to match. Nothing is wrong and
+    /// nothing is coming: past the configured delay the card replaces the spinner, the
+    /// same resting surface an idle device shows.
+    ///
+    /// Wall-clock, and outside the ambient-quiet gate, so a blanked panel or a host
+    /// ceremony in flight cannot postpone it. A status engine that has left Boot is
+    /// proof a host configured the device — latched, because the card's USB row says
+    /// the device *was* set up, which stays true after the cable comes out; only a
+    /// device that has never seen a host may call itself one with no USB host.
+    ///
+    /// `now` is a parameter rather than read here so the host tests can step the clock
+    /// instead of sleeping through the shortest delay the menu offers.
+    pub(super) fn tick_no_host(&mut self, now: Instant) {
+        if status_to_kind(self.hooks.led_status()) != StatusKind::Boot {
+            self.host_seen = true;
+            self.no_host_info = false;
+            return;
+        }
+        if self.host_seen {
+            return;
+        }
+        let since = *self.no_host_since.get_or_insert(now);
+        let delay = Duration::from_secs(rsk_ui::nohost_secs(self.no_host_idx) as u64);
+        self.no_host_info = now.checked_duration_since(since).unwrap_or_default() >= delay;
     }
 
     /// What the panel stands on when nothing else is happening: the Locked screen
@@ -211,7 +248,9 @@ where
         // spinner arc while busy, the breathe hint while locked. Both redraw in
         // place (no clear), so they never flicker and the idle frame is untouched.
         match screen {
-            Screen::Home(v) if v.status != StatusKind::Idle => {
+            // Gated on the same predicate the body uses: a no-host device whose card is
+            // up must not have the spinner arc painted over it every tick.
+            Screen::Home(v) if !v.shows_card() => {
                 *spin = spin.wrapping_add(SPIN_STEP_DEG);
                 assert!(
                     rsk_ui::render_status_arc(&mut self.panel, v.status, *spin).is_ok(),
@@ -411,6 +450,9 @@ where
         // Wrap-safe deadline checks (millis truncated to u32 wrap every ~49 days).
         let now = Instant::now().as_millis() as u32;
         if let Ok(mut u) = ui.try_borrow_mut() {
+            // Ahead of the asleep split: the no-host clock has to run on a blank panel
+            // too, or a key left on a charger would wake up still saying "Starting…".
+            u.tick_no_host(Instant::now());
             if u.asleep {
                 u.tick_asleep();
             } else {

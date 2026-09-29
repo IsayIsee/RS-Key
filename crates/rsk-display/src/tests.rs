@@ -691,6 +691,28 @@ fn brightness_levels_are_ordered() {
 }
 
 #[test]
+fn brightness_levels_are_perceptually_even_across_the_usable_range() {
+    // Perception goes as the square root-ish of the duty (`duty^(1/2.2)`), so an even
+    // staircase must be even *there*: 25%, 37.5%, … 100% of the perceivable range.
+    // The linear table this replaced scored 48/66/79/90/100 — four of five steps in
+    // the top half — which is what the bench reported as "level 3 is basically full".
+    let floor = level_duty(1) as f32;
+    assert!(
+        floor >= 12.0,
+        "the dimmest level is below the backlight's visible duty (measured floor: 12)"
+    );
+    assert_eq!(level_duty(BRIGHTNESS_LEVELS), BL_TOP);
+    for level in 1..=BRIGHTNESS_LEVELS {
+        let perceived = (level_duty(level) as f32 / BL_TOP as f32).powf(1.0 / 2.2);
+        let target = 0.25 + 0.125 * (level - 1) as f32;
+        assert!(
+            (perceived - target).abs() < 0.02,
+            "level {level} reads {perceived:.3}, not {target:.3}"
+        );
+    }
+}
+
+#[test]
 fn the_marquee_buffer_preserves_partial_coverage() {
     let band = rsk_ui::PIN_TITLE_BAND;
     let mut coverage = [0u8; MARQUEE_COVERAGE_BYTES];
@@ -825,6 +847,8 @@ fn boot_restores_the_saved_display_settings() {
         sleep_secs: 15,
         pin_declined: false,
         scramble_pin: false,
+        // Non-default, so a restore that quietly kept the default fails here.
+        nohost_idx: 1,
     };
     env.fs
         .borrow_mut()
@@ -832,6 +856,7 @@ fn boot_restores_the_saved_display_settings() {
         .expect("EF_DISPLAY");
     let ui = env.ui(Pad::idle());
     assert_eq!(ui.brightness, cfg.brightness);
+    assert_eq!(ui.no_host_idx, cfg.nohost_idx);
     assert_eq!(
         SLEEP_TIMEOUT_MS.load(Ordering::Relaxed),
         cfg.sleep_secs as u32 * 1000

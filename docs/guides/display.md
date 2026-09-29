@@ -22,7 +22,7 @@ The whole feature is `dep:`-gated. A standard key without a screen compiles
 from the default firmware image), so an ordinary build is byte-for-byte
 unaffected.
 
-![The trusted display's Home screen: a bright "Ready" status beside a check, a status card reading USB connected / Device PIN set / Passkeys 0, and a bottom navigation bar with Home, Passkeys, Apps and Settings tabs](../images/display-home.png)
+![The trusted display's Home screen: a bright "Ready" status beside a check, a status card with USB, device-PIN and passkey rows, and a bottom navigation bar with Home, Passkeys, Apps and Settings tabs](../images/display-home.png)
 
 The full GUI uses always-on antialiasing. Text uses four-bit IBM Plex Sans and
 Mono coverage data. Icons, circles, status rings, rounded cards, and controls
@@ -251,11 +251,13 @@ point is ever shown, and no OATH code is computed (the device has no clock).
 
 Grouped into three domains, plus the journal / backup / reset actions:
 
-- **Display**: backlight brightness (PWM), the display-sleep timeout, and the
-  touch timeout, each adjusted live. All three **persist across reboots**:
-  brightness and sleep in an `EF_DISPLAY` flash record; the touch timeout in
-  `EF_PHY`'s `PresenceTimeout`, the same field `rsk hw --touch-timeout` writes,
-  so the panel and the host tool stay in sync.
+- **Display**: backlight brightness (PWM, seven perceptually-even steps), the
+  display-sleep timeout, the touch timeout, and the no-host info delay — how long
+  Home spins "Starting…" before showing its card when no host has configured the
+  device — each adjusted live. All four **persist across reboots**: brightness,
+  sleep and the no-host delay in an `EF_DISPLAY` flash record; the touch timeout
+  in `EF_PHY`'s `PresenceTimeout`, the same field `rsk hw --touch-timeout`
+  writes, so the panel and the host tool stay in sync.
 - **Security**: set / change the **device PIN** and the **FIDO clientPIN** (each
   chosen entirely on the panel). Changing the clientPIN asks for the current one
   first, and that prompt *is* the card's `changePIN` check: a **wrong** entry

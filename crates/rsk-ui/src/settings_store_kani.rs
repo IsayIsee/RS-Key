@@ -12,6 +12,7 @@ fn encode_apply_block_roundtrip() {
         sleep_secs: kani::any(),
         pin_declined: kani::any(),
         scramble_pin: kani::any(),
+        nohost_idx: kani::any(),
     };
     let mut got = DisplayConfig::default();
     got.apply_block(&cfg.encode());

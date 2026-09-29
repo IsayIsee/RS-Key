@@ -17,6 +17,7 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod aa;
+pub mod calib;
 pub mod font;
 pub mod glyph;
 mod page_templates;
@@ -29,7 +30,7 @@ pub use glyph::Glyph;
 pub use render::{
     KEYS_MENU_ROWS_PER_PAGE, PIN_TITLE_BAND, SEED_WORDS_PER_PAGE, STATUS_ARC_START,
     keys_menu_page_slice, pin_title_overflows, render, render_add_passkey, render_apps,
-    render_audit_log, render_audit_page, render_backup, render_backup_format,
+    render_audit_log, render_audit_page, render_backup, render_backup_format, render_calib,
     render_confirm_delete, render_confirm_factory_reset, render_erasing, render_firmware,
     render_hold_button, render_hold_fill, render_home_change, render_keys_checking,
     render_keys_confirm, render_keys_decision, render_keys_menu_page, render_keys_status,
@@ -44,7 +45,9 @@ pub use render::{
     render_service_page, render_share_picker, render_slip39_share, render_status_arc,
     render_success, render_success_circle, render_wipe_failed,
 };
-pub use settings_store::{CONF_LEN as DISPLAY_CONF_LEN, DisplayConfig};
+pub use settings_store::{
+    CONF_LEN as DISPLAY_CONF_LEN, DisplayConfig, NOHOST_CHOICES, nohost_secs,
+};
 
 /// Panel geometry (Waveshare RP2350-Touch-LCD-2.8, ST7789T3, portrait).
 pub const PANEL_W: u16 = 240;
@@ -602,6 +605,9 @@ pub enum SettingsPage {
     /// Display-sleep timeout adjust (−/+/Back) — blanks the panel after inactivity to
     /// stop image retention on the IPS glass.
     Sleep,
+    /// No-host-info delay adjust (−/+/Back) — how long Home spins "Starting…" before
+    /// showing its card on a device no host has configured.
+    NoHost,
     /// The Security sub-page: the device, FIDO and PIV PINs, the PIN-pad scramble toggle,
     /// the audit log, the backup status, and the (danger) Factory reset. Reached from the
     /// Root "Security" row; the title-bar back chevron returns to Root.
@@ -609,8 +615,10 @@ pub enum SettingsPage {
 }
 
 /// Discrete backlight steps the brightness page cycles through (1 = dimmest kept on,
-/// never 0 — the menu never blanks the panel you're navigating).
-pub const BRIGHTNESS_LEVELS: u8 = 5;
+/// never 0 — the menu never blanks the panel you're navigating). Seven steps, chosen
+/// against the hardware's own floor; `rsk-display`'s duty table says why they are not
+/// an arithmetic split of the PWM range.
+pub const BRIGHTNESS_LEVELS: u8 = 7;
 /// Touch-timeout choices in seconds the timeout page steps between.
 pub const TIMEOUT_CHOICES: [u16; 5] = [10, 20, 30, 60, 120];
 /// Display-sleep choices in seconds the sleep page steps between; the final `0` is the
@@ -630,6 +638,9 @@ pub struct SettingsView {
     pub timeout_secs: u16,
     /// Current display-sleep timeout, seconds (`0` = Off, never blanks).
     pub sleep_secs: u16,
+    /// Current no-host-info delay, as an index into [`NOHOST_CHOICES`] — the page shows
+    /// `NOHOST_CHOICES[nohost_idx]` seconds and steps the index.
+    pub nohost_idx: u8,
     /// bcdDevice firmware build counter, shown in hex on the Firmware row + screen.
     pub version: u16,
     /// RP2350 chip serial, shown in hex on the Firmware screen.
@@ -673,6 +684,9 @@ pub enum DisplayEntry {
     /// Touch / presence-confirm timeout — how long a touch request waits for a tap (and how
     /// long a revealed PIN stays lit).
     Timeout,
+    /// No-host-info delay — how long Home spins "Starting…" before showing its status card
+    /// on a device no host has ever configured.
+    NoHost,
 }
 
 /// An entry on the Security sub-page list.
@@ -740,16 +754,18 @@ pub const fn settings_row_entry(i: u16) -> RootEntry {
     }
 }
 
-/// Number of Display sub-page rows (Brightness / Display sleep / Touch timeout).
-pub const DISPLAY_ROWS: u16 = 3;
+/// Number of Display sub-page rows (Brightness / Display sleep / Touch timeout / No-host
+/// info).
+pub const DISPLAY_ROWS: u16 = 4;
 
 /// The Display entry on row `i`, in list order (the two screen-output knobs first, then the
-/// touch timeout).
+/// touch timeout, then the no-host delay).
 pub const fn display_row_entry(i: u16) -> DisplayEntry {
     match i {
         0 => DisplayEntry::Brightness,
         1 => DisplayEntry::Sleep,
-        _ => DisplayEntry::Timeout,
+        2 => DisplayEntry::Timeout,
+        _ => DisplayEntry::NoHost,
     }
 }
 
@@ -861,6 +877,13 @@ pub fn hit_adjust(p: Point) -> Option<AdjustKey> {
 /// The display task applies the result to the backlight PWM; the menu only models it.
 pub fn step_brightness(level: u8, delta: i8) -> u8 {
     (level as i16 + delta as i16).clamp(1, BRIGHTNESS_LEVELS as i16) as u8
+}
+
+/// Step the no-host-info delay to the next/previous [`NOHOST_CHOICES`] entry by `delta`
+/// (+1/−1), clamped. Index-stepped rather than value-stepped (unlike the timeouts): the
+/// choices *are* the record's domain, so there is no free value to snap.
+pub fn step_nohost(idx: u8, delta: i8) -> u8 {
+    (idx as i16 + delta as i16).clamp(0, NOHOST_CHOICES.len() as i16 - 1) as u8
 }
 
 /// Step the touch timeout to the next/previous [`TIMEOUT_CHOICES`] entry by `delta`
@@ -1132,12 +1155,27 @@ pub struct KeysMenuRow<'a> {
 /// What the Home tab shows: the device status (mirrored from the LED engine) plus the two
 /// live facts the status card states — whether a device PIN is set and how many resident
 /// passkeys are stored. The firmware fills `pin_set` / `passkeys` from a cached
-/// enumeration refreshed at modal boundaries (never per idle frame).
+/// enumeration refreshed at modal boundaries (never per idle frame), and `no_host_info`
+/// from its own no-host clock.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct HomeView {
     pub status: StatusKind,
     pub pin_set: bool,
     pub passkeys: u16,
+    /// A host has never configured this device and the configured delay has passed, so
+    /// Home shows the status card even though the status engine is still in its boot
+    /// state. A key on a charger would otherwise spin "Starting…" for ever — and
+    /// repaint at 10 Hz doing it — when nothing is wrong and nothing is coming.
+    pub no_host_info: bool,
+}
+
+impl HomeView {
+    /// Whether Home shows its resting status card rather than the booting spinner. Both
+    /// the card/body split *and* the liveness pulse gate on this, so a device that has
+    /// moved on to the card stops being repainted over by the spinner arc.
+    pub fn shows_card(&self) -> bool {
+        matches!(self.status, StatusKind::Idle) || self.no_host_info
+    }
 }
 
 // --- Passkeys list + service detail ----------------------------------------

@@ -280,10 +280,22 @@ impl DeviceKeys {
     }
 }
 
+/// Backlight duty per brightness level — `(level/7)^2.2` onto the usable range, i.e.
+/// the values the eye reads as even steps. The PWM duty is linear in current and
+/// perception is not, so an arithmetic split (1/7, 2/7, … of 255) puts four of the
+/// seven steps in the top half of the *perceived* range and leaves the bottom ones
+/// unusable — which is exactly what the bench saw ("level 3 is basically full").
+///
+/// The floor is 12, not 1: below roughly duty 12 the SS8050 low-side switch's own
+/// storage delay (~0.3–0.5 µs of a 25.6 µs period at the 39 kHz the panel runs, see
+/// the firmware's `backlight_cfg`) eats enough of each cycle that the LED never
+/// visibly lights. So the steps are even *across the range the hardware can show*
+/// — 12..=255, perceptually 25%..100% — not across an arithmetic 0..100%.
+const BL_DUTY: [u16; BRIGHTNESS_LEVELS as usize] = [12, 29, 55, 91, 135, 190, 255];
+
 /// Map a brightness level (`1..=BRIGHTNESS_LEVELS`) to a backlight duty (compare).
 fn level_duty(level: u8) -> u16 {
-    let l = level.clamp(1, BRIGHTNESS_LEVELS) as u16;
-    (l * BL_TOP) / BRIGHTNESS_LEVELS as u16
+    BL_DUTY[level.clamp(1, BRIGHTNESS_LEVELS) as usize - 1]
 }
 
 /// A four-bit off-screen `DrawTarget` over the PIN title band. Coordinates are absolute,
@@ -388,6 +400,20 @@ where
     info: DeviceInfo,
     /// Current backlight level (`1..=BRIGHTNESS_LEVELS`), edited from the menu.
     brightness: u8,
+    /// The no-host-info delay, as an index into [`rsk_ui::NOHOST_CHOICES`] — how long
+    /// the panel shows the booting spinner before Home's card, on a device no host has
+    /// ever configured.
+    no_host_idx: u8,
+    /// When the current run without a configured host began, and whether it has passed
+    /// the delay above. Wall-clock ([`Ui::tick_no_host`]), so a blanked panel or a long
+    /// host ceremony does not postpone the switch.
+    no_host_since: Option<Instant>,
+    no_host_info: bool,
+    /// A host has configured this device at some point since boot — the status engine
+    /// left its boot state. Latched, because the card's USB row says the device *was*
+    /// set up: a later detach must not turn that into "no USB host", which would be
+    /// false.
+    host_seen: bool,
     /// Whether the panel is blanked (backlight off + cleared) by the display-sleep
     /// timeout. A touch or the wake button restores it; a host ceremony wakes it too.
     asleep: bool,
@@ -449,6 +475,16 @@ where
     S: rsk_fs::Storage,
     R: rsk_sdk::Rng,
 {
+    /// The panel, the touch pad and the board verbs borrowed together, for the
+    /// calibration tool's own loop (`display-calib` builds only). The panel and the
+    /// touch pad are private fields — this flow is the only thing that normally
+    /// drives them — so this is the one door, behind a feature no shipped image
+    /// turns on, and the calibration loop is the only caller.
+    #[cfg(feature = "display-calib")]
+    pub fn calibration_parts(&mut self) -> (&mut P, &mut T, &mut H) {
+        (&mut self.panel, &mut self.touch, &mut self.hooks)
+    }
+
     /// Take an already-initialized panel and touch controller, show the boot
     /// splash, restore the persisted display settings and raise the backlight.
     ///
@@ -478,6 +514,9 @@ where
         }
         SLEEP_TIMEOUT_MS.store(dcfg.sleep_secs as u32 * 1000, Ordering::Relaxed);
         let brightness = dcfg.brightness.clamp(1, BRIGHTNESS_LEVELS);
+        // Stored raw like the brightness byte; the settings page and the no-host clock
+        // clamp it to a listed choice when they read it.
+        let no_host_idx = dcfg.nohost_idx;
 
         // Backlight up to the saved level only now there is something to show (the
         // caller brings the panel up dark, so there is no white flash through init).
@@ -505,6 +544,10 @@ where
             touch_armed: false,
             info,
             brightness,
+            no_host_idx,
+            no_host_since: None,
+            no_host_info: false,
+            host_seen: false,
             asleep: false,
             locked,
             onboarding,

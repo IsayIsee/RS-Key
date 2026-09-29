@@ -38,6 +38,35 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
 
 ## [Unreleased]
 
+### Changed
+
+- **The backlight is seven perceptually-even steps, not five arithmetic ones.**
+  The duty table split the PWM range linearly, which put four of the five levels
+  in the top half of the *perceived* brightness — the bench report was "level 3
+  is basically full" on one end and "level 1 is invisible" on the other. The
+  table is now `(level/7)^2.2` across the range the panel can actually show
+  (duty 12..=255; below that the backlight's low-side switch never visibly
+  lights), and the backlight PWM runs at 39 kHz instead of 625 kHz for the same
+  reason — a ~0.4 µs turn-off delay is a third of a 1.6 µs period. The level bar
+  in Settings → Display → Brightness is now sized from the panel, so seven
+  segments fit the glass.
+
+### Added
+
+- **A device with no host shows its status card instead of spinning for ever.**
+  A key on a charger or in a drawer never receives a `SET_CONFIGURATION`, so the
+  LED status engine stays in its boot state and Home painted "Starting…" — with a
+  10 Hz repaint — while nothing was wrong and nothing was coming. After a delay
+  (Settings → Display → **No-host info**, 3/5/10/30 s, default 30) the resting
+  card replaces the spinner, exactly as it does on an idle device. The delay
+  rides `EF_DISPLAY`, which grew a byte (4 → 5): a record written by an older
+  build loads whole and keeps the 30 s default, and an older build reading this
+  one sees the prefix it knows. The card's USB row also stops claiming
+  "USB connected" — false on a host-less key — and states what is true in both
+  cases: **"No USB host"** until a host has configured the device, **"USB host
+  set up"** after (a device that was set up stays set up when the cable comes
+  out).
+
 ## [0.4.11-isk.1] - 2026-09-28
 
 ### Changed

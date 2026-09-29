@@ -207,6 +207,7 @@ fn connected_semantic_damage_matches_a_complete_frame() {
         status: crate::StatusKind::Idle,
         pin_set: false,
         passkeys: 7,
+        no_host_info: false,
     };
     let next = crate::HomeView {
         pin_set: true,
@@ -727,11 +728,13 @@ fn every_semantic_renderer_fits_the_damage_rectangle_capacity() {
         status: StatusKind::Idle,
         pin_set: false,
         passkeys: 0,
+        no_host_info: false,
     };
     let next_home = HomeView {
         status: StatusKind::Idle,
         pin_set: true,
         passkeys: u16::MAX,
+        no_host_info: false,
     };
     retained_damage_fits("render_home_change", |frame| {
         crate::render_home_change(frame, &previous_home, &next_home)
@@ -756,6 +759,7 @@ fn census_full_frames(label: crate::Label) {
         brightness: crate::BRIGHTNESS_LEVELS,
         timeout_secs: u16::MAX,
         sleep_secs: u16::MAX,
+        nohost_idx: 3,
         version: u16::MAX,
         chipid: u64::MAX,
         device_pin_set: true,
@@ -773,6 +777,7 @@ fn census_full_frames(label: crate::Label) {
                 status: StatusKind::Touch,
                 pin_set: true,
                 passkeys: u16::MAX,
+                no_host_info: false,
             }),
         ),
         ("render confirm", Screen::Confirm(confirm)),
@@ -1108,6 +1113,11 @@ const FULL_FRAME_RENDERERS: &[&str] = &[
 
 const PARTIAL_RENDERERS: &[&str] = &[
     "render_audit_page",
+    // The touch-calibration tool screen (the firmware's `display-calib` build,
+    // never shipped): a full frame, but painted by that build's own loop rather
+    // than through a Scene, and its only dynamic text is decimal readings that
+    // cannot overflow. Covered by render_tests.rs.
+    "render_calib",
     "render_header",
     "render_hold_button",
     "render_hold_fill",

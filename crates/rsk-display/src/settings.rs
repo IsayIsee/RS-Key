@@ -60,6 +60,7 @@ fn settings_display(p: rsk_ui::Point) -> Nav {
         Some(DisplayEntry::Brightness) => Nav::Goto(SettingsPage::Brightness),
         Some(DisplayEntry::Sleep) => Nav::Goto(SettingsPage::Sleep),
         Some(DisplayEntry::Timeout) => Nav::Goto(SettingsPage::Timeout),
+        Some(DisplayEntry::NoHost) => Nav::Goto(SettingsPage::NoHost),
         None => Nav::Idle,
     }
 }
@@ -101,6 +102,7 @@ where
             brightness: self.brightness,
             timeout_secs: (self.hooks.presence_timeout_ms() / 1000) as u16,
             sleep_secs: (SLEEP_TIMEOUT_MS.load(Ordering::Relaxed) / 1000) as u16,
+            nohost_idx: self.no_host_idx,
             version: self.info.version,
             chipid: self.info.chipid,
             device_pin_set,
@@ -152,6 +154,7 @@ where
                     SettingsPage::Brightness => self.settings_brightness(p, &mut display_dirty),
                     SettingsPage::Timeout => self.settings_timeout(p, &mut presence_dirty),
                     SettingsPage::Sleep => settings_sleep(p, &mut display_dirty),
+                    SettingsPage::NoHost => self.settings_nohost(p, &mut display_dirty),
                 } {
                     Nav::Leave(next) => break next,
                     Nav::Idle => false,
@@ -277,6 +280,18 @@ where
         Nav::Stay
     }
 
+    /// No-host delay: index-stepped (the choices are the record's own domain), and
+    /// dirty-tracked like the level — a tap at a clamp boundary is not an edit.
+    fn settings_nohost(&mut self, p: rsk_ui::Point, dirty: &mut bool) -> Nav {
+        let Some(step) = adjust_step(p) else {
+            return adjust_exit(p);
+        };
+        let was = self.no_host_idx;
+        self.no_host_idx = rsk_ui::step_nohost(self.no_host_idx, step);
+        *dirty |= self.no_host_idx != was;
+        Nav::Stay
+    }
+
     /// Touch timeout: the presence wait, which rides `EF_PHY` rather than
     /// `EF_DISPLAY` — hence its own dirty flag.
     fn settings_timeout(&mut self, p: rsk_ui::Point, dirty: &mut bool) -> Nav {
@@ -308,16 +323,18 @@ where
         }
     }
 
-    /// Write the live display settings (brightness + sleep) plus the persisted
-    /// `pin_declined` and `scramble_pin` flags to `EF_DISPLAY` in one record. Every `EF_DISPLAY` write goes
-    /// through here so the onboarding flag is never dropped by a brightness/sleep save (and
-    /// vice-versa) — the record carries all four fields. Synchronous; the worker is parked.
+    /// Write the live display settings (brightness + sleep + no-host delay) plus the
+    /// persisted `pin_declined` and `scramble_pin` flags to `EF_DISPLAY` in one record.
+    /// Every `EF_DISPLAY` write goes through here so the onboarding flag is never dropped
+    /// by a brightness/sleep save (and vice-versa) — the record carries all five fields.
+    /// Synchronous; the worker is parked.
     pub(super) fn save_display_config(&mut self) {
         let cfg = rsk_ui::DisplayConfig {
             brightness: self.brightness,
             sleep_secs: (SLEEP_TIMEOUT_MS.load(Ordering::Relaxed) / 1000) as u16,
             pin_declined: self.pin_declined,
             scramble_pin: self.scramble_pin,
+            nohost_idx: self.no_host_idx,
         };
         let _ = self.fs.borrow_mut().put(EF_DISPLAY, &cfg.encode());
     }

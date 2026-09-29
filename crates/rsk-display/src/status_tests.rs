@@ -9,6 +9,7 @@ fn home(status: StatusKind, pin_set: bool, passkeys: u16) -> Screen {
         status,
         pin_set,
         passkeys,
+        no_host_info: false,
     })
 }
 
@@ -330,4 +331,64 @@ fn a_sleeping_panel_ignores_everything_but_a_wake_source() {
     ui.tick_asleep();
     assert!(ui.asleep);
     assert_eq!(ui.panel.frames, frames, "a blanked panel stays blank");
+}
+
+// --- The no-host status card ------------------------------------------------
+
+/// A device no host ever configured shows its card once the delay is up, and the
+/// spinner pulse stops with it. The pulse paints the arc straight onto the panel every
+/// tick, so leaving it armed redraws over the card ten times a second — the bench
+/// symptom of getting this wrong was the card appearing with the spinner still
+/// spinning on top of it.
+#[test]
+fn the_no_host_card_is_not_pulsed_over_by_the_spinner() {
+    let env = Env::new();
+    let mut ui = env.ui(Pad::idle());
+    ui.onboarding = false;
+    let (mut spin, mut breathe) = (rsk_ui::STATUS_ARC_START, 0u8);
+
+    let t0 = Instant::now();
+    ui.hooks.led = rsk_led::STATUS_BOOT;
+    ui.tick_no_host(t0);
+    ui.tick_no_host(t0 + Duration::from_secs(31));
+    assert!(ui.no_host_info, "the no-host clock never ran out");
+
+    // First tick paints the card; the next one must leave it alone.
+    ui.ambient_repaint(1, &mut spin, &mut breathe);
+    let writes = ui.panel.writes;
+    let damage = ui.panel.damage_presentations;
+    ui.ambient_repaint(2, &mut spin, &mut breathe);
+    assert_eq!(
+        ui.panel.writes, writes,
+        "the spinner pulsed over the no-host card"
+    );
+    assert_eq!(ui.panel.damage_presentations, damage);
+}
+
+/// The no-host clock: it starts in the boot state, the delay flips the card up, and a
+/// host configuring the device ends it for good — a later detach must not put the panel
+/// back to claiming there is no USB host, which would be false.
+#[test]
+fn a_configured_host_ends_the_no_host_clock_for_good() {
+    let env = Env::new();
+    let mut ui = env.ui(Pad::idle());
+    let t0 = Instant::now();
+
+    ui.hooks.led = rsk_led::STATUS_BOOT;
+    ui.tick_no_host(t0);
+    ui.tick_no_host(t0 + Duration::from_secs(29));
+    assert!(!ui.no_host_info, "the card appeared before the delay");
+    ui.tick_no_host(t0 + Duration::from_secs(31));
+    assert!(ui.no_host_info, "the card never appeared");
+
+    // A host configures the device.
+    ui.hooks.led = rsk_led::STATUS_IDLE;
+    ui.tick_no_host(t0 + Duration::from_secs(32));
+    assert!(!ui.no_host_info);
+
+    // The cable comes out and the status engine is back in its boot state. "USB host
+    // set up" is still true, so the card must not come back.
+    ui.hooks.led = rsk_led::STATUS_BOOT;
+    ui.tick_no_host(t0 + Duration::from_secs(600));
+    assert!(!ui.no_host_info, "a detach restarted the no-host clock");
 }

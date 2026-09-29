@@ -55,6 +55,9 @@ embassy-time = { workspace = true, features = ["std"] }
 rsk-fs = { workspace = true, features = ["test-util"] }
 
 [features]
+# The touch-calibration tool build's door onto the panel and the touch pad (see
+# `Ui::calibration_parts`). Never on in a shipped image.
+display-calib = []
 # Mirrors the firmware feature: the PIN pad's trivial-PIN reject.
 strict-config = ["rsk-mgmt/strict-config", "rsk-fido/strict-config", "rsk-otp/strict-config", "rsk-vendor/strict-config", "rsk-device/strict-config"]
 # The PIN pad's trivial-PIN reject, and the FIPS profile's screen copy.

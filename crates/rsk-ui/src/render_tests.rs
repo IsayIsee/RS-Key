@@ -209,6 +209,7 @@ fn every_home_status_fits_and_draws_with_nav() {
                 status,
                 pin_set: true,
                 passkeys: 12,
+                no_host_info: false,
             }),
         )
         .unwrap();
@@ -228,11 +229,13 @@ fn home_fact_change_repaints_only_the_typed_card() {
         status: StatusKind::Idle,
         pin_set: false,
         passkeys: 1234,
+        no_host_info: false,
     };
     let next = HomeView {
         status: StatusKind::Idle,
         pin_set: true,
         passkeys: 7,
+        no_host_info: false,
     };
     let mut actual = Rec::new();
     render(&mut actual, &Screen::Home(previous)).unwrap();
@@ -266,6 +269,7 @@ fn hidden_home_facts_and_identical_views_do_not_draw() {
         status: StatusKind::Processing,
         pin_set: false,
         passkeys: 2,
+        no_host_info: false,
     };
     let next = HomeView {
         passkeys: 99,
@@ -292,6 +296,7 @@ fn home_mode_change_repaints_content_but_preserves_chrome() {
         status: StatusKind::Idle,
         pin_set: true,
         passkeys: 12,
+        no_host_info: false,
     };
     let next = HomeView {
         status: StatusKind::Touch,
@@ -929,6 +934,7 @@ fn home_idle_paints_the_three_status_rows() {
             status: StatusKind::Idle,
             pin_set: true,
             passkeys: 7,
+            no_host_info: false,
         }),
     )
     .unwrap();
@@ -1423,6 +1429,7 @@ fn view(page: SettingsPage) -> SettingsView {
         brightness: 3,
         timeout_secs: 30,
         sleep_secs: 60,
+        nohost_idx: 3,
         version: 0x078A,
         chipid: 0x0123_4567_89ab_cdef,
         device_pin_set: true,
@@ -2367,4 +2374,167 @@ fn a_truncated_cardholder_value_paints_its_marker() {
         "a clipped cardholder value painted identically to a whole one"
     );
     assert!(!cut.oob, "the marker drew outside the panel");
+}
+
+// --- Touch calibration ------------------------------------------------------
+
+/// The guided screen puts a target on each corner and shows no result until the
+/// taps are in — the readings and the solved range live in the band between the
+/// target rows, so nothing the user has not supplied can be mistaken for one.
+#[test]
+fn the_calibration_screen_paints_a_target_per_corner_and_no_result_yet() {
+    use crate::calib::{CalibState, TARGETS};
+    let mut d = Rec::new();
+    render_calib(&mut d, &CalibState::new(), None).unwrap();
+    for target in TARGETS {
+        let ring = Rect::new(target.x - 17, target.y - 17, 34, 34);
+        assert!(d.any_non_bg_in(ring), "target at {target:?} is painted");
+    }
+    assert!(
+        !d.any_non_bg_in(Rect::new(0, 160, PANEL_W, 60)),
+        "an unsolved screen showed something in the result band"
+    );
+}
+
+/// Taps read back beside their targets, and once solved the range is shown and a
+/// cross follows the finger *through that range* — the check that this mapping is
+/// the one the panel wants.
+#[test]
+fn a_solved_calibration_shows_the_range_and_follows_the_finger() {
+    use crate::calib::{CalibState, TARGETS};
+    let mut d = Rec::new();
+    let mut state = CalibState::new();
+    for panel in TARGETS {
+        state.record(panel); // raw == panel, so the solved range is the identity
+    }
+    assert_eq!(
+        state.range(),
+        Some(crate::touch::TouchRange::IDENTITY),
+        "aligned taps must solve back to the identity"
+    );
+
+    render_calib(&mut d, &state, Some(Point::new(120, 160))).unwrap();
+
+    // A reading under the top-left target, where the guided screen puts it.
+    assert!(
+        d.any_non_bg_in(Rect::new(TARGETS[0].x - 20, TARGETS[0].y + 24, 40, 34)),
+        "the tap's raw reading is shown beside its target"
+    );
+    // The solved range, in the result band.
+    assert!(
+        d.any_non_bg_in(Rect::new(0, 168, PANEL_W, 48)),
+        "the solved range is shown"
+    );
+    // The cross, at the panel coordinate the range maps the finger to.
+    assert!(
+        has_color(&d, Rect::new(108, 148, 24, 24), theme::WARN),
+        "the follow cross is not at the mapped finger position"
+    );
+}
+
+/// A set of taps that cannot describe a mapping shows no range — the screen asks
+/// for a retry instead of handing back numbers that would misplace every tap.
+#[test]
+fn an_unsolvable_calibration_shows_no_range() {
+    use crate::calib::{CalibState, TARGETS};
+    let mut d = Rec::new();
+    let mut state = CalibState::new();
+    for _ in TARGETS {
+        state.record(Point::new(77, 88));
+    }
+    assert!(state.is_done());
+    render_calib(&mut d, &state, Some(Point::new(120, 160))).unwrap();
+    assert_eq!(state.range(), None);
+    assert!(
+        !d.any_non_bg_in(Rect::new(0, 168, PANEL_W, 48)),
+        "an unsolved calibration printed a range anyway"
+    );
+}
+
+// --- The no-host status card ------------------------------------------------
+
+/// The card's "✓ Ready" header: the card branch paints it at the top, and the
+/// spinner branch's ring starts below this band, so its presence is the cheapest
+/// "which of the two bodies is on screen" probe.
+fn card_header_band() -> Rect {
+    Rect::new(0, 40, PANEL_W, 25)
+}
+
+/// A device no host has ever configured falls back to the resting card — the surface an
+/// idle device shows — instead of spinning "Starting…" for ever.
+#[test]
+fn a_device_with_no_host_shows_the_card_not_the_spinner() {
+    let view = |no_host_info| HomeView {
+        status: StatusKind::Boot,
+        pin_set: true,
+        passkeys: 7,
+        no_host_info,
+    };
+    let painted = |no_host_info| {
+        let mut d = Rec::new();
+        render(&mut d, &Screen::Home(view(no_host_info))).unwrap();
+        d
+    };
+    assert!(
+        painted(true).any_non_bg_in(card_header_band()),
+        "a device that gave up on its host did not show the card"
+    );
+    assert!(
+        !painted(false).any_non_bg_in(card_header_band()),
+        "the booting spinner painted the card's header"
+    );
+}
+
+/// A host configuring the device flips the card's USB row — the status engine leaves its
+/// boot state and the no-host clock is cancelled. Both views show the card, so only the
+/// row that changed may be repainted.
+#[test]
+fn a_host_configuring_repaints_only_the_usb_row() {
+    let previous = HomeView {
+        status: StatusKind::Boot,
+        pin_set: true,
+        passkeys: 7,
+        no_host_info: true,
+    };
+    let next = HomeView {
+        status: StatusKind::Idle,
+        pin_set: true,
+        passkeys: 7,
+        no_host_info: false,
+    };
+    let mut d = Rec::new();
+    render(&mut d, &Screen::Home(previous)).unwrap();
+    d.reset_writes();
+    render_home_change(&mut d, &previous, &next).unwrap();
+    let usb = crate::row_rect(HOME_CARD_TOP, 0);
+    assert!(d.wrote_in(usb), "the USB row was not repainted");
+    assert!(
+        !d.wrote_outside(usb),
+        "a USB-row change rebuilt more than the row"
+    );
+}
+
+/// Running out of patience on the no-host clock replaces the spinner with the card. That
+/// is a different surface, so the body is repainted whole — and the pulse that was
+/// animating the spinner must stop (rsk-display gates it on the same `shows_card`).
+#[test]
+fn entering_the_no_host_info_repaints_the_body() {
+    let previous = HomeView {
+        status: StatusKind::Boot,
+        pin_set: true,
+        passkeys: 7,
+        no_host_info: false,
+    };
+    let next = HomeView {
+        no_host_info: true,
+        ..previous
+    };
+    let mut d = Rec::new();
+    render(&mut d, &Screen::Home(previous)).unwrap();
+    d.reset_writes();
+    render_home_change(&mut d, &previous, &next).unwrap();
+    assert!(
+        d.wrote_in(card_header_band()),
+        "the card did not replace the spinner"
+    );
 }

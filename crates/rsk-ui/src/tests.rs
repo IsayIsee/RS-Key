@@ -227,6 +227,7 @@ fn display_rows_map_in_order() {
         DisplayEntry::Brightness,
         DisplayEntry::Sleep,
         DisplayEntry::Timeout,
+        DisplayEntry::NoHost,
     ];
     assert_eq!(want.len() as u16, DISPLAY_ROWS);
     for (i, &e) in want.iter().enumerate() {
@@ -392,6 +393,36 @@ fn step_brightness_clamps_at_both_ends() {
     assert_eq!(step_brightness(BRIGHTNESS_LEVELS, 1), BRIGHTNESS_LEVELS);
     assert_eq!(step_brightness(3, 1), 4);
     assert_eq!(step_brightness(3, -1), 2);
+}
+
+#[test]
+fn step_nohost_walks_the_choices_and_clamps() {
+    let last = NOHOST_CHOICES.len() as u8 - 1;
+    assert_eq!(step_nohost(0, -1), 0);
+    assert_eq!(step_nohost(0, 1), 1);
+    assert_eq!(step_nohost(2, -1), 1);
+    assert_eq!(step_nohost(2, 1), last);
+    assert_eq!(step_nohost(last, 1), last);
+    // every index it can hand back names a real choice
+    for idx in 0..=last {
+        assert!(NOHOST_CHOICES.iter().any(|&s| s == nohost_secs(idx)));
+    }
+}
+
+#[test]
+fn the_card_shows_when_idle_or_when_the_no_host_clock_expired() {
+    let view = |status, no_host_info| HomeView {
+        status,
+        pin_set: false,
+        passkeys: 0,
+        no_host_info,
+    };
+    assert!(view(StatusKind::Idle, false).shows_card());
+    // The one case the flag exists for: nothing is wrong, no host is coming.
+    assert!(view(StatusKind::Boot, true).shows_card());
+    // Still booting, and the clock has not run out — keep spinning.
+    assert!(!view(StatusKind::Boot, false).shows_card());
+    assert!(!view(StatusKind::Processing, false).shows_card());
 }
 
 #[test]

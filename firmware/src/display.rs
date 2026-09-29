@@ -111,6 +111,13 @@ pub fn backlight_cfg(duty: u16) -> PwmConfig {
     // `PwmConfig` is `#[non_exhaustive]`, so build from Default and set fields.
     let mut cfg = PwmConfig::default();
     cfg.top = BL_TOP;
+    // Scale the divider: the default is 1, putting the period at
+    // clk_sys/(top+1) = 160 MHz/256 = 1.6 µs (625 kHz). Every backlit board here
+    // switches its backlight through an SS8050 low-side transistor, whose ~0.3–0.5 µs
+    // storage delay is a third of that period — so the duty range compresses at the
+    // top (measured on the 2": duty 135 and duty 255 are indistinguishable). ×16 puts
+    // the period at 25.6 µs, where the delay is ~2% of it: 39 kHz, far above flicker.
+    cfg.divider = cfg.divider * 16;
     // The compare register is per channel, and a channel whose compare stays 0 is
     // held low for the whole period — so a board whose backlight hangs off
     // channel B (this fork's GEEK wiring shares slice 6 B, the 2" uses slice 7 B)
@@ -150,13 +157,12 @@ impl Touch {
     }
 }
 
-impl TouchPad for Touch {
-    /// Read the first finger's coordinate, if any, then clear the report so the
-    /// controller serves the next one. Any I2C error reads as "no touch". What
-    /// comes back is in the *controller's* frame; [`TouchRange`] below maps it
-    /// onto the panel's.
-    fn read(&mut self) -> Option<rsk_ui::Point> {
-        let raw = match crate::BUILD_DISPLAY_TOUCH_IC {
+impl Touch {
+    /// One report in the *controller's* own frame, with no board range applied:
+    /// the numbers the calibration flow solves a board's range from. Every other
+    /// caller wants the panel pixels [`TouchPad::read`] returns instead.
+    pub fn read_raw(&mut self) -> Option<rsk_ui::Point> {
+        match crate::BUILD_DISPLAY_TOUCH_IC {
             crate::TOUCH_CST816D => {
                 // Six bytes from 0x01: gesture, finger count, X high/low, Y
                 // high/low — the family's single-byte register layout.
@@ -179,9 +185,18 @@ impl TouchPad for Touch {
                 let _ = self.i2c.write(CST328_ADDR, &[0xD0, 0x05, 0x00]);
                 pt
             }
-        };
+        }
+    }
+}
+
+impl TouchPad for Touch {
+    /// Read the first finger's coordinate, if any, then clear the report so the
+    /// controller serves the next one. Any I2C error reads as "no touch". What
+    /// comes back is in the *controller's* frame; the board's range maps it onto
+    /// the panel's.
+    fn read(&mut self) -> Option<rsk_ui::Point> {
         let range = crate::BUILD_DISPLAY_TOUCH_RANGE.unwrap_or(rsk_ui::touch::TouchRange::IDENTITY);
-        raw.and_then(|p| range.map(p))
+        self.read_raw().and_then(|p| range.map(p))
     }
 }
 

@@ -53,6 +53,7 @@ fn sleep_drops_the_image_and_wake_restores_the_saved_level() {
         status: StatusKind::Idle,
         pin_set: false,
         passkeys: 0,
+        no_host_info: false,
     }));
     ui.sleep();
     assert!(ui.asleep);

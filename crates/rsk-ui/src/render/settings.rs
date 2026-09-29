@@ -21,6 +21,7 @@ pub(super) fn settings<D: DrawTarget<Color = Rgb565>>(
         SettingsPage::Brightness => settings_brightness(t, v.brightness),
         SettingsPage::Timeout => settings_timeout(t, v.timeout_secs),
         SettingsPage::Sleep => settings_sleep(t, v.sleep_secs),
+        SettingsPage::NoHost => settings_nohost(t, v.nohost_idx),
         SettingsPage::Security => settings_security(
             t,
             v.device_pin_set,
@@ -68,9 +69,10 @@ fn settings_root<D: DrawTarget<Color = Rgb565>>(t: &mut D, version: u16) -> Resu
     render_nav(t, NavTab::Settings)
 }
 
-/// The Display sub-page: the three panel/interaction knobs — Brightness, Display sleep, and
-/// the Touch timeout — each drilling into its −/+ adjust page (which backs out to here). The
-/// title-bar back chevron returns to the Root list; no nav (a sub-page).
+/// The Display sub-page: the four panel/interaction knobs — Brightness, Display sleep, the
+/// Touch timeout, and the no-host info delay — each drilling into its −/+ adjust page (which
+/// backs out to here). The title-bar back chevron returns to the Root list; no nav (a
+/// sub-page).
 fn settings_display<D: DrawTarget<Color = Rgb565>>(t: &mut D) -> Result<(), D::Error> {
     status_bar(t)?;
     title_bar(t, "Display", theme::ACCENT, true)?;
@@ -100,6 +102,15 @@ fn settings_display<D: DrawTarget<Color = Rgb565>>(t: &mut D) -> Result<(), D::E
         settings_row_rect(2),
         Glyph::Clock,
         "Touch timeout",
+        None,
+        true,
+    )?;
+    components::rect_card(t, settings_row_rect(3))?;
+    components::rect_row(
+        t,
+        settings_row_rect(3),
+        Glyph::Usb,
+        "No-host info",
         None,
         true,
     )
@@ -259,6 +270,24 @@ fn settings_timeout<D: DrawTarget<Color = Rgb565>>(t: &mut D, secs: u16) -> Resu
     text(
         t,
         fmt_secs(secs, &mut buf),
+        EgPoint::new(MIDX, 104),
+        Role::Heading,
+        theme::TEXT,
+    )?;
+    adjust_controls(t)
+}
+
+/// No-host-info adjust: how long Home spins "Starting…" before its card, on a device no
+/// host has configured. Drawn from the stored index like the brightness bar is drawn from
+/// the level — the choices are the record's own domain, so there is no seconds value to
+/// snap to.
+fn settings_nohost<D: DrawTarget<Color = Rgb565>>(t: &mut D, idx: u8) -> Result<(), D::Error> {
+    status_bar(t)?;
+    title_bar(t, "No-host info", theme::ACCENT, true)?;
+    let mut buf = [0u8; 8];
+    text(
+        t,
+        fmt_secs(crate::nohost_secs(idx), &mut buf),
         EgPoint::new(MIDX, 104),
         Role::Heading,
         theme::TEXT,
@@ -430,20 +459,25 @@ fn adjust_controls<D: DrawTarget<Color = Rgb565>>(t: &mut D) -> Result<(), D::Er
 }
 
 /// A row of `BRIGHTNESS_LEVELS` segments, the first `filled` lit green — a coarse
-/// gauge, centered above the −/+ controls.
+/// gauge, centered above the −/+ controls. The segment width is derived from the
+/// panel: a fixed width has to fit the widest level count, and at seven steps the
+/// 32 px one ran the last segment off the glass.
 fn level_bar<D: DrawTarget<Color = Rgb565>>(t: &mut D, filled: u8) -> Result<(), D::Error> {
-    const SEG_W: u16 = 32;
+    /// Side margin, matching the settings rows' indent so the gauge lines up with
+    /// the list above it.
+    const BAR_SIDE: u16 = 13;
     const SEG_H: u16 = 28;
     const SEG_GAP: u16 = 8;
     const BAR_Y: i32 = 96;
     let total = BRIGHTNESS_LEVELS as u16;
-    let span = total * SEG_W + (total - 1) * SEG_GAP;
+    let seg_w = (PANEL_W - 2 * BAR_SIDE - (total - 1) * SEG_GAP) / total;
+    let span = total * seg_w + (total - 1) * SEG_GAP;
     let x0 = MIDX - span as i32 / 2;
     for i in 0..total {
         let fill = if i < filled as u16 { ALLOW_FILL } else { MUTED };
         Rectangle::new(
-            EgPoint::new(x0 + i as i32 * (SEG_W + SEG_GAP) as i32, BAR_Y),
-            Size::new(SEG_W as u32, SEG_H as u32),
+            EgPoint::new(x0 + i as i32 * (seg_w + SEG_GAP) as i32, BAR_Y),
+            Size::new(seg_w as u32, SEG_H as u32),
         )
         .into_styled(PrimitiveStyle::with_fill(fill))
         .draw(t)?;

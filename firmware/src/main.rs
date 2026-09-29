@@ -50,6 +50,8 @@ mod core1;
 // sits above it (the touch flow vs the key flow) differs per feature.
 #[cfg(feature = "display")]
 mod display;
+#[cfg(feature = "display-calib")]
+mod display_calib;
 #[cfg(feature = "display-keys")]
 mod display_keys;
 #[cfg(any(feature = "display", feature = "display-keys"))]
@@ -1304,6 +1306,11 @@ async fn main(spawner: Spawner) {
         let ui: &'static RefCell<display::Ui> = UI.init(RefCell::new(display::build(
             panel, touch, info, fs_ref, keys, rng_ref, wake_btn,
         )));
+        // The calibration build swaps the ambient status loop for the tool's own;
+        // the flow that would repaint over its screen is never started.
+        #[cfg(feature = "display-calib")]
+        spawner.spawn(display_calib::calib_task(ui).unwrap());
+        #[cfg(not(feature = "display-calib"))]
         spawner.spawn(display::status_task(ui).unwrap());
         ui
     };
