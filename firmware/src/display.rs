@@ -128,7 +128,7 @@ pub fn backlight_cfg(duty: u16) -> PwmConfig {
     // The chopper also couples into the touch controller: on the 2" bench the false
     // frames a poll occasionally reads are noticeably rarer at full duty — a steady
     // level, so no current edges at all — than at any dimmed one (2026-09-29).
-    cfg.divider = cfg.divider * 16;
+    cfg.divider *= 16;
     // The compare register is per channel, and a channel whose compare stays 0 is
     // held low for the whole period — so a board whose backlight hangs off
     // channel B (this fork's GEEK wiring shares slice 6 B, the 2" uses slice 7 B)
@@ -238,11 +238,11 @@ fn read_report(i2c: &mut TouchI2c) -> Option<rsk_ui::Point> {
             // change, so its read lives in this board's branch rather than in a shape
             // shared with the CST328 (2026-09-29).
             let mut buf = [0u8; 6];
-            for i in 0..buf.len() {
+            for (i, slot) in buf.iter_mut().enumerate() {
                 let mut byte = [0u8; 1];
                 let reg = rsk_ui::touch::CST816_BLOCK + i as u8;
                 match i2c.write_read(CST816_ADDR, &[reg], &mut byte) {
-                    Ok(()) => buf[i] = byte[0],
+                    Ok(()) => *slot = byte[0],
                     Err(()) => return None,
                 }
             }
