@@ -66,12 +66,40 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
   cases: **"No USB host"** until a host has configured the device, **"USB host
   set up"** after (a device that was set up stays set up when the cable comes
   out).
-- **The 2" touch display has a published image.** `firmware-display-lcd2`
+- **The Waveshare RP2350-Touch-LCD-2 is a supported display board, and it ships
+  an image.** The 2" shares none of the 2.8"'s wiring: its ST7789T3 panel runs
+  on the second SPI block (PIO on `GP18`/`GP19`), its CST816D touch controller
+  on `i2c0` (`GP12`/`GP13`), panel and touch share one reset line (`GP20`), and
+  the backlight hangs off `GP15` (PWM slice 7 channel B). The display's pins,
+  I2C instance, touch controller, calibrated touch area, panel init set and
+  reset sharing are board-file data now rather than constants; the CST816D is
+  read the way the vendor's own drivers read it — one register per transfer, at
+  the `Touch_INT` announcement, so the report block's idle contents are never
+  mistaken for a touch; and the PWM config now writes the channel the board
+  actually uses (a channel whose compare stays 0 is held low for the whole
+  period, so channel B would have stayed dark). `firmware-display-lcd2`
   (`BOARD=waveshare-touch-lcd-2`, `--features display`, 16 MB, `LED_KIND=none`)
   joins the flavors this fork builds — the nix package, the CI board row, and
-  both loops of the release workflow — so a board this fork adapted no longer
-  needs a build environment to be usable. Packaging only: no firmware behaviour
-  changed, and no `bcdDevice` bump.
+  both loops of the release workflow — so the board no longer needs a build
+  environment to be usable.
+
+### Fixed
+
+- **A hand resting on the glass is presence, not a tap.** The auto-lock counts
+  from the last *local* interaction, and only an armed tap counted as one —
+  arming needs an observed release — so a contact that never lifted, or taps
+  arriving faster than the 100 ms poll saw a release, moved no clock at all and
+  the lock engaged under a hand still on the panel (measured on the 2" bench:
+  a 10 s timeout locked the screen while it was being touched). The touch poll
+  now reports the two halves separately: any contact refreshes the activity and
+  lock clocks, and only a contact that began on the screen now showing presses
+  what it sits on.
+- **The Info screen writes its hex the way the rest of the project does.** The
+  build counter read `0x09da` on the glass while everything a person compares it
+  against is uppercase — `0x09DA` in the SOP, `REV_09DA` in the USB hardware id
+  a host reads — so the screen's hex helpers are uppercase now. `tools/rsk`'s
+  inventory output keeps its lowercase `0x%04x`: that is a machine-readable
+  field, not something read off a screen.
 
 ## [0.4.11-isk.1] - 2026-09-28
 

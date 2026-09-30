@@ -3,11 +3,13 @@
 
 # Trusted display
 
-**Experimental.** An RS-Key variant for a screen-and-touch RP2350 board (the
-reference target is the **Waveshare RP2350-Touch-LCD-2.8**). The screen turns the
-key into a *trusted display*: the operations that matter (approving a sign-in,
-typing a PIN) happen on the device's own glass, not on the host. A compromised or
-phishing host cannot fake what you see or capture what you type. Concretely:
+**Experimental.** An RS-Key variant for a screen-and-touch RP2350 board — the
+**Waveshare RP2350-Touch-LCD-2.8** (the reference target) and the
+**RP2350-Touch-LCD-2** (see [The 2-inch board](#the-2-inch-board)). The screen
+turns the key into a *trusted display*: the operations that matter (approving a
+sign-in, typing a PIN) happen on the device's own glass, not on the host. A
+compromised or phishing host cannot fake what you see or capture what you type.
+Concretely:
 
 - An **Approve / Deny** prompt paints the *real* relying party for every
   signature. A signature cannot be obtained without a physical tap on a screen
@@ -109,6 +111,30 @@ Two notes:
 - You can reach BOOTSEL from the panel itself: **Settings → Firmware → reboot to
   BOOTSEL** (a deliberate hold). The reboot routes through the worker so live RAM
   secrets are scrubbed first.
+
+## The 2-inch board
+
+The **RP2350-Touch-LCD-2** wires its panel and touch to different pads than the
+2.8", so it is a board of its own — `BOARD=waveshare-touch-lcd-2` at build time,
+or the image this fork publishes:
+
+```sh
+nix build .#firmware-display-lcd2              # → result/firmware.uf2
+```
+
+Its panel is an **ST7789T3** on the second SPI block (PIO on `GP18`/`GP19`), its
+touch controller is a **CST816D** on `i2c0` (`GP12`/`GP13`) rather than the
+CST328, the backlight is `GP15` (PWM slice 7 channel B), and panel and touch
+share one reset line (`GP20`). The touch's active area is measured per panel and
+mapped onto the glass — the CST816D reports in its own frame, so the numbers in
+`firmware/boards/waveshare-touch-lcd-2.toml` are what put a tap on the pixel it
+was aimed at. A replacement panel's mount can differ enough to need them
+re-measured; `--features display-calib` builds the guided tool that reads them
+off the bench.
+
+**The board has no wake button** (BOOTSEL and RESET only), so the `WAKE_PIN`
+behaviour above does not apply here: the panel wakes when it is touched and
+sleeps on the display-sleep timeout.
 
 ## What's on screen
 
