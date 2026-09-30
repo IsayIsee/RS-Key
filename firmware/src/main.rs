@@ -272,12 +272,12 @@ const BUILD_DISPLAY_BL_PWM_SLICE: u8 = env_u16(env!("PK_DISPLAY_BL_PWM_SLICE")) 
 const BUILD_DISPLAY_BL_PWM_CHANNEL: u8 = env_u16(env!("PK_DISPLAY_BL_PWM_CHANNEL")) as u8;
 #[cfg(any(feature = "display", feature = "display-keys"))]
 const BUILD_DISPLAY_TP_RST: u8 = env_u16(env!("PK_DISPLAY_TP_RST")) as u8;
-// The PIO serial link's pads. The transport is PIO0/SM0 either way; the pads are
-// board data (GP10/GP11 on the 2.8" and the GEEK, GP18/GP19 on the 2") because a
-// `PioPin` is a type — `main` matches the pair below.
-#[cfg(any(feature = "display", feature = "display-keys"))]
+// The PIO serial link's pads — PIO0/SM0 either way, only the pads are board
+// data on the touch builds (GP10/GP11 on the 2.8", GP18/GP19 on the 2") because
+// a `PioPin` is a type; the button build's one board takes them as literals.
+#[cfg(feature = "display")]
 const BUILD_DISPLAY_SPI_CLK: u8 = env_u16(env!("PK_DISPLAY_SPI_CLK")) as u8;
-#[cfg(any(feature = "display", feature = "display-keys"))]
+#[cfg(feature = "display")]
 const BUILD_DISPLAY_SPI_MOSI: u8 = env_u16(env!("PK_DISPLAY_SPI_MOSI")) as u8;
 // The touch bus: I2C1 on GP6/GP7 by default, i2c0 on GP12/GP13 on the 2". Both
 // halves are board data — a pad does not name its instance — and `main` matches
