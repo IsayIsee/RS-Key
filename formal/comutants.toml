@@ -840,27 +840,42 @@ find = """
         match self.touch.read() {
             None => {
                 self.touch_armed = true;
-                None
+                TouchPoll {
+                    present: false,
+                    tap: None,
+                }
             }
-            Some(p) if self.touch_armed => Some(p),
-            // Still the contact that predates this screen: ignore, stay disarmed.
-            Some(_) => None,
+            Some(p) if self.touch_armed => TouchPoll {
+                present: true,
+                tap: Some(p),
+            },
+            // Still the contact that predates this screen: present, not a tap.
+            Some(_) => TouchPoll {
+                present: true,
+                tap: None,
+            },
         }
 """
 replace = """
         match self.touch.read() {
             None => {
                 self.touch_armed = true;
-                None
+                TouchPoll {
+                    present: false,
+                    tap: None,
+                }
             }
-            Some(p) => Some(p),
+            Some(p) => TouchPoll {
+                present: true,
+                tap: Some(p),
+            },
         }
 """
 slice = ["cargo", "test", "-p", "rsk-display"]
 expect = "killed"
 note = """audit run-33's class: the level-not-edges controller reads a finger
 already down as a tap on whatever just painted. This patch removes the ambient
-chokepoint (armed_touch); the ceremonies carry a SECOND edge of their own
+chokepoint (poll_touch's tap half); the ceremonies carry a SECOND edge of their own
 (wait_release_ceremony at card entry), so the layers are two and this measures
 the chokepoint's — the ceremony layer's own kill is
 a_finger_still_down_when_the_prompt_appears_cannot_approve_it."""
