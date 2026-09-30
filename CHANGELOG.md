@@ -24,10 +24,10 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
 > comes up factory-empty: no passkeys, no OpenPGP or PIV keys, no OATH
 > credentials.
 >
-> This affects the 16 MB flavors only — `display` and `16mb`, and the
-> `abrobot-16m` and `waveshare-touch-lcd` board presets. **4 MB and 2 MB keys
-> upgrade in place**: their stores end far below the E10 block and their layouts
-> are byte-identical to 0.4.7.
+> This affects the 16 MB flavors only — `display`, `display-lcd2` and `16mb`,
+> and the `abrobot-16m` and `waveshare-touch-lcd` board presets. **4 MB and 2 MB
+> keys upgrade in place**: their stores end far below the E10 block and their
+> layouts are byte-identical to 0.4.7.
 >
 > Kept here as well as in the release's own notes below: this banner is for
 > whoever opens the file, and the copy inside the release section is what the
@@ -37,6 +37,16 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
 > out there.**
 
 ## [Unreleased]
+
+## [0.4.11-isk.2] - 2026-09-30
+
+> ### ⚠️ Upgrading a 16 MB key provisioned before 0.4.8 still wipes it
+>
+> **Export your seed first** ([seed backup](docs/guides/seed-backup.md)). 0.4.8
+> moved the store 4 KB down on 16 MB parts to clear the RP2350-E10 block, so a
+> key provisioned by an older 16 MB build comes up factory-empty. The `display`,
+> `display-lcd2` and `16mb` flavors and the `abrobot-16m` / `waveshare-touch-lcd`
+> presets are the affected ones; **4 MB and 2 MB keys upgrade in place.**
 
 ### Changed
 
@@ -13981,6 +13991,7 @@ family that keeps the "enterprise" features in the open tree.
   [docs/releases.md](docs/releases.md) to verify a download.
 
 [Unreleased]: https://github.com/TheMaxMur/RS-Key/compare/v0.4.11...HEAD
+[0.4.11-isk.2]: https://github.com/IsayIsee/RS-Key/releases/tag/v0.4.11-isk.2
 [0.4.11-isk.1]: https://github.com/IsayIsee/RS-Key/releases/tag/v0.4.11-isk.1
 [0.4.10-isk.2]: https://github.com/IsayIsee/RS-Key/releases/tag/v0.4.10-isk.2
 [0.4.10-isk.1]: https://github.com/IsayIsee/RS-Key/releases/tag/v0.4.10-isk.1
