@@ -24,7 +24,7 @@ So the axes are printed apart. Every one is derived from the tree on every gate 
 
 Three readings the axes are built to stop. A `kani` count does not fill in for `hardware`: a bounded proof is about execution paths and a board result is about a platform, and neither substitutes for the other. A `trace` count is DIRECT — a recorded session reaches a property only if a configuration checking that property replays it, so the refinement properties carry the session and the invariants they refine do not inherit it. And a configuration NAMING an invariant is not one ASSERTING it: most of them are mutants that exist for it to fall in, which is why `model` and `trace` are printed as two numbers each.
 
-`hardware` reads two sources, and together they give **2 of 59**. One is a bundle's DECLARATION, and the gate's job there is that a declaration cannot arrive without the board revision it was taken on. The other is `docs/platform-assumptions.md`'s registry, which is where a board result actually lands — an obligation moving to `discharged` with a real stepping recorded is what moves this column, whatever class it is filed under.
+`hardware` reads two sources, and together they give **2 of 60**. One is a bundle's DECLARATION, and the gate's job there is that a declaration cannot arrive without the board revision it was taken on. The other is `docs/platform-assumptions.md`'s registry, which is where a board result actually lands — an obligation moving to `discharged` with a real stepping recorded is what moves this column, whatever class it is filed under.
 
 Neither direction of that number says more than it is. A `0` is "nothing here was measured on hardware" and never a measurement: the axis prints the same 0 over a question nobody asked and over one a board refused to answer. A non-zero is not the property holding on hardware either — it is THESE rows and no others, on the stepping and the boot configuration they name, and it lapses when either moves.
 
@@ -32,14 +32,14 @@ The `freshness` axis reads committed history only, so an uncommitted edit to an 
 
 ## What a release may say
 
-- **56 of 59** security properties are ASSERTED by at least one finite TLA+ configuration whose recorded verdict is GREEN, and hold exhaustively over that configuration's constants.
-- **44 of 59** carry a model mutant whose code twin `formal/comutants.toml` records as patched into the real tree and killed. That verdict is re-driven by the weekly `comutate run`, not by the gate that writes this page.
-- **33 of the 46** rows the v1 word calls `MODELLED-ONLY` carry such a twin: the word means *no Kani harness*, and never *untested*.
-- **10 of 59** are checked by a configuration that ACCEPTS a recorded session, and **10** by one that must REFUSE a negative one.
-- **11 of 59** carry at least one Kani harness named after them. That is all `BOUNDED` keys on — a harness NAME, not the `#[kani::proof]` attribute, not a bound, not a `cfg` — so it points at the bundle's method table and is never the proof itself.
-- Rows carrying a dated raw evidence bundle: **11 of 59**; of those, still ahead of every input they are about: **0**.
+- **57 of 60** security properties are ASSERTED by at least one finite TLA+ configuration whose recorded verdict is GREEN, and hold exhaustively over that configuration's constants.
+- **45 of 60** carry a model mutant whose code twin `formal/comutants.toml` records as patched into the real tree and killed. That verdict is re-driven by the weekly `comutate run`, not by the gate that writes this page.
+- **34 of the 47** rows the v1 word calls `MODELLED-ONLY` carry such a twin: the word means *no Kani harness*, and never *untested*.
+- **10 of 60** are checked by a configuration that ACCEPTS a recorded session, and **10** by one that must REFUSE a negative one.
+- **11 of 60** carry at least one Kani harness named after them. That is all `BOUNDED` keys on — a harness NAME, not the `#[kani::proof]` attribute, not a bound, not a `cfg` — so it points at the bundle's method table and is never the proof itself.
+- Rows carrying a dated raw evidence bundle: **17 of 60**; of those, still ahead of every input they are about: **6**.
 - No property is claimed on more than **10** built image(s) of the configuration ledger; every other column is a gap or out of scope.
-- **2 of 59** carry a result measured on a board, each naming the revision it was taken on.
+- **2 of 60** carry a result measured on a board, each naming the revision it was taken on.
 
 ## What a release may not say
 
@@ -48,7 +48,7 @@ The `freshness` axis reads committed history only, so an uncommitted edit to an 
 - that a `model` count is the strength of the evidence — its denominator counts every configuration NAMING the invariant, and most of those are mutants that exist for it to fall in. `asserted` is the half a claim may rest on, and for a `clause_of` row it can be 0 while the parent invariant carrying that clause is asserted.
 - that the model-checked properties hold on *the firmware* — they hold on the images the scope axis names, and `docs/assurance-matrix.md` carries the rest of that row.
 - that the reconstructed `v1` column is an independent check on the registry's word. It reads the two derivations `assurance_gate.py` already forces that word from, so its disagreement set is empty on every input that gate accepts: it records that the scalar is a projection, and cannot discover that it is not.
-- that 48 of the rows are current — they carry no evidence date at all, so nothing here says when they were last true.
+- that 43 of the rows are current — they carry no evidence date at all, so nothing here says when they were last true.
 
 ## The vector
 
@@ -62,17 +62,17 @@ The `freshness` axis reads committed history only, so an uncommitted edit to an 
 | `SEC-REF-004` | `R4bEventConsensus` | 2 of 9 | 0 | 2 of 9 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
 | `SEC-REF-005` | `NoAuthorizationBypassA` | 1 of 2 | 0 | 0 of 0 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
 | `SEC-REF-006` | `RequiredGateAgreesWithRelation` | 0 of 1 | 0 | 0 of 0 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
-| `SEC-FIDO-001` | `NoAuthorizationBypass` | 5 of 50 | 12 | 0 of 0 | 4 | 0 | 3 | 4 | `f52b720` stale (59 input(s) newer) | BOUNDED |
-| `SEC-FIDO-002` | `NoCrossTransportTouchConsumption` | 5 of 42 | 5 | 0 of 0 | 2 | 0 | 3 | 4 | `31c21a7` stale (4 input(s) newer) | BOUNDED |
-| `SEC-FIDO-003` | `NoTokenAfterInvalidation` | 5 of 45 | 6 | 0 of 0 | 2 | 0 | 4 | 0 | `31c21a7` stale (9 input(s) newer) | BOUNDED |
-| `SEC-FIDO-004` | `NoAccessibleSecretWithoutGate` | 5 of 39 | 2 | 0 of 0 | 0 | 0 | 4 | 0 | `31c21a7` stale (4 input(s) newer) | MODELLED-ONLY |
-| `SEC-FIDO-005` | `NoUnmanageableCredential` | 5 of 40 | 3 | 0 of 0 | 0 | 0 | 4 | 0 | `31c21a7` stale (5 input(s) newer) | MODELLED-ONLY |
-| `SEC-FIDO-006` | `ResetNeverWeakensSurvivingState` | 5 of 40 | 3 | 0 of 0 | 1 | 0 | 4 | 0 | `31c21a7` stale (4 input(s) newer) | BOUNDED |
-| `SEC-FIDO-006A` | `ResetKeepsThePinGate` | 1 of 2 | 1 | 0 of 0 | 1 | 0 | 4 | 0 | `b185fc3` stale (2 input(s) newer) | BOUNDED |
-| `SEC-FIDO-006B` | `ResetKeepsTheAlwaysUvGate` | 1 of 2 | 1 | 0 of 0 | 1 | 0 | 4 | 0 | `b185fc3` stale (2 input(s) newer) | BOUNDED |
-| `SEC-FIDO-006C` | `ResetKeepsTheBackupSeal` | 1 of 2 | 1 | 0 of 0 | 1 | 0 | 4 | 0 | `b185fc3` stale (2 input(s) newer) | BOUNDED |
-| `SEC-FIDO-007` | `RamNeverOutlivesFlashSeed` | 4 of 5 | 1 | 0 of 0 | 0 | 1 | 4 | 0 | `3e08f75` stale (9 input(s) newer) | MODELLED-ONLY |
-| `SEC-FIDO-008` | `NoLiveTokenWithoutPinRecord` | 4 of 5 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | `31c21a7` stale (4 input(s) newer) | MODELLED-ONLY |
+| `SEC-FIDO-001` | `NoAuthorizationBypass` | 5 of 50 | 12 | 0 of 0 | 4 | 0 | 3 | 4 | `f52b720` stale (60 input(s) newer) | BOUNDED |
+| `SEC-FIDO-002` | `NoCrossTransportTouchConsumption` | 5 of 42 | 5 | 0 of 0 | 2 | 0 | 3 | 4 | `31c21a7` stale (5 input(s) newer) | BOUNDED |
+| `SEC-FIDO-003` | `NoTokenAfterInvalidation` | 5 of 45 | 6 | 0 of 0 | 2 | 0 | 4 | 0 | `31c21a7` stale (10 input(s) newer) | BOUNDED |
+| `SEC-FIDO-004` | `NoAccessibleSecretWithoutGate` | 5 of 39 | 2 | 0 of 0 | 0 | 0 | 4 | 0 | `31c21a7` stale (5 input(s) newer) | MODELLED-ONLY |
+| `SEC-FIDO-005` | `NoUnmanageableCredential` | 5 of 40 | 3 | 0 of 0 | 0 | 0 | 4 | 0 | `31c21a7` stale (6 input(s) newer) | MODELLED-ONLY |
+| `SEC-FIDO-006` | `ResetNeverWeakensSurvivingState` | 5 of 40 | 3 | 0 of 0 | 1 | 0 | 4 | 0 | `31c21a7` stale (5 input(s) newer) | BOUNDED |
+| `SEC-FIDO-006A` | `ResetKeepsThePinGate` | 1 of 2 | 1 | 0 of 0 | 1 | 0 | 4 | 0 | `b185fc3` stale (3 input(s) newer) | BOUNDED |
+| `SEC-FIDO-006B` | `ResetKeepsTheAlwaysUvGate` | 1 of 2 | 1 | 0 of 0 | 1 | 0 | 4 | 0 | `b185fc3` stale (3 input(s) newer) | BOUNDED |
+| `SEC-FIDO-006C` | `ResetKeepsTheBackupSeal` | 1 of 2 | 1 | 0 of 0 | 1 | 0 | 4 | 0 | `b185fc3` stale (3 input(s) newer) | BOUNDED |
+| `SEC-FIDO-007` | `RamNeverOutlivesFlashSeed` | 4 of 5 | 1 | 0 of 0 | 0 | 1 | 4 | 0 | `3e08f75` stale (10 input(s) newer) | MODELLED-ONLY |
+| `SEC-FIDO-008` | `NoLiveTokenWithoutPinRecord` | 4 of 5 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | `31c21a7` stale (5 input(s) newer) | MODELLED-ONLY |
 | `SEC-FIDO-009` | `OpAdvancesIsOneActivity` | 1 of 2 | 0 | 0 of 0 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
 | `SEC-FIDO-L01` | `EveryOpQuiesces` | 2 of 3 | 0 | 0 of 0 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
 | `SEC-FIDO-L02` | `EveryWaitReleases` | 2 of 3 | 0 | 0 of 0 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
@@ -80,34 +80,35 @@ The `freshness` axis reads committed history only, so an uncommitted edit to an 
 | `SEC-TRACE-001` | `R4aRawRefinesB` | 2 of 9 | 0 | 2 of 9 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
 | `SEC-TRACE-002` | `R4bAlphaMatchesGamma` | 1 of 8 | 0 | 1 of 8 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
 | `SEC-TRACE-004` | `R4cGateAnswers` | 2 of 9 | 0 | 2 of 9 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
-| `SEC-SEAM-001` | `NoStatusOutsideItsSelection` | 2 of 29 | 5 | 1 of 2 | 0 | 0 | 10 | 0 | — | MODELLED-ONLY |
-| `SEC-SEAM-002` | `NoStatusAfterARefusedAuth` | 2 of 24 | 2 | 1 of 2 | 0 | 0 | 10 | 0 | — | MODELLED-ONLY |
-| `SEC-SEAM-003` | `NoKeyOpOnTheAdminStatus` | 2 of 28 | 5 | 1 of 2 | 0 | 0 | 10 | 0 | — | MODELLED-ONLY |
-| `SEC-SEAM-004` | `ReselectPreservesAccessStatus` | 2 of 23 | 1 | 1 of 2 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
-| `SEC-SEAM-005` | `ExemptRefusalPreservesStatus` | 2 of 24 | 2 | 1 of 2 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
-| `SEC-SEAM-006` | `AccessCodeRemovalNeedsTheCode` | 2 of 23 | 1 | 1 of 2 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
-| `SEC-STORE-001` | `NoOrphanedMetadata` | 2 of 13 | 2 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
-| `SEC-STORE-002` | `NoFalseAbsent` | 2 of 13 | 2 | 0 of 0 | 3 | 0 | 4 | 0 | — | BOUNDED |
-| `SEC-STORE-003` | `NoRecordLostToMetaWrite` | 2 of 15 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
-| `SEC-STORE-004` | `NoFalseMetaAbsent` | 2 of 12 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
-| `SEC-STORE-005` | `CacheHonest` | 2 of 4 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
-| `SEC-STORE-006` | `NoSilentOrphan` | 2 of 12 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
-| `SEC-LAT-001` | `NoAuthWhenBlocked` | 1 of 5 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
-| `SEC-LAT-002` | `WrongAttemptIsCharged` | 1 of 5 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
-| `SEC-LAT-003` | `BudgetRisesOnlyWithItsSecret` | 1 of 5 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
-| `SEC-POL-001` | `PivOperationNeedsSlotPolicy` | 1 of 12 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
-| `SEC-POL-002` | `PivAlwaysSpendsFreshness` | 1 of 12 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
-| `SEC-POL-003` | `AttributeChangeInvalidatesTheKey` | 1 of 12 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
-| `SEC-POL-004` | `OathCredentialNeedsItsGates` | 1 of 13 | 2 | 0 of 0 | 0 | 0 | 3 | 4 | — | MODELLED-ONLY |
-| `SEC-POL-005` | `OtpSlotMutationNeedsItsCode` | 1 of 12 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
-| `SEC-POL-006` | `OtpCounterNeverRepeats` | 1 of 15 | 4 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
+| `SEC-SEAM-001` | `NoStatusOutsideItsSelection` | 2 of 36 | 6 | 1 of 2 | 0 | 0 | 10 | 0 | — | MODELLED-ONLY |
+| `SEC-SEAM-002` | `NoStatusAfterARefusedAuth` | 2 of 31 | 2 | 1 of 2 | 0 | 0 | 10 | 0 | — | MODELLED-ONLY |
+| `SEC-SEAM-003` | `NoKeyOpOnTheAdminStatus` | 2 of 41 | 10 | 1 of 2 | 0 | 0 | 10 | 0 | — | MODELLED-ONLY |
+| `SEC-SEAM-004` | `ReselectPreservesAccessStatus` | 2 of 31 | 2 | 1 of 2 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
+| `SEC-SEAM-005` | `ExemptRefusalPreservesStatus` | 2 of 31 | 2 | 1 of 2 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
+| `SEC-SEAM-006` | `AccessCodeRemovalNeedsTheCode` | 2 of 30 | 1 | 1 of 2 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
+| `SEC-STORE-001` | `NoOrphanedMetadata` | 2 of 13 | 2 | 0 of 0 | 0 | 0 | 4 | 0 | `982fb2f` fresh | MODELLED-ONLY |
+| `SEC-STORE-002` | `NoFalseAbsent` | 2 of 13 | 2 | 0 of 0 | 3 | 0 | 4 | 0 | `982fb2f` fresh | BOUNDED |
+| `SEC-STORE-003` | `NoRecordLostToMetaWrite` | 2 of 15 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | `982fb2f` fresh | MODELLED-ONLY |
+| `SEC-STORE-004` | `NoFalseMetaAbsent` | 2 of 12 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | `982fb2f` fresh | MODELLED-ONLY |
+| `SEC-STORE-005` | `CacheHonest` | 2 of 4 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | `982fb2f` fresh | MODELLED-ONLY |
+| `SEC-STORE-006` | `NoSilentOrphan` | 2 of 12 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | `982fb2f` fresh | MODELLED-ONLY |
+| `SEC-LAT-001` | `NoAuthWhenBlocked` | 2 of 16 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
+| `SEC-LAT-002` | `WrongAttemptIsCharged` | 2 of 17 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
+| `SEC-LAT-003` | `BudgetRisesOnlyWithItsSecret` | 2 of 24 | 9 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
+| `SEC-LAT-004` | `CountWithinMaximum` | 2 of 17 | 2 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
+| `SEC-POL-001` | `PivOperationNeedsSlotPolicy` | 1 of 13 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
+| `SEC-POL-002` | `PivAlwaysSpendsFreshness` | 1 of 14 | 2 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
+| `SEC-POL-003` | `AttributeChangeInvalidatesTheKey` | 1 of 13 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
+| `SEC-POL-004` | `OathCredentialNeedsItsGates` | 1 of 14 | 2 | 0 of 0 | 0 | 0 | 3 | 4 | — | MODELLED-ONLY |
+| `SEC-POL-005` | `OtpSlotMutationNeedsItsCode` | 1 of 13 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
+| `SEC-POL-006` | `OtpCounterNeverRepeats` | 1 of 16 | 4 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
 | `SEC-ADM-001` | `AdminSurfaceAlwaysReachable` | 1 of 6 | 1 | 0 of 0 | 0 | 1 | 0 | 0 | — | MODELLED-ONLY |
 | `SEC-ADM-002` | `PrivilegedOpNeedsPresence` | 1 of 6 | 1 | 0 of 0 | 0 | 0 | 3 | 4 | — | MODELLED-ONLY |
 | `SEC-ADM-003` | `DisableSetSurvivesLockWrite` | 1 of 6 | 1 | 0 of 0 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
 | `SEC-ADM-004` | `DisabledAppletNeverDispatches` | 1 of 6 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
-| `SEC-DISP-001` | `ConfirmNamesTheOperation` | 1 of 5 | 1 | 0 of 0 | 0 | 0 | 0 | 30 | — | MODELLED-ONLY |
-| `SEC-DISP-002` | `StaleTouchApprovesNothing` | 1 of 5 | 1 | 0 of 0 | 0 | 0 | 0 | 30 | — | MODELLED-ONLY |
-| `SEC-DISP-003` | `OnlyAllowConfirms` | 1 of 5 | 1 | 0 of 0 | 0 | 0 | 0 | 30 | — | MODELLED-ONLY |
+| `SEC-DISP-001` | `ConfirmNamesTheOperation` | 1 of 5 | 1 | 0 of 0 | 0 | 0 | 0 | 31 | — | MODELLED-ONLY |
+| `SEC-DISP-002` | `StaleTouchApprovesNothing` | 1 of 5 | 1 | 0 of 0 | 0 | 0 | 0 | 31 | — | MODELLED-ONLY |
+| `SEC-DISP-003` | `OnlyAllowConfirms` | 1 of 5 | 1 | 0 of 0 | 0 | 0 | 0 | 31 | — | MODELLED-ONLY |
 | `SEC-BOOT-001` | `MarkerNeverLies` | 4 of 13 | 2 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
 | `SEC-BOOT-002` | `TheWholeLockRides` | 3 of 8 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
 | `SEC-TRANS-001` | `NoCrossChannelSplice` | 1 of 5 | 1 | 0 of 0 | 2 | 0 | 10 | 0 | — | BOUNDED |
@@ -126,41 +127,42 @@ The same 40 P0-family rows, counted the other way round: per column rather than 
 
 | Column | Kind | Published | Placed | Unplaced |
 |---|---|---|---:|---:|
-| `firmware` | package | no | 40 | 0 |
-| `firmware-no-touch` | package | no | 7 | 33 |
-| `firmware-fips` | package | no | 3 | 37 |
-| `firmware-pqc` | package | no | 3 | 37 |
-| `firmware-fips-pqc` | package | no | 3 | 37 |
-| `firmware-no-touch-pqc` | package | no | 7 | 33 |
-| `firmware-no-touch-fips` | package | no | 7 | 33 |
-| `firmware-no-touch-fips-pqc` | package | no | 7 | 33 |
-| `firmware-strong-pin` | package | no | 3 | 37 |
-| `firmware-strong-pin-pqc` | package | no | 3 | 37 |
-| `firmware-always-uv` | package | no | 3 | 37 |
-| `firmware-always-uv-pqc` | package | no | 3 | 37 |
-| `firmware-strict-up` | package | no | 3 | 37 |
-| `firmware-strict-up-pqc` | package | no | 3 | 37 |
-| `firmware-pico` | package | no | 40 | 0 |
-| `firmware-display` | package | no | 0 | 40 |
-| `firmware-display-keys` | package | yes | 0 | 40 |
-| `firmware-display-keys-strong-pin` | package | yes | 0 | 40 |
-| `firmware-display-keys-always-uv` | package | yes | 0 | 40 |
-| `firmware-2mb` | package | no | 9 | 31 |
-| `firmware-16mb` | package | no | 9 | 31 |
-| `firmware-strict-config` | package | no | 3 | 37 |
-| `keygen-bench` | feature | no | 3 | 37 |
-| `core1-stats` | feature | no | 3 | 37 |
-| `bench` | feature | no | 3 | 37 |
-| `fido-conformance` | feature | no | 3 | 37 |
-| `ea-conformance-rpid` | feature | no | 3 | 37 |
-| `largeblob-ext` | feature | no | 3 | 37 |
-| `abrobot-16m` | board | no | 9 | 31 |
-| `abrobot-4m` | board | no | 36 | 4 |
-| `seeed-xiao` | board | no | 9 | 31 |
-| `tenstar-usb` | board | no | 9 | 31 |
-| `waveshare-geek` | board | no | 0 | 40 |
-| `waveshare-one` | board | no | 40 | 0 |
-| `waveshare-touch-lcd` | board | no | 9 | 31 |
+| `firmware` | package | no | 41 | 0 |
+| `firmware-no-touch` | package | no | 7 | 34 |
+| `firmware-fips` | package | no | 3 | 38 |
+| `firmware-pqc` | package | no | 3 | 38 |
+| `firmware-fips-pqc` | package | no | 3 | 38 |
+| `firmware-no-touch-pqc` | package | no | 7 | 34 |
+| `firmware-no-touch-fips` | package | no | 7 | 34 |
+| `firmware-no-touch-fips-pqc` | package | no | 7 | 34 |
+| `firmware-strong-pin` | package | no | 3 | 38 |
+| `firmware-strong-pin-pqc` | package | no | 3 | 38 |
+| `firmware-always-uv` | package | no | 3 | 38 |
+| `firmware-always-uv-pqc` | package | no | 3 | 38 |
+| `firmware-strict-up` | package | no | 3 | 38 |
+| `firmware-strict-up-pqc` | package | no | 3 | 38 |
+| `firmware-pico` | package | no | 41 | 0 |
+| `firmware-display` | package | no | 0 | 41 |
+| `firmware-display-keys` | package | yes | 0 | 41 |
+| `firmware-display-keys-strong-pin` | package | yes | 0 | 41 |
+| `firmware-display-keys-always-uv` | package | yes | 0 | 41 |
+| `firmware-2mb` | package | no | 9 | 32 |
+| `firmware-16mb` | package | no | 9 | 32 |
+| `firmware-strict-config` | package | no | 3 | 38 |
+| `keygen-bench` | feature | no | 3 | 38 |
+| `core1-stats` | feature | no | 3 | 38 |
+| `bench` | feature | no | 3 | 38 |
+| `fido-conformance` | feature | no | 3 | 38 |
+| `ea-conformance-rpid` | feature | no | 3 | 38 |
+| `largeblob-ext` | feature | no | 3 | 38 |
+| `preview-sign` | feature | no | 3 | 38 |
+| `abrobot-16m` | board | no | 9 | 32 |
+| `abrobot-4m` | board | no | 37 | 4 |
+| `seeed-xiao` | board | no | 9 | 32 |
+| `tenstar-usb` | board | no | 9 | 32 |
+| `waveshare-geek` | board | no | 0 | 41 |
+| `waveshare-one` | board | no | 41 | 0 |
+| `waveshare-touch-lcd` | board | no | 9 | 32 |
 
 Read the feature rows first: every one of them carries the same handful of placed cells and the rest unplaced, which is the shape roadmap §12 calls feature blindness. A default-build proof is not a proof about the image a feature builds, and the column is where that stops being invisible.
 
@@ -170,17 +172,17 @@ Three spellings of "not current", which used to sit on two different pages and i
 
 | Kind | Subject | What is outstanding |
 |---|---|---|
-| bundle | `SEC-FIDO-001` | 59 input(s) newer than `f52b720` |
-| bundle | `SEC-FIDO-002` | 4 input(s) newer than `31c21a7` |
-| bundle | `SEC-FIDO-003` | 9 input(s) newer than `31c21a7` |
-| bundle | `SEC-FIDO-004` | 4 input(s) newer than `31c21a7` |
-| bundle | `SEC-FIDO-005` | 5 input(s) newer than `31c21a7` |
-| bundle | `SEC-FIDO-006` | 4 input(s) newer than `31c21a7` |
-| bundle | `SEC-FIDO-006A` | 2 input(s) newer than `b185fc3` |
-| bundle | `SEC-FIDO-006B` | 2 input(s) newer than `b185fc3` |
-| bundle | `SEC-FIDO-006C` | 2 input(s) newer than `b185fc3` |
-| bundle | `SEC-FIDO-007` | 9 input(s) newer than `3e08f75` |
-| bundle | `SEC-FIDO-008` | 4 input(s) newer than `31c21a7` |
+| bundle | `SEC-FIDO-001` | 60 input(s) newer than `f52b720` |
+| bundle | `SEC-FIDO-002` | 5 input(s) newer than `31c21a7` |
+| bundle | `SEC-FIDO-003` | 10 input(s) newer than `31c21a7` |
+| bundle | `SEC-FIDO-004` | 5 input(s) newer than `31c21a7` |
+| bundle | `SEC-FIDO-005` | 6 input(s) newer than `31c21a7` |
+| bundle | `SEC-FIDO-006` | 5 input(s) newer than `31c21a7` |
+| bundle | `SEC-FIDO-006A` | 3 input(s) newer than `b185fc3` |
+| bundle | `SEC-FIDO-006B` | 3 input(s) newer than `b185fc3` |
+| bundle | `SEC-FIDO-006C` | 3 input(s) newer than `b185fc3` |
+| bundle | `SEC-FIDO-007` | 10 input(s) newer than `3e08f75` |
+| bundle | `SEC-FIDO-008` | 5 input(s) newer than `31c21a7` |
 | bundle | `SEC-ADM-002` | no raw evidence bundle |
 | bundle | `SEC-ADM-004` | no raw evidence bundle |
 | bundle | `SEC-BOOT-001` | no raw evidence bundle |
@@ -191,6 +193,7 @@ Three spellings of "not current", which used to sit on two different pages and i
 | bundle | `SEC-LAT-001` | no raw evidence bundle |
 | bundle | `SEC-LAT-002` | no raw evidence bundle |
 | bundle | `SEC-LAT-003` | no raw evidence bundle |
+| bundle | `SEC-LAT-004` | no raw evidence bundle |
 | bundle | `SEC-POL-001` | no raw evidence bundle |
 | bundle | `SEC-POL-002` | no raw evidence bundle |
 | bundle | `SEC-POL-003` | no raw evidence bundle |
@@ -201,12 +204,6 @@ Three spellings of "not current", which used to sit on two different pages and i
 | bundle | `SEC-SEAM-002` | no raw evidence bundle |
 | bundle | `SEC-SEAM-003` | no raw evidence bundle |
 | bundle | `SEC-SEAM-006` | no raw evidence bundle |
-| bundle | `SEC-STORE-001` | no raw evidence bundle |
-| bundle | `SEC-STORE-002` | no raw evidence bundle |
-| bundle | `SEC-STORE-003` | no raw evidence bundle |
-| bundle | `SEC-STORE-004` | no raw evidence bundle |
-| bundle | `SEC-STORE-005` | no raw evidence bundle |
-| bundle | `SEC-STORE-006` | no raw evidence bundle |
 | bundle | `SEC-TRANS-001` | no raw evidence bundle |
 | bundle | `SEC-TRANS-002` | no raw evidence bundle |
 | bundle | `SEC-TRANS-003` | no raw evidence bundle |
@@ -224,7 +221,7 @@ Three spellings of "not current", which used to sit on two different pages and i
 | platform | `PLAT-TOOLCHAIN-001` | The compiler on the path is the pinned rustc and its output is what th |
 | platform | `PLAT-TOOLCHAIN-002` | docs/unsafe.md is the enumeration of the first-party `unsafe` sites: e |
 | platform | `PLAT-UNSAFE-002` | `SendUsb` is sound: `embassy_usb::UsbDevice` is `!Send` only for the ` |
-| platform | `PLAT-UNSAFE-003` | `HEAP.init` runs exactly once, over a static buffer nothing else touch |
+| platform | `PLAT-UNSAFE-003` | `HEAP.0.init` runs exactly once, over a static buffer nothing else tou |
 | platform | `PLAT-UNSAFE-004` | Each of the nine build-selected GPIOs handed to `AnyPin::steal` has ex |
 | platform | `PLAT-UNSAFE-005` | The two `static mut` prime sieves are single-core-exclusive: `CORE0_SI |
 | platform | `PLAT-UNSAFE-006` | Each core programs MSPLIM once, on the core that owns that stack, befo |
@@ -233,14 +230,16 @@ Three spellings of "not current", which used to sit on two different pages and i
 | platform | `PLAT-UNSAFE-010` | The two `link_section` image-definition statics are placed by the link |
 | platform | `PLAT-UNSAFE-011` | The small-prime table and the sieve step are placed in `.data.small_pr |
 | platform | `PLAT-UNSAFE-012` | The three `unsafe extern` blocks declare what they name: the RSA assem |
-| platform | `PLAT-UNSAFE-013` | Every shared reference the touchless build takes over its raw panel po |
+| platform | `PLAT-UNSAFE-013` | `ZeroingHeap` hands `alloc` and `dealloc` to `LlffHeap` under the call |
+| platform | `PLAT-UNSAFE-015` | Every shared reference the touchless build takes over its raw panel po |
 | platform | `PLAT-CRYPTO-001` | The HMAC-SHA-256 under `pinUvAuthProtocol` is correct as a MAC; the ha |
 | platform | `PLAT-BUILD-002` | `ea-conformance-rpid`'s enterprise-attestation allowlist is a conforma |
 | platform | `PLAT-BUILD-003` | The `display` build implements the one-hold-one-ceremony latch SOMEWHE |
 | platform | `PLAT-BUILD-004` | On the four `no-touch` images no presence DECISION is produced at all  |
 | platform | `PLAT-THREAT-001` | A CTAPHID channel id is a routing label the sender writes, so channel  |
+| platform | `PLAT-THREAT-002` | A PIN-derived record stays rooted in the public chip serial until its  |
 | platform | `PLAT-MODEL-001` | `PermSets`'s five subsets are a SCOPE and not a description: a host ca |
-| platform | `PLAT-MODEL-009` | `EF_MINPINLEN`'s FLOOR (byte 0) and its RP-id disclosure list (bytes 2 |
+| platform | `PLAT-MODEL-009` | `EF_MINPINLEN`'s FLOOR (byte 0), complexity policy (flag bit 1) and RP |
 | platform | `PLAT-MODEL-011` | `EF_DEVICE_PIN` is outside `RSKeySecurityState` because the SURFACE it |
 | platform | `PLAT-MODEL-003` | The model's `ram` is `FidoState::keydev_dec.is_some()` and nothing els |
 | platform | `PLAT-MODEL-004` | One `store.seed` boolean stands for two flash records, so the soft-loc |
@@ -264,7 +263,7 @@ Three spellings of "not current", which used to sit on two different pages and i
 | platform | `PLAT-SOURCE-001` | The revoke-before-write ORDER that the first conjunct of `NoTokenAfter |
 | platform | `PLAT-SOURCE-002` | Three of the citations that carry this property's model-to-code bridge |
 | platform | `PLAT-GRANT-001` | `NoAccessibleSecretWithoutGate`'s ghost clause is DEAD by construction |
-| platform | `PLAT-GRANT-002` | The C-tier reset bridge cannot express this property at all: `ResetPer |
+| platform | `PLAT-GRANT-002` | The C-tier reset bridge cannot express this property, and a field for  |
 | platform | `PLAT-GRANT-003` | `FixPpuatRequiresPin`'s FALSE arm is unobserved: the one configuration |
 | platform | `PLAT-CRED-001` | `r \in store.rpent` is read as `the EF_RP record for r is reachable by |
 | platform | `PLAT-CRED-002` | No action of `RSKeySecurityState` can fail a flash write: the model's  |
@@ -306,7 +305,7 @@ For the commit that carries this page — which is why no commit is named here: 
 
 | Tier | Command | Taken | Against | Host |
 |---|---|---|---|---|
-| `liveness` | `./formal/run-tlc.sh liveness` | 2026-09-08 | `5f81d66` | Apple M5 Pro (18 cores) |
-| `safety` | `./formal/run-tlc.sh safety` | 2026-09-08 | `5f81d66` | Apple M5 Pro (18 cores) |
+| `liveness` | `./formal/run-tlc.sh liveness` | 2026-10-01 | `6471abf` | Apple M5 Pro (18 cores) |
+| `safety` | `./formal/run-tlc.sh safety` | 2026-10-01 | `6471abf` | Apple M5 Pro (18 cores) |
 
-**Raw evidence bundles:** `SEC-FIDO-001`, `SEC-FIDO-002`, `SEC-FIDO-003`, `SEC-FIDO-004`, `SEC-FIDO-005`, `SEC-FIDO-006`, `SEC-FIDO-006A`, `SEC-FIDO-006B`, `SEC-FIDO-006C`, `SEC-FIDO-007`, `SEC-FIDO-008` — of 59 registered properties. Stale against this commit: `SEC-FIDO-001`, `SEC-FIDO-002`, `SEC-FIDO-003`, `SEC-FIDO-004`, `SEC-FIDO-005`, `SEC-FIDO-006`, `SEC-FIDO-006A`, `SEC-FIDO-006B`, `SEC-FIDO-006C`, `SEC-FIDO-007`, `SEC-FIDO-008`.
+**Raw evidence bundles:** `SEC-FIDO-001`, `SEC-FIDO-002`, `SEC-FIDO-003`, `SEC-FIDO-004`, `SEC-FIDO-005`, `SEC-FIDO-006`, `SEC-FIDO-006A`, `SEC-FIDO-006B`, `SEC-FIDO-006C`, `SEC-FIDO-007`, `SEC-FIDO-008`, `SEC-STORE-001`, `SEC-STORE-002`, `SEC-STORE-003`, `SEC-STORE-004`, `SEC-STORE-005`, `SEC-STORE-006` — of 60 registered properties. Stale against this commit: `SEC-FIDO-001`, `SEC-FIDO-002`, `SEC-FIDO-003`, `SEC-FIDO-004`, `SEC-FIDO-005`, `SEC-FIDO-006`, `SEC-FIDO-006A`, `SEC-FIDO-006B`, `SEC-FIDO-006C`, `SEC-FIDO-007`, `SEC-FIDO-008`.

@@ -27,7 +27,8 @@ unaffected.
 The full GUI uses always-on antialiasing. Text uses four-bit IBM Plex Sans and
 Mono coverage data. Icons, circles, status rings, rounded cards, and controls
 blend their edges into the surface below them. The device does this with integer
-math and retained panel writes. It does not use a framebuffer or a heap. A full
+geometry even for controls narrower than their rounded corners.
+It uses retained panel writes without a framebuffer or a heap. A full
 page is recorded once as compact drawing commands. The firmware compares keyed
 128-bit tags for 32×32 visual-state tiles and merges the changed tiles. Typed UI
 components can provide smaller exact damage before composition. Each changed
@@ -236,7 +237,10 @@ point is ever shown, and no OATH code is computed (the device has no clock).
   listing the *populated* retired key-management slots (82–95) and F9. From it,
   **Generate key** creates a key (EC P-256/P-384, Ed25519, X25519, or RSA
   2048/3072/4096) into the next *free* retired slot, gated by the device PIN and
-  a hold, restricted to empty slots (add-only, never overwrite). There is no
+  a hold, restricted to empty slots (add-only, never overwrite). It writes the key
+  alone, as a host generate does; make its certificate from the host. A slot whose key
+  was moved or deleted still holds its certificate, so it is not free until that
+  certificate is deleted (`ykman piv certificates delete 82`). There is no
   management-key auth: physical presence at the panel *is* the authorisation.
 - **OATH**: the stored credentials (label, TOTP/HOTP, a padlock when
   touch-gated), each with a detail (type, HMAC algorithm, digits, TOTP step).
@@ -255,7 +259,8 @@ Grouped into three domains, plus the journal / backup / reset actions:
   touch timeout, each adjusted live. All three **persist across reboots**:
   brightness and sleep in an `EF_DISPLAY` flash record; the touch timeout in
   `EF_PHY`'s `PresenceTimeout`, the same field `rsk hw --touch-timeout` writes,
-  so the panel and the host tool stay in sync.
+  so the panel and the host tool stay in sync. A configuration lock shuts the host
+  tool's write and not the panel's, which no host can reach.
 - **Security**: set / change the **device PIN** and the **FIDO clientPIN** (each
   chosen entirely on the panel). Changing the clientPIN asks for the current one
   first, and that prompt *is* the card's `changePIN` check: a **wrong** entry

@@ -70,7 +70,7 @@ EXPORT = Path("formal/generated/token_relation.txt")
 # derivation; re-deriving the axis is what item 0 exists to prevent.
 MATRIX = Path("docs/assurance-matrix.md")
 
-# Roadmap stage 4 п.4: every production writer is one of these three.
+# Roadmap stage 4 item 4: every production writer is one of these three.
 DISPOSITIONS = ("step", "stutter", "out-of-scope")
 #: Three writer axes and three GUARD axes. The token half was ledgered and the
 #: other three clauses of `NoAuthorizationBypass` — the walk's owning channel,
@@ -133,6 +133,10 @@ IN_PLACE = r"(?:copy_from_slice|clone_from_slice|fill|swap|iter_mut|as_mut|get_m
 # A receiver is any expression, not one identifier: `Fs::put(&mut ctx.fs, EF_PIN)`
 # and `Fs::delete(c.fs, EF_PIN)` are the same write as `fs.put(EF_PIN, ..)`.
 RECEIVER = r"(?:[^,;()]|\([^()]*\))*?,\s*"
+#: One call's argument list, one level of nesting allowed. A non-greedy `.*?\)`
+#: stops at the FIRST close paren, so `put_sealed32(dev.without_otp(), fs, fid, ..)`
+#: hides every argument after the inner call — the fid among them.
+ARGUMENTS = r"((?:[^()]|\([^()]*\))*)\)"
 PUBLIC = re.compile(r"\s*pub(?:\([^)]*\))?\s")
 COLUMN_ROW = re.compile(r"^\|\s*\d+\s*\|\s*`([^`]+)`\s*\|")
 WHOLE = re.compile(r"\*self\s*=[^=]")
@@ -584,7 +588,7 @@ def discovered_volatile(
     typed = re.compile(WHOLE_TYPED.format(state=state)) if state else None
     # `mem::replace(st, FidoState::new())` moves the same bits with no `=` in
     # sight. Scoped to the swap primitives naming the type, NOT to the type
-    # anywhere: `RefCell::new(FidoState::new())` at `firmware/src/main.rs:1360`
+    # anywhere: `RefCell::new(FidoState::new())` at `firmware/src/main.rs:1449`
     # BUILDS the one session cell at boot and replaces nothing, and a rule reading
     # `FidoState::new` alone owns it. Measured: this alternative adds 0 sites.
     swapped = re.compile(SWAP.format(state=state)) if state else None
@@ -720,6 +724,29 @@ def discovered_outcomes(
     return producers, {site for site in producers if visible.search(code[site])} | grant
 
 
+def fid_parameter_types(code: dict, generic: set, call: str) -> set[str]:
+    """The TYPES a fid parameter is declared with, read off the sites that already
+    write one they were handed: `put_sealed32(.., fid: KeyFid, ..)` gives `KeyFid`.
+
+    DERIVED rather than named, so a second spelling arrives with its own sites
+    instead of joining a hand-list here — the mistake this file's own header
+    records for the two rosters it used to carry. Measured today: `KeyFid`, `u16`.
+
+    The FIRST argument of the write and not [`discovered_persistent`]'s receiver
+    form: that one lets the receiver swallow the fid and hand back the argument
+    after it, which taught this `&[u8]` and made every payload parameter a fid.
+    """
+    first = re.compile(call + r"\s*([a-z_]\w*)\s*[,).]")
+    kinds = set()
+    for site in generic:
+        declared = parameters(code[site])
+        for found in first.finditer(code[site]):
+            kind = declared.get(found.group(1))
+            if kind:
+                kinds.add(kind.strip())
+    return kinds
+
+
 def discovered_persistent(
     code: dict,
     writers: set[str],
@@ -739,6 +766,13 @@ def discovered_persistent(
     second of which spells no discoverable name at all. Resolved against the
     binding rather than guessed from the mention — "names a token fid and calls
     any writer" costs 5 false owners on this tree and this costs 0.
+
+    The second clause reaches THROUGH a fid-parameter helper as far as the chain
+    goes ([`fid_parameter_types`]), which is what the hop count above cost when
+    it was one: `migrate_keydev_boot` names EF_PAUTHTOKEN and hands it to
+    `migrate_slot`, which hands it to `put_sealed32`, and only that last hop is a
+    receiver call. Measured 2026-09-16, when the boot re-seal of the grant record
+    became a production write no clause here could see.
     """
     call = rf"(?:\.|::)(?:{'|'.join(sorted(writers, key=len, reverse=True))})\s*\("
     alternation = "|".join(sorted(keys, key=len, reverse=True))
@@ -748,6 +782,31 @@ def discovered_persistent(
     mentions, values, naming = vocabulary
 
     generic = {site for site, body in code.items() if parameterised.search(body)}
+    kinds = fid_parameter_types(code, generic, call)
+
+    def hands_its_fid(body: str, targets: set) -> set:
+        """Which of `targets` this body reaches with a fid of its OWN — the hop a
+        receiver call cannot make, and the only one that carries the record."""
+        own = {name for name, kind in parameters(body).items() if kind.strip() in kinds}
+        if not own:
+            return set()
+        return {
+            target
+            for target in targets
+            if any(
+                own & set(re.findall(r"\b([a-z_]\w*)\b", found.group(1)))
+                for found in re.finditer(rf"\b{re.escape(target[1])}\s*\({ARGUMENTS}", body)
+            )
+        }
+
+    grew = True
+    while grew:
+        grew = False
+        for site, body in code.items():
+            if site not in generic and hands_its_fid(body, generic):
+                generic.add(site)
+                grew = True
+    handed_down = {site: hands_its_fid(code[site], generic) for site in generic}
 
     def carries_a_key(arguments: str) -> bool:
         return bool(mentions.search(arguments)) or any(
@@ -759,7 +818,7 @@ def discovered_persistent(
 
     reached, handing = set(), set()
     for site in generic:
-        calls = re.compile(rf"\b{site[1]}\s*\(([\s\S]*?)\)")
+        calls = re.compile(rf"\b{site[1]}\s*\({ARGUMENTS}")
         for caller, body in code.items():
             if caller == site:
                 continue
@@ -767,6 +826,14 @@ def discovered_persistent(
                 if carries_a_key(found.group(1)):
                     reached.add(site)
                     handing.add(caller)
+    # A named key that reached a helper reaches every helper THAT one hands it to,
+    # or a chain owns its top and its bottom and nothing in between.
+    frontier = list(reached)
+    while frontier:
+        for target in handed_down.get(frontier.pop(), ()):
+            if target not in reached:
+                reached.add(target)
+                frontier.append(target)
     direct = {site for site, body in code.items() if named.search(body)}
     local = {
         site

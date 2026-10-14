@@ -38,7 +38,7 @@ the second column.
 | `formal/RSKeyTokenAbstract.tla` | tier A: 44 abstract token states, 11 `Ops`, 3 `Outcomes`, one four-argument `AllowedEventRel`, outcomes as *labels* so an unauthorized success stays distinguishable from a stutter | state `NoAuthorizationBypass` at all — A carries no invariant, and has no presence, channel, retry, soft-lock or reset-window vocabulary |
 | `formal/RSKeyTokenRefinement.tla`, `RSKeyTokenView.tla` | native `INSTANCE` refinement B→A over `TokenGamma`, plus `R1oStep`'s outcome obligation and `R1oOutcomeCoverage`'s equality guard on 23 outcome-producing action names | any coverage guard on the `viol` ghost — the outcome set and the authorization-recording set are different sets |
 | `formal/RSKeyTokenExport.tla`, `scripts/export_token_relation.py`, `scripts/generate_token_edges.py` | the A relation serialized to Rust and checked exhaustively on the host, so A's semantics cannot drift from the generated table | give A an oracle *independent* of A: the export is A, so it can only catch transcription errors |
-| `assurance/token_refinement.toml` + `scripts/token_refinement_gate.py` | the ownership ledger for the token half: 10 volatile writers, 12 persistent writers, 7 outcome producers, each with a derived-and-checked disposition | own anything outside the token: the retry budget, the soft lock, the reset window and the walk owner have no ledger anywhere |
+| `assurance/token_refinement.toml` + `scripts/token_refinement_gate.py` | the ownership ledger for the token half: 11 volatile writers, 14 persistent writers, 7 outcome producers, each with a derived-and-checked disposition | own anything outside the token: the retry budget, the soft lock, the reset window and the walk owner have no ledger anywhere |
 | `formal/RSKeySecurityState.tla` | tier B: 53 actions, the named invariants `docs/testing.md`'s generated row counts off `Shipped.cfg` — six of them are the ones `formal/README.md` maps to Rust, and this cell read `six` for the whole set — `Guard`/`Policy` separation so an invariant can be falsified rather than restated | close the ghost's completeness — see the B map below, where the count is off by ten |
 | `formal/TraceSecurity*.tla`, `scripts/security_trace.py`, `formal/traces/security-phase4.jsonl` | runtime correspondence: a 40-line recorded emulator session replayed as 74 steps, 41 state boundaries, 15 outcome boundaries, 7 gate boundaries, with `R4c` predicting the gate's answer, and eight `TraceSecurityBad*.cfg` — seven registered RED with the invariant each must break named, one a deliberate GREEN control — proving the replay can refuse | reach the property. The row itself prints `distinct_actions=22` of the model's 53, and only **10 of the 21** actions that record this invariant are among them — the whole `credentialManagement` family is unreached, which is the family the one existing Kani harness is about. Nor does it witness a board: the apparatus is `tools/emu` and its fidelity is an assumption nothing here discharges |
 | `formal/comutants.toml` + `scripts/comutate.py` | 69 patched code twins and 4 recorded-unreachable, floored at 0 pending; 11 of them belong to `NoAuthorizationBypass` and all 11 are `expect = "killed"` | falsify a **proof**. Measured: 0 of the 69 `slice` invocations run `cargo kani` — every one is a `cargo test -p …`. The property's only Kani harness is reddened by no recorded mutant |
@@ -115,8 +115,8 @@ NoAuthorizationBypassA ==
 
 **The domain.** `AStates` has 44 elements — five permission shapes × the
 `live`/`rpBound`/`pinSet`/`persistentGrant` combinations the shape constraint
-admits, which is 12 for the empty shape and 8 for each of the other four. With 11
-`Ops` and 3 `Outcomes` the candidate tuple space is 44 × 11 × 3 × 44 = 63 888,
+admits, which is 12 for the empty shape and 8 for each of the other four. With 12
+`Ops` and 3 `Outcomes` the candidate tuple space is 44 × 12 × 3 × 44 = 69 696,
 which is the space the generated Rust table is already checked over
 exhaustively.
 
@@ -143,6 +143,12 @@ whole slice and it must not be discovered later:
   invisible at A. The rpId-identity half belongs to B;
 - A observes record *presence*, never record contents, so nothing about PIN
   entropy, verifier derivation or MAC verification is in scope;
+- `persistentGrant` is that record, not a platform holding it. Since 0x09CB the
+  device writes `EF_PAUTHTOKEN` itself at a boot, a finished reset or a backup
+  load (`ProvisionGrant`), so `UseCm`'s grant arm is met by a record nobody may
+  have been handed. Possession is the token's secrecy and has no image in A. B
+  keeps the issued grant apart as `gate.ppuat` and `PpuatGuard` reads it, but no
+  mutant in the roster takes that half of the guard out;
 - A has no time, so `PUAT_MAX_USAGE_PERIOD_MS` (`600000`) and
   `RESET_WINDOW_MS` (`10000`) are outside it by construction.
 
@@ -241,7 +247,7 @@ last pilot died, so the callers are written down first and the projection second
 | `authorized_by_ppuat` | one — `authorize_cm`, `credmgmt.rs` | no |
 | `authenticator_config` | one — the CBOR dispatch in `crates/rsk-fido/src/lib.rs` | no |
 | `vendor::pin_gate` | six sites in `crates/rsk-fido/src/vendor.rs` | no |
-| `consume_after_user_presence` | three direct — two in `makecredential.rs`, one in `state.rs` — plus two more in `getassertion.rs` that reach it through the `…_if` wrapper. In a table about call-site fidelity the wrapper is the wrong thing to hide | no |
+| `consume_after_user_presence` | one — `Ctx::user_presence_test` in `crates/rsk-fido/src/up.rs`, which the four makeCredential / getAssertion user-presence tests (two in `makecredential.rs`, two in `getassertion.rs`) go through; the two success paths build their UP bit from the `UpFlag` it returns | no |
 
 **What the one existing harness actually proves.**
 `no_authorization_bypass_walk_owner` in `crates/rsk-fido/src/state_kani.rs` runs a
@@ -390,7 +396,7 @@ What survives is below, with the repairs named.
 | E6 | a schema check over the bundle: every one of the ten groups present, every leaf non-empty, and every numeric cost field a number rather than a range | ten headings with one line each. "Unabridged" is not a predicate until something counts leaves, so the contract below is written as leaves and the check is over them |
 | E7 | after the slice, each matrix cell it closed carries a `[[cell]]` whose `basis` `python3 scripts/matrix_gate.py` re-derives; cells it did not close still read `gap` | using the existing state as the criterion. `matrix_gate.py` exits 0 today and the row already shows 24 `gap`, so "still shows 24 gap" was a no-op — it could only redden if someone edited the matrix, never as a consequence of failing to do the work |
 | E8 | `SEC-FIDO-001`'s `status` is still `BOUNDED` | nothing — and this is **not an exit**, it is a guard-rail, kept in the table under its own name so a reader counting ten rows does not read ten exits. It reddens only if someone moves the scalar `assurance_gate.py` derives from a harness *name* |
-| E9 | `nix develop -c ./scripts/check.sh` exits 0, taken **without a pipe**, and prints `ALL CHECKS PASSED` | reading the exit code through a pipe. `check.sh` prints no row count — only `== <name> ==` per row and the final line — so the earlier form of this criterion compared a hand-counted number against a number the same work item wrote, and a bundle recording a lower count passed |
+| E9 | `nix develop -c ./scripts/check.sh` and `nix develop -c ./scripts/check-assurance.sh` each exit 0, taken **without a pipe**, and print `ALL CHECKS PASSED` and `ALL ASSURANCE CHECKS PASSED` — the slice's bundle and bounds rows run in the second | reading the exit code through a pipe. `check.sh` prints no row count — only `== <name> ==` per row and the final line — so the earlier form of this criterion compared a hand-counted number against a number the same work item wrote, and a bundle recording a lower count passed |
 
 Nine exits and one guard-rail — E8, which reddens only if someone moves the
 scalar. **E4a and E4b decide whether the slice was worth doing; E2, E3 and E5

@@ -35,6 +35,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import gate_lines
 import run_count_gate
 
+pytestmark = pytest.mark.assurance
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 #: A runner that answers only the pure query, which is all the gate asks of it.
@@ -1733,6 +1735,26 @@ def test_recording_a_new_matrix_against_a_head_younger_than_the_run(tree, tmp_pa
         run_count_gate.record(tree.root, log)
 
 
+def test_a_run_tlc_timed_past_an_hour_records_and_checks_out(tree, tmp_path):
+    """Past an hour TLC prints `Finished in 01h 12min` and drops the seconds. Read
+    as seconds, a 72-minute Liveness.cfg could not be recorded at all, and a clock
+    TLC truncated trails the runner's by up to 59 s more than the JVM bracket."""
+    tree.stray("formal/out/Liveness.log", tlc_log(900, 44, 9, "01h 12min"))
+    bound = 72 * 60 + 59 + run_count_gate.CLOCK_SLACK
+    for seconds in (bound, bound + 1):
+        log = tmp_path / f"{seconds}.log"
+        log.write_text(
+            MATRIX_SAFETY + "\n" + MATRIX_LIVENESS.replace(" 300s", f" {seconds}s") + "\n"
+        )
+        tree.write("formal/runs.toml", "# nothing here\n")
+        run_count_gate.record(tree.root, log)
+        tree.regenerate()
+        if seconds == bound:
+            assert tree.problems() == []
+        else:
+            assert only(tree.problems(), "Liveness.cfg recorded"), tree.problems()
+
+
 def test_recording_logs_that_disagree_with_each_other(tree, tmp_path):
     """Within one tier, because that is where a run is one run. `liveness` is a
     single row here and a single row cannot disagree with itself — the first
@@ -1770,10 +1792,10 @@ def test_recording_a_whole_tier_leaves_a_green_tree(tree, tmp_path):
 # --- the row itself --------------------------------------------------------
 
 
-def test_check_sh_runs_this_gate():
-    """The row as `check.sh` runs it, over its CODE — a `#` in front of the line
-    is not a row, and that is how eleven guards were switched off at once."""
-    assert gate_lines.runs((ROOT / "scripts/check.sh").read_text(), "scripts/run_count_gate.py")
+def test_check_assurance_sh_runs_this_gate():
+    """The row as `check-assurance.sh` runs it, over its CODE — a `#` in front of
+    the line is not a row, and that is how eleven guards were switched off at once."""
+    assert gate_lines.runs((ROOT / "scripts/check-assurance.sh").read_text(), "scripts/run_count_gate.py")
 
 
 def test_the_usage_line_refuses_what_it_does_not_take():

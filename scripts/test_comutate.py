@@ -21,6 +21,8 @@ import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import comutate
 
+pytestmark = pytest.mark.assurance
+
 SPEC = """\
 pending_floor = 1
 phase2_count = 3
@@ -322,7 +324,7 @@ def test_a_registration_that_outlived_its_directory_still_measures(tmp_path):
     # naming it, so `wt.exists()` prunes nothing and the add dies "missing but
     # already registered". The dev loop's, not CI's: `comutants` checks out fresh.
     root = git_tree(tmp_path)
-    wt = comutate.worktree_path("BugAlpha")
+    wt = comutate.worktree_path(root, "BugAlpha")
     shutil.rmtree(wt, ignore_errors=True)
     subprocess.run(
         ["git", "worktree", "add", "--detach", str(wt), "HEAD"],
@@ -335,6 +337,27 @@ def test_a_registration_that_outlived_its_directory_still_measures(tmp_path):
     entry = {"file": "src/lib.rs", "find": "GUARD_LINE\n", "slice": ["false"]}
     verdict, _ = comutate.run_one(root, "BugAlpha", entry, "any-host")
     assert verdict == "killed", verdict
+
+
+def test_a_measurement_leaves_another_checkouts_worktree_alone(tmp_path):
+    # Two gates at once, each in its own clone, measured BugAlpha at one /tmp path:
+    # one's cleanup deleted the other's live worktree, or its add died "already exists".
+    held = git_tree(tmp_path / "held")
+    wt = comutate.worktree_path(held, "BugAlpha")
+    subprocess.run(
+        ["git", "worktree", "add", "--force", "--detach", str(wt), "HEAD"],
+        cwd=held,
+        check=True,
+        capture_output=True,
+    )
+    try:
+        other = git_tree(tmp_path / "other")
+        entry = {"file": "src/lib.rs", "find": "GUARD_LINE\n", "slice": ["false"]}
+        verdict, _ = comutate.run_one(other, "BugAlpha", entry, "any-host")
+        assert verdict == "killed", verdict
+        assert (wt / "src/lib.rs").exists(), "the other checkout's run deleted this worktree"
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", str(wt)], cwd=held, check=False)
 
 
 def test_drifted_anchor_in_run_is_named(tmp_path):
@@ -643,6 +666,23 @@ def test_one_entry_patches_several_files(tmp_path):
 # ---- the proof half ----------------------------------------------------------
 
 
+def test_the_nix_library_path_is_dropped_for_a_kani_command_and_kept_otherwise(monkeypatch):
+    # Measured on the weekly row: nix's libm reached CBMC's own binaries through
+    # `LD_LIBRARY_PATH` and `goto-cc` died on a versioned symbol the system libc
+    # does not carry — exit 1, no verdict, and the mutant scored a survivor. A
+    # `cargo test` slice is nix-built and still needs that path.
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/nix/store/whatever/lib")
+    root = pathlib.Path("/tmp/anywhere")
+    kani = comutate.slice_env(["cargo", "kani", "-p", "x", "--harness", "y"], root)
+    assert "LD_LIBRARY_PATH" not in kani
+    test = comutate.slice_env(["cargo", "test", "-p", "x"], root)
+    assert test["LD_LIBRARY_PATH"] == "/nix/store/whatever/lib"
+    # And the two it sets for every command are still set for both.
+    for env in (kani, test):
+        assert env["CARGO_TARGET_DIR"] == str(root / "target")
+        assert '--cfg sha2_backend="soft"' in env["RUSTFLAGS"]
+
+
 def test_the_host_target_goes_on_a_cargo_test_and_nowhere_else():
     # `cargo kani` has no `--target`: it answers `error: unexpected argument
     # '--target' found`, which this file's own classifier reads as build-broke —
@@ -682,6 +722,16 @@ def test_the_host_target_goes_on_a_cargo_test_and_nowhere_else():
             1,
             "killed-not-refused",
         ),
+        # And the third direction, which the two above cannot see: a run that
+        # answered NEITHER line. The weekly row met all three shapes wearing one
+        # word, on a host where the same patch reddens B1 locally.
+        ("Error: Failed to run cargo build\n", 101, "proof-broke"),
+        (
+            "cbmc: /nix/store/x/libstdc++.so.6: version `GLIBC_2.40' not found\n",
+            127,
+            "proof-broke",
+        ),
+        ("", 0, "proof-broke"),
     ],
 )
 def test_a_proof_that_did_not_redden_for_its_own_reason(out, code, verdict):
@@ -695,6 +745,23 @@ def test_a_proof_that_did_not_redden_for_its_own_reason(out, code, verdict):
         assert got is None, got
     else:
         assert got[0] == verdict
+
+
+def test_a_proof_that_reached_no_verdict_carries_the_tools_own_line():
+    # The detail is the whole point of the arm: `proof-broke` with a fixed string
+    # says a tool broke, and the next reader still has to reproduce the host to
+    # learn which one. cargo and rustc cascade, so the FIRST error line wins.
+    loader = "cbmc: /nix/store/x/libstdc++.so.6: version `GLIBC_2.40' not found"
+    _, detail = comutate.proof_verdict(f"Checking harness y…\n{loader}\n", 127, "B1")
+    assert loader in detail, detail
+    # The child names itself first and the driver wraps it, so an anchored match
+    # on the driver's own `Error:` would carry the wrapper and drop the cause.
+    child = "cbmc: error while loading shared libraries: libstdc++.so.6"
+    _, detail = comutate.proof_verdict(f"{child}\nError: Failed to run cbmc\n", 1, "B1")
+    assert detail.endswith(child), detail
+    cascade = "error: could not compile `rsk-fido`\nerror: aborting due to 1 error\n"
+    _, detail = comutate.proof_verdict(cascade, 101, "B1")
+    assert detail.endswith("could not compile `rsk-fido`"), detail
 
 
 def test_a_proof_that_fell_on_its_named_check_is_not_refused():
@@ -733,6 +800,32 @@ def test_a_killed_slice_with_a_reddened_proof_names_the_check(tmp_path):
     verdict, detail = comutate.run_one(root, "BugAlpha", entry, "any-host")
     assert verdict == "killed", (verdict, detail)
     assert "proof: Failed Checks: NoAuthorizationBypass/B1" in detail, detail
+
+
+def test_a_killed_slice_whose_proof_never_ran_is_not_a_survivor(tmp_path, capsys):
+    # The run-time half of `proof_problems`, driven through `run_one`: the three
+    # static ways to name a harness that cannot redden are a gate row, and a tool
+    # that does not run on the host is a fourth the lint cannot reach.
+    root = git_tree(tmp_path)
+    entry = {
+        "file": "src/lib.rs",
+        "find": "GUARD_LINE\n",
+        "slice": ["sh", "-c", 'echo "test result: FAILED"; exit 1'],
+        "proof": [
+            "sh",
+            "-c",
+            'echo "goto-cc: it would not say why"; echo "error: goto-cc exited 1" >&2; exit 101',
+            "--harness",
+        ],
+        "proof_names": "NoAuthorizationBypass/B1",
+    }
+    verdict, detail = comutate.run_one(root, "BugAlpha", entry, "any-host")
+    assert verdict == "proof-broke", (verdict, detail)
+    assert "goto-cc exited 1" in detail, detail
+    # One line of detail named the tool and not its reason, measured: the runner
+    # answered `goto-cc exited with status 1`, and what goto-cc said is gone by
+    # the time the verdict is read — so the run prints its last words itself.
+    assert "goto-cc: it would not say why" in capsys.readouterr().err
 
 
 def test_a_green_slice_never_reaches_the_proof(tmp_path):
@@ -851,7 +944,7 @@ def proof_tree(tmp_path):
 
 
 def row(root: pathlib.Path) -> subprocess.CompletedProcess:
-    """`python scripts/comutate.py --lint` over `root` — the `check.sh` row itself.
+    """`python scripts/comutate.py --lint` over `root` — the gate row itself.
 
     The row keys on the PROCESS exit code of the entry point, and every other arm
     in this file drives `lint()`, one function below it. Fourteen of thirty gates

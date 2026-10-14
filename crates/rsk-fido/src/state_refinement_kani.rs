@@ -105,6 +105,12 @@ fn concrete_step(
             persistent.persistent_grant = false;
             (AbstractOp::RevokeGrant, AbstractOutcome::Silent)
         }
+        // `seed::ensure_seed` at a boot, a finished reset or a vendor BACKUP_LOAD: the
+        // record appears with no PIN door, and a backup load leaves the session live.
+        11 => {
+            persistent.persistent_grant = true;
+            (AbstractOp::ProvisionGrant, AbstractOutcome::Silent)
+        }
         7 => use_with_presence(state, persistent.pin_set, PERM_MC, AbstractOp::UseMc),
         8 => use_with_presence(state, persistent.pin_set, PERM_GA, AbstractOp::UseGa),
         9 => {
@@ -256,4 +262,5 @@ fn r3b_concrete_step_is_an_allowed_a_event() {
     );
     kani::cover!(outcome == AbstractOutcome::Authorized && pre == post);
     kani::cover!(op == AbstractOp::RevokeToken && pre.live && !post.live);
+    kani::cover!(op == AbstractOp::ProvisionGrant && !pre.pin_set && post.persistent_grant);
 }

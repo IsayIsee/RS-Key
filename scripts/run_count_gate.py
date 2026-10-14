@@ -174,14 +174,15 @@ LABEL_WORDS = 8
 
 #: Literals one fragment may exempt. A registry entry buys silence for its own
 #: span, and a span can be a whole paragraph: seven literals went quiet under one
-#: entry, which is an exemption nobody sized. Measured maximum today is five, in
-#: the `COVERAGE=1` sweep sentence; a sixth in one sentence means splitting the
+#: entry, which is an exemption nobody sized. Measured maximum today is three, in
+#: four sentences -- the `COVERAGE=1` sweep's five fell to three when the model it
+#: swept moved past two of them; a fourth in one sentence means splitting the
 #: registration, not widening it.
 #:
 #: Held ONE above that maximum rather than merely over it, for the reason under
 #: the two ceilings below: raising it to 99 was a surviving mutant, because a cap
 #: with headroom is a cap nothing has to move.
-SCOPE_SPAN_CAP = 6
+SCOPE_SPAN_CAP = 4
 
 #: And the registry as a whole only grows deliberately: this EQUALS `len(SCOPED)`,
 #: so a bump belongs in the diff beside the entry that needs it, the way every
@@ -198,7 +199,7 @@ SCOPE_SPAN_CAP = 6
 #: 27 in its own comment one commit after being written, thirty lines from the
 #: constant, in the guard whose whole subject is a hand-typed number going
 #: stale. `scripts/` is outside the scan, so nothing was ever going to catch it.)
-SCOPE_CEILING = 41
+SCOPE_CEILING = 40
 
 #: The other rule, and the one the shape scan cannot be: a value the generator
 #: PRINTS may not appear as a literal anywhere else. It needs no noun list, no
@@ -262,11 +263,12 @@ GENERATED_ELSEWHERE = {
 #: number that merely resembles one of its own.
 #:
 #: What an entry does NOT buy, and this is open: when a value the regions print
-#: MOVES, four of its five registered copies redden -- their fragment stops
-#: exempting anything, which is the rule below -- and the fifth is silent,
-#: because that fragment also covers three literals of other rules and its count
-#: stays over zero. Eight of these entries exempt more than one literal and would
-#: hide a stale value the same way. Closing it needs the registry to say which
+#: MOVES, a registered copy reddens only once its fragment exempts nothing -- the
+#: rule below. Measured when `Shipped.cfg` went from 77 563 872 to 108 618 956:
+#: four copies reddened, and the fifth, the `COVERAGE=1` sweep, stayed silent
+#: because its fragment still covers literals of other rules. Eight of these
+#: entries exempt more than one literal and would hide a stale value the same
+#: way. Closing it needs the registry to say which
 #: value each entry is a copy OF, and half of these entries are quoting a figure
 #: that is deliberately historical and must NOT track anything.
 SCOPED = {
@@ -355,39 +357,35 @@ SCOPED = {
     # of prose that goes stale with it, where before nothing could name them.
     (
         "docs/assurance-matrix.md",
-        "GREEN over 23 521 512 distinct states at depth 51",
+        "GREEN over 31 451 172 distinct states at depth 51",
     ): "`AlwaysUv.cfg`'s own size, in the cell arguing that the model half of that "
     "column is answered and the code half is not",
     (
-        "formal/floors.txt",
-        "alwaysUv. 23 521 512 distinct at depth 51",
-    ): "the same configuration, in the comment that says why its floor is where it is — "
-    "a floor's justification is the one place its measurement belongs",
-    (
         "formal/gen-configs.sh",
-        "They cost 77 563 872 now",
+        "They cost 108 618 956 now",
     ): "`Shipped.cfg`'s size in the generator's own note on why the real constants were "
     "kept over the reduced ones, which is an argument about the two numbers",
     (
         "formal/README.md",
-        "at 77 563 872 distinct (2026-08-26)",
+        "at\n108 618 956 after `c92bfb3`",
     ): "the count the fingerprint estimate is a closed form IN, in the paragraph about "
     "what `exhaustive` means — the estimate is meaningless without it",
     (
         "formal/README.md",
-        "same 77 563 872\ndistinct",
-    ): "and the same count again two lines down, which is the whole of that sentence: "
-    "two runs of one configuration agreed on it and disagreed on the estimate",
+        "**108 618 956 at depth 58**",
+    ): "the configuration's size today, in the sentence that re-derives the floor as a "
+    "third of it — a floor stated as a ratio is nothing without the count",
+    (
+        "formal/floors.txt",
+        "LatInduction.cfg                     GREEN   70000",
+    ): "the lattice induction probe's floor, which is by construction the count of "
+    "type-correct states `IndInv` admits and so the distinct count the probe prints — "
+    "the store probe's floor is its count too, under the value floor",
     (
         "formal/README.md",
-        "**77 563 872 at depth 58**",
-    ): "the count on the far side of a before/after comparison with the reduced scope, "
-    "where dropping it would leave the comparison with one side",
-    (
-        "formal/README.md",
-        "GREEN over 10 720 348 distinct\nstates at the liveness constants",
-    ): "`Liveness.cfg`'s distinct count beside the 5% wall-clock comparison it is the "
-    "denominator of",
+        "GREEN over 14 514 424 distinct\nstates at the liveness constants",
+    ): "`Fairness.cfg`'s distinct count, the space the invariant is checked over, beside "
+    "the 5% it cost when it went in — dated in place by its commit",
     # ONE configuration's own measurement, in the narrative that is about it,
     # reached by widening the nouns to `states` and `mutants` — what a run
     # PRODUCED is a run-count by the same definition as what it covered.
@@ -475,7 +473,8 @@ SCOPED = {
     # Reached by widening a published unit into the vocabulary the shape scan
     # already enumerates: `85 entries` is the roster, a sentence seven commits in
     # this series have now had to hand-correct — 69 -> 71 -> 72 -> 73 -> 76 -> 79
-    # -> 80 -> 85.
+    # -> 80 -> 85 -> 87. The eighth correction was MISSED by its own commit and
+    # caught by review: a seam batch grew the roster and the sentence stood.
     (
         "formal/README.md",
         "**31 of 31 mutants are caught",
@@ -484,7 +483,7 @@ SCOPED = {
     "claim, and the generated roster line carries the same 30",
     (
         "docs/formal.md",
-        "85 entries: 79 of the 80 executable patches are killed",
+        "103 entries: all 97 executable patches are killed",
     ): "the whole-tree roster restated in the page that introduces the phase-2 "
     "table, whose generated region beside it gives the phase-2 line and not this "
     "total",
@@ -493,9 +492,16 @@ SCOPED = {
     # gone, the cell fell under no rule, and the entry retired as it predicted; the
     # boot family took the roster to 79, the OATH seam batch takes it to 85, and it
     # stays gone.
+    # `` `BugPanelCancelable` | … | 230 states `` collided the day the safety tier
+    # reached 230 configurations, and retired as predicted when the tier reached
+    # 242 -- where `` `BugCmWalkIgnoresChannel` | … | 1 242 states `` collided in
+    # turn, read as 242 through its thousands space, and retired the same way when
+    # the SET PIN RETRIES mutants took the tier to 248. Same class, same retirement:
+    # a co-mutant's state count, in a column of state counts, that moves when that
+    # mutant's model does.
     (
         "formal/README.md",
-        "**85 entries: 79 executable patches killed",
+        "**103 entries: all 97 executable patches killed",
     ): "the co-mutant roster restated where its composition is broken down, which the "
     "generated line beside it does not give — the copy that read 69, then 71, 72 and "
     "73, re-measured by hand in four commits of this series. Its own claim that a "
@@ -560,6 +566,10 @@ TABLE_GROUPS = (
      ("StoreInductionMut_*.cfg",)),
     ("`Lattice.cfg` — the fourth module: the retry/recovery lattice", ("Lattice.cfg",)),
     ("`LatMut_*.cfg` / `LatSolo_*.cfg`", ("LatMut_*.cfg", "LatSolo_*.cfg")),
+    ("`LatInduction.cfg` — `IndInv /\\ Next => IndInv'`, the probe that found NOTHING",
+     ("LatInduction.cfg",)),
+    ("`LatInductionMut_*.cfg` — what says that probe can go red",
+     ("LatInductionMut_*.cfg",)),
     ("`Policies.cfg` — all four applets' stateful operation policies",
      ("Policies.cfg",)),
     ("`PolicyMut_*.cfg` / `PolicySolo_*.cfg`", ("PolicyMut_*.cfg", "PolicySolo_*.cfg")),
@@ -693,7 +703,7 @@ TLC_SUMMARY = re.compile(
     r"^(\d+) states generated, (\d+) distinct states found, (\d+) states left on queue\.$", re.M
 )
 TLC_DEPTH = re.compile(r"^The depth of the complete state graph search is (\d+)\.$", re.M)
-TLC_FINISHED = re.compile(r"^Finished in (?:(\d+)h )?(?:(\d+)min )?(\d+)s\b", re.M)
+TLC_FINISHED = re.compile(r"^Finished in (?:\d+h \d+min|(?:\d+min )?\d+s)\b", re.M)
 TLC_STARTED = re.compile(r"^Starting\.\.\. \((\d{4}-\d\d-\d\d)[ T]([\d:]+)\)$", re.M)
 TLC_BANNER = re.compile(r"^Running .*? with (\d+) workers? on (\d+) cores? .*?\(([^,]+),", re.M)
 
@@ -713,7 +723,8 @@ TLC_ROW = re.compile(
     r"(?:\s+(?P<states>\d+) states generated, (?P<distinct>\d+) distinct states found,"
     r" (?P<queue>\d+) states left on queue\.)?"
     r"(?:\s+The depth of the complete state graph search is (?P<depth>\d+)\.)?"
-    r"\s+Finished in (?:(?P<hours>\d+)h )?(?:(?P<minutes>\d+)min )?(?P<seconds>\d+)s$"
+    r"\s+Finished in (?:(?P<hours>\d+)h (?P<hminutes>\d+)min"
+    r"|(?:(?P<minutes>\d+)min )?(?P<seconds>\d+)s)$"
 )
 
 #: Seconds the runner's wall clock may exceed TLC's own `Finished in`. It brackets
@@ -743,12 +754,19 @@ def matrix_rows(text):
 
 
 def elapsed(found, prefix=""):
-    """`Finished in 31min 08s` as seconds."""
+    """`Finished in 31min 08s` as seconds. Past an hour TLC prints `01h 12min` and
+    drops the seconds, so there this is the minute the run finished in."""
     return (
         int(found[prefix + "hours"] or 0) * 3600
-        + int(found[prefix + "minutes"] or 0) * 60
-        + int(found[prefix + "seconds"])
+        + int(found[prefix + "hminutes"] or found[prefix + "minutes"] or 0) * 60
+        + int(found[prefix + "seconds"] or 0)
     )
+
+
+def clock_slack(found):
+    """How far the runner's clock may run past TLC's for one row: the JVM bracket,
+    and the up to 59 s TLC's own clock no longer shows past an hour."""
+    return CLOCK_SLACK + (59 if found["hours"] else 0)
 
 
 def tlc_line(root, cfg):
@@ -858,7 +876,7 @@ def check_tlc(where, run, findings):
             kept[found["cfg"]] = found
         elif line.strip():
             findings.append(f"{where}: {line.strip()[:60]!r} is not a TLC summary line")
-    stamps, gaps = set(), []
+    stamps, gaps, truncated = set(), [], 0
     for row in run["rows"]:
         found = kept.pop(row["cfg"], None)
         if found is None:
@@ -909,13 +927,14 @@ def check_tlc(where, run, findings):
                 )
         gap = int(row["seconds"]) - elapsed(found)
         gaps.append(gap)
-        if not 0 <= gap <= CLOCK_SLACK:
+        truncated += clock_slack(found) - CLOCK_SLACK
+        if not 0 <= gap <= clock_slack(found):
             findings.append(
                 f"{where}: {row['cfg']} recorded {row['seconds']}s and TLC timed itself at"
                 f" {elapsed(found)}s — the runner's clock brackets the JVM, so the gap"
-                f" belongs in 0..{CLOCK_SLACK}s and this one is {gap}s"
+                f" belongs in 0..{clock_slack(found)}s and this one is {gap}s"
             )
-    budget = CLOCK_SLACK + TIER_SLACK * len(gaps)
+    budget = CLOCK_SLACK + TIER_SLACK * len(gaps) + truncated
     if sum(gaps) > budget:
         findings.append(
             f"{where}: the rows are {sum(gaps)}s longer than TLC timed them, over the"

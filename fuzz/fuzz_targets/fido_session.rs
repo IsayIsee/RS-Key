@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 RS-Key contributors
 
-#![no_main]
+#![cfg_attr(not(test), no_main)]
 
 //! Stateful CTAP2 session fuzzing, structure-aware. The single-command FIDO
 //! targets (fido_cbor, fido_largeblobs, fido_credmgmt, …) each drive ONE command
@@ -59,8 +59,8 @@
 
 use std::sync::OnceLock;
 
-use libfuzzer_sys::arbitrary::Unstructured;
-use libfuzzer_sys::fuzz_target;
+use fuzzing::arbitrary::Unstructured;
+use libfuzzer_sys as fuzzing;
 use minicbor::encode::write::{Cursor, EndOfSlice};
 use minicbor::encode::{Error as EncError, Write};
 use minicbor::{Decoder, Encoder};
@@ -96,9 +96,10 @@ const CP_SET_PIN: u64 = 0x03;
 /// The host's ECDH scalar — fixed, so a session costs one scalar multiply instead
 /// of a keygen and an input keeps its meaning across runs. In `[1, n)` for P-256.
 const HOST_SCALAR: [u8; 32] = [0x42; 32];
-/// The PIN the handshake sets. Eight bytes clears `MIN_PIN_LENGTH` on both the
-/// default build (4) and `strong-pin` (6).
-const PIN: &[u8] = b"12345678";
+/// The PIN the handshake sets: eight code points clear `MIN_PIN_LENGTH` on the
+/// default build (4) and `strong-pin` (6), and the mix clears `pin_is_trivial`,
+/// which `strong-pin`/`fips-profile` apply — a refused setPIN kills the token leg.
+const PIN: &[u8] = b"9f4a27c3";
 /// Widest pinUvAuthToken plaintext [`Sess::issued_token`] will decrypt. Two CBC
 /// blocks of slack over the 32 it must be, so an over-long token is decrypted and
 /// measured rather than refused by the buffer — the bound itself is an assert.
@@ -259,6 +260,7 @@ fn dev() -> Device<'static> {
         serial_hash: &[0xAB; 32],
         serial_id: &[1, 2, 3, 4, 5, 6, 7, 8],
         otp_key: None,
+        latched: false,
     }
 }
 
@@ -300,14 +302,20 @@ fn provisioned() -> &'static Provisioned {
                 },
             };
             let mut cred_box = [0u8; 512];
-            if let Ok(len) =
-                credential_create(&seed, &d, &input, &rp_hash, &[0x11; 12], &mut cred_box)
-            {
+            if let Ok(len) = credential_create(
+                seed.expose(),
+                &d,
+                &input,
+                &rp_hash,
+                &[0x11; 12],
+                &mut cred_box,
+            ) {
                 resident_id = derive_resident(&cred_box[..len], &d);
                 let _ = credential_store(
-                    &seed,
+                    seed.expose(),
                     &d,
                     &mut fs,
+                    &mut SeqRng(3),
                     &cred_box[..len],
                     &rp_hash,
                     RP_IDS[0],
@@ -1418,7 +1426,7 @@ impl Sess {
         //
         // It is also this tree's one fuzz instance of a `formal/` invariant, and
         // the assertion carries the name so the trace is greppable end to end:
-        // `NoTokenAfterInvalidation` -> `reset_pin_uv_auth_token` (state.rs:488-502,
+        // `NoTokenAfterInvalidation` -> `reset_pin_uv_auth_token` (state.rs:607-622,
         // the owner `formal/README.md` names first) -> here. A re-issued token is a
         // grant the mint invalidated going on authorizing.
         let Some(first) = self.issued_token(&msg[..n], proto, secret) else {
@@ -1463,6 +1471,17 @@ impl Sess {
 
     /// Drive one CTAPHID_CBOR message; returns the reply length in `self.out`.
     fn step(&mut self, msg: &[u8]) -> usize {
+        self.step_bounded(msg, OUT_MAX)
+    }
+
+    fn step_bounded(&mut self, msg: &[u8], capacity: usize) -> usize {
+        let assertion = matches!(
+            msg.first(),
+            Some(&consts::CTAP_GET_ASSERTION | &consts::CTAP_GET_NEXT_ASSERTION)
+        );
+        let before = assertion.then(|| self.counter_bytes());
+        let leg = (self.state.gna.counter, self.state.gna.started_ms);
+        self.out.fill(0xA5);
         let mut ctx = Ctx {
             presence: &mut self.presence,
             dev: self.dev,
@@ -1471,8 +1490,25 @@ impl Sess {
             state: &mut self.state,
             now_ms: self.now_ms,
         };
-        let w = process_cbor(&mut ctx, msg, &mut self.out);
-        check_reply(&self.out, w);
+        let w = process_cbor(&mut ctx, msg, &mut self.out[..capacity]);
+        check_reply(&self.out[..capacity], w);
+        assert!(self.out[capacity..].iter().all(|&byte| byte == 0xA5));
+        if assertion && self.out[0] != rsk_fido::CTAP2_OK {
+            assert_eq!(
+                Some(self.counter_bytes()),
+                before,
+                "a refused assertion changed resident signCount"
+            );
+            if msg.first() == Some(&consts::CTAP_GET_NEXT_ASSERTION)
+                && self.out[0] == rsk_fido::CtapError::Other.as_u8()
+            {
+                assert_eq!(
+                    (self.state.gna.counter, self.state.gna.started_ms),
+                    leg,
+                    "a failed next response advanced its leg or timer"
+                );
+            }
+        }
         match msg.first().copied() {
             // getInfo is stateless by spec: it must succeed whatever the
             // sequence did before it.
@@ -1513,9 +1549,31 @@ impl Sess {
             );
         }
     }
+
+    fn counter_bytes(&mut self) -> Option<Vec<u8>> {
+        let mut bytes = [0; rsk_fs::MAX_VALUE_BYTES];
+        let n = self.fs.read(consts::EF_CRED_CTR.get(), &mut bytes)?;
+        Some(bytes[..n.min(bytes.len())].to_vec())
+    }
 }
 
-fuzz_target!(|data: &[u8]| {
+fn assertion_capacity(msg: &[u8], selector: u8) -> usize {
+    if selector & 4 != 0
+        && matches!(
+            msg.first(),
+            Some(&consts::CTAP_GET_ASSERTION | &consts::CTAP_GET_NEXT_ASSERTION)
+        )
+    {
+        // Extra arm bits preserve the corpus's existing command generation.
+        let choices = [1, 2, 32, 64, 128, 256, OUT_MAX];
+        let index = usize::from(selector >> 3) + usize::from(msg.last().copied().unwrap_or(0));
+        choices[index % choices.len()]
+    } else {
+        OUT_MAX
+    }
+}
+
+pub(crate) fn exercise(data: &[u8]) {
     let Some((&arm, rest)) = data.split_first() else {
         return;
     };
@@ -1543,7 +1601,8 @@ fuzz_target!(|data: &[u8]| {
             let n = u16::from_be_bytes([rest[i], rest[i + 1]]) as usize;
             i += 2;
             let end = (i + n).min(rest.len());
-            s.step(&rest[i..end]);
+            let msg = &rest[i..end];
+            s.step_bounded(msg, assertion_capacity(msg, q));
             i = end;
         }
     } else {
@@ -1556,7 +1615,8 @@ fuzz_target!(|data: &[u8]| {
             } else {
                 let n = build(kind, &mut u, &s.pool, &s.state.lba, &s.token, &mut msg);
                 if n > 0 {
-                    s.step(&msg[..n]);
+                    let msg = &msg[..n];
+                    s.step_bounded(msg, assertion_capacity(msg, q));
                 }
             }
             if u.is_empty() {
@@ -1567,4 +1627,7 @@ fuzz_target!(|data: &[u8]| {
     }
 
     s.display_walk();
-});
+}
+
+#[cfg(not(test))]
+fuzzing::fuzz_target!(|data: &[u8]| exercise(data));

@@ -29,6 +29,43 @@ fn rsa_pub_exp_be_is_65537() {
 }
 
 #[test]
+fn a_sieve_survivor_congruent_to_one_modulo_e_is_not_a_keygen_prime() {
+    let seed = hex("39c13a00000000000000000000000000000000000000000000000000000000c1");
+    let mut sieve = IncrementalSieve::new();
+    sieve.reseed(32, &seed);
+    let mut control = IncrementalSieve::new();
+    control.reseed(32, &seed);
+    assert_eq!(control.step(), Some(true));
+    assert_eq!(mod_small(control.candidate(), RSA_E), 1);
+    let mut rng = SeqRng(7);
+    assert!(RsaKeygen::try_candidate(&mut sieve, &mut rng, 32).is_none());
+    assert_eq!(sieve.candidate(), control.candidate());
+    assert_eq!(rng.0, 7);
+}
+
+#[test]
+fn the_lucas_gate_rejects_a_composite_after_the_sieve_and_strong_mr() {
+    use num_bigint_dig::prime::probably_prime_lucas;
+
+    let seed = hex("13abee7a14ae47e17a14ae47e17a146e722585eb51b81e85eb51b81e85eb51d8");
+    let mut control = IncrementalSieve::new();
+    control.reseed(32, &seed);
+    assert_eq!(control.step(), Some(true));
+    let n = BigUint::from_bytes_le(control.candidate());
+    let p = BigUint::parse_bytes(b"221183538498610001251193494830649338109", 10).unwrap();
+    assert_eq!(n, &p * (&p * BigUint::from(2u8) - BigUint::from(1u8)));
+    assert_ne!(mod_small(control.candidate(), RSA_E), 1);
+    assert!(passes_strong_mr_base2(control.candidate()));
+    assert!(!probably_prime_lucas(&n));
+    let mut sieve = IncrementalSieve::new();
+    sieve.reseed(32, &seed);
+    let mut rng = SeqRng(7);
+    assert!(RsaKeygen::try_candidate(&mut sieve, &mut rng, 32).is_none());
+    assert_eq!(sieve.candidate(), control.candidate());
+    assert_eq!(rng.0, 7);
+}
+
+#[test]
 fn keygen_pool_assembles_in_either_order() {
     // The dual-core search feeds primes through `offer` in whatever order the
     // cores find them — both orders must assemble the same modulus.
@@ -40,7 +77,7 @@ fn keygen_pool_assembles_in_either_order() {
         assert_eq!(kg.half_bytes(), 128);
         assert!(matches!(kg.offer(first), RsaStep::More));
         match kg.offer(second) {
-            RsaStep::Done(k) => assert_eq!(k.n().to_bytes_be(), hex(N_HEX)),
+            RsaStep::Done(k) => assert_eq!(k.n_be(), hex(N_HEX)),
             _ => panic!("two distinct primes must complete the key"),
         }
     }
@@ -59,7 +96,7 @@ fn keygen_pool_le_transport() {
         "transport buffer not scrubbed"
     );
     match kg.offer_le(&mut q_le) {
-        RsaStep::Done(k) => assert_eq!(k.n().to_bytes_be(), hex(N_HEX)),
+        RsaStep::Done(k) => assert_eq!(k.n_be(), hex(N_HEX)),
         _ => panic!("two distinct primes must complete the key"),
     }
 }
@@ -132,7 +169,7 @@ fn keygen_pool_le_rejects_wrong_size_prime() {
     q_le.reverse();
     assert!(matches!(kg.offer_le(&mut p_le), RsaStep::More));
     match kg.offer_le(&mut q_le) {
-        RsaStep::Done(k) => assert_eq!(k.n().to_bytes_be(), hex(N_HEX)),
+        RsaStep::Done(k) => assert_eq!(k.n_be(), hex(N_HEX)),
         _ => panic!("correct-size primes must complete the key after a reject"),
     }
 }
@@ -157,4 +194,40 @@ fn generate_rsa_refuses_an_unusable_size() {
         generate_rsa(&mut SeqRng(1), 1000).err(),
         Some(RsaError::Failed)
     );
+}
+
+#[test]
+fn invalid_half_widths_are_refused_before_entropy_is_requested() {
+    for nbits in [0, MAX_RSA_BYTES * 8 + 512, 1000] {
+        let mut rng = SeqRng(9);
+        assert!(!RsaKeygen::new(nbits).usable());
+        assert_eq!(generate_rsa(&mut rng, nbits).err(), Some(RsaError::Failed));
+        assert_eq!(rng.0, 9);
+    }
+}
+
+#[test]
+fn abandoning_a_one_prime_search_does_not_complete_the_next_search() {
+    let first = BigUint::from_bytes_be(&hex(P_HEX));
+    let second = BigUint::from_bytes_be(&hex(Q_HEX));
+    {
+        let mut interrupted = RsaKeygen::new(2048);
+        assert!(matches!(interrupted.offer(first.clone()), RsaStep::More));
+        assert_eq!(interrupted.p.as_ref(), Some(&first));
+    }
+    let mut restarted = RsaKeygen::new(2048);
+    assert!(matches!(restarted.offer(second), RsaStep::More));
+    let RsaStep::Done(key) = restarted.offer(first) else {
+        panic!("two new offers must complete the restarted search")
+    };
+    assert_eq!(key.n_be(), hex(N_HEX));
+}
+
+#[test]
+fn a_failed_modexp_self_test_latch_disables_an_otherwise_supported_keygen() {
+    let mut keygen = RsaKeygen::new(2048);
+    assert!(keygen.usable());
+    keygen.asm_ok = false;
+    assert!(!keygen.usable());
+    assert_eq!(keygen.half_bytes(), 128);
 }

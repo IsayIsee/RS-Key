@@ -9,6 +9,7 @@
 //! search while the transports keep the host alive.
 #![no_std]
 #![no_main]
+#![expect(unsafe_code, reason = "board glue; docs/unsafe.md lists every site")]
 
 use core::cell::RefCell;
 
@@ -39,7 +40,7 @@ use embassy_usb::class::hid::{
 use embassy_usb::{Builder, Config as UsbConfig, UsbDevice};
 use static_cell::StaticCell;
 
-use rsk_crypto::{Device, FusedKey, read_fused};
+use rsk_crypto::{Device, FusedKey};
 use rsk_fs::Fs;
 use rsk_usb::ccid::{ATR_RSKEY, ATR_YUBIKEY, Ccid};
 use rsk_usb::ctaphid::{CtapHid, FIDO_REPORT_DESCRIPTOR};
@@ -65,6 +66,7 @@ mod otp_keys;
 mod pin_lock;
 mod presence;
 mod rescue_platform;
+mod sweep;
 mod usb_attach;
 mod vendor;
 mod worker;
@@ -100,10 +102,49 @@ use worker::{ClientCcid, ClientCtap, Worker};
 
 use panic_halt as _;
 
+use core::alloc::{GlobalAlloc, Layout};
 use embedded_alloc::LlffHeap as Heap;
 
+/// The heap `rsk-rsa`'s big integers and the ML-DSA keys live on, zeroing each
+/// block as it is freed: `num-bigint-dig` frees its limbs unwiped. `realloc` stays
+/// the default alloc-copy-free, so a grown `Vec`'s old block is wiped too.
+struct ZeroingHeap(Heap);
+
+// SAFETY: both methods forward to `Heap` under the caller's own contract, and
+// `dealloc` writes only into the block the caller is handing back.
+unsafe impl GlobalAlloc for ZeroingHeap {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: the caller's `alloc` contract, passed through unchanged.
+        unsafe { self.0.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // Words over the aligned body, bytes at the ends: an RSA keygen frees tens
+        // of megabytes, and a byte loop is four times the stores.
+        let len = layout.size();
+        let head = ptr.align_offset(size_of::<u32>()).min(len);
+        let words = (len - head) / size_of::<u32>();
+        // SAFETY: `ptr` is a live block of `len` bytes this allocator handed out
+        // (the caller's contract), so every store lands inside it, and `body` is
+        // 4-aligned by `head`. Volatile, so no dead-store elimination drops them.
+        unsafe {
+            for i in 0..head {
+                ptr.add(i).write_volatile(0);
+            }
+            let body = ptr.add(head).cast::<u32>();
+            for i in 0..words {
+                body.add(i).write_volatile(0);
+            }
+            for i in head + words * size_of::<u32>()..len {
+                ptr.add(i).write_volatile(0);
+            }
+            self.0.dealloc(ptr, layout);
+        }
+    }
+}
+
 #[global_allocator]
-static HEAP: Heap = Heap::empty();
+static HEAP: ZeroingHeap = ZeroingHeap(Heap::empty());
 
 const HEAP_SIZE: usize = 128 * 1024;
 
@@ -334,6 +375,10 @@ const _: () = {
 
     #[cfg(feature = "display")]
     if BUILD_WAKE_ENABLED {
+        assert!(
+            !contains(HW_PINS, BUILD_WAKE_PIN),
+            "WAKE_PIN overlaps hard-wired PIO/I2C1 pin 6/7/10/11"
+        );
         let mut i = 0;
         while i < DISPLAY_CTLS.len() {
             assert!(
@@ -439,6 +484,8 @@ static EXECUTOR_HIGH: InterruptExecutor = InterruptExecutor::new();
 
 #[interrupt]
 unsafe fn SWI_IRQ_1() {
+    // SAFETY: SWI_IRQ_1 is the interrupt `EXECUTOR_HIGH.start` was given, and this
+    // handler is its only caller.
     unsafe { EXECUTOR_HIGH.on_interrupt() }
 }
 
@@ -496,8 +543,14 @@ static PHY_MANUFACTURER: StaticCell<[u8; 64]> = StaticCell::new();
 static UI: StaticCell<RefCell<display::Ui>> = StaticCell::new();
 #[cfg(feature = "display-keys")]
 static KEY_UI: StaticCell<display_keys::SharedPanel> = StaticCell::new();
+/// The device identity the display's own screens unbox the resident-credential seed
+/// with, behind the `'static` reference their [`display::Parked`] cells carry.
+#[cfg(feature = "display")]
+static DISPLAY_KEYS: StaticCell<display::DeviceKeys> = StaticCell::new();
 
 struct SendUsb(UsbDevice<'static, Drv>);
+// SAFETY: moved once into `usb_task` and never touched elsewhere; the handlers it
+// carries reach only critical-section and atomic statics (docs/unsafe.md §3).
 unsafe impl Send for SendUsb {}
 
 /// Hold core0's stack to the floor the linker gave it.
@@ -524,23 +577,29 @@ async fn usb_task(mut device: SendUsb) {
     device.0.run().await;
 }
 
+// The tasks take their state by reference: an async fn keeps a by-value argument
+// twice in its future, the argument and the local it is moved into.
+static CTAP_STATE: StaticCell<CtapHid<'static, Drv, ClientCtap>> = StaticCell::new();
+static CCID_STATE: StaticCell<Ccid<'static, Drv, ClientCcid>> = StaticCell::new();
+static WORKER_STATE: StaticCell<Worker<'static>> = StaticCell::new();
+
 #[embassy_executor::task]
-async fn ctap_task(mut ctap: CtapHid<'static, Drv, ClientCtap>) {
+async fn ctap_task(ctap: &'static mut CtapHid<'static, Drv, ClientCtap>) {
     ctap.run().await;
 }
 
 #[embassy_executor::task]
-async fn ccid_task(mut ccid: Ccid<'static, Drv, ClientCcid>) {
+async fn ccid_task(ccid: &'static mut Ccid<'static, Drv, ClientCcid>) {
     ccid.run().await;
 }
 
 // The worker is spawned, not awaited at the tail of `main`, so `main` returns and
-// its ~95 KiB one-time init stack frame is reclaimed off the shared MSP before any
+// its ~100 KiB one-time init stack frame is reclaimed off the shared MSP before any
 // crypto runs. Awaiting it inline kept that frame live under every dispatch, which
 // left ML-DSA-65 keygen flush against the stack ceiling (it halted on the next
 // interrupt). Must stay on the thread executor, never `hp`, so keepalives keep flowing.
 #[embassy_executor::task]
-async fn worker_task(mut worker: Worker<'static>) {
+async fn worker_task(worker: &'static mut Worker<'static>) {
     worker.run().await;
 }
 
@@ -581,17 +640,30 @@ async fn main(spawner: Spawner) {
     {
         use core::mem::MaybeUninit;
         static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
-        unsafe { HEAP.init(core::ptr::addr_of_mut!(HEAP_MEM) as usize, HEAP_SIZE) }
+        // SAFETY: runs once, before any allocation, over memory declared in this
+        // block and so nameable by nothing else.
+        unsafe {
+            HEAP.0
+                .init(core::ptr::addr_of_mut!(HEAP_MEM) as usize, HEAP_SIZE)
+        }
     }
 
     let serial_id = embassy_rp::otp::get_chipid().unwrap_or(0).to_le_bytes();
     let serial_hash = rsk_crypto::sha256(&serial_id);
 
+    // The fuse latch: a page-58 lock burnt over a finished migration closes the
+    // arms below the OTP root. A row that will not read counts as open: closed, the
+    // passes would call an unlatched device's pre-burn records gone and free the burn.
+    let latched = otp_keys::read_page58_lock().is_some_and(rsk_rescue::otp_lock::arms_closed);
     // The applets carry these readers, not the keys: a fused key exists in RAM only
     // for the operation that asked for it, so a bug that discloses adjacent memory
     // has nothing to disclose — the OTP window is not RAM.
-    let mkek_source: Option<FusedKey> = Some(otp_keys::read_mkek);
-    let devk_source: Option<FusedKey> = Some(otp_keys::read_devk);
+    let mkek_source: Option<FusedKey> = Some(if latched {
+        FusedKey::latched(otp_keys::read_mkek)
+    } else {
+        FusedKey::open(otp_keys::read_mkek)
+    });
+    let devk_source: Option<FusedKey> = Some(FusedKey::open(otp_keys::read_devk));
     otp_keys::sw_lock_key_page();
 
     let flash = Flash::<_, Blocking, FLASH_SIZE>::new_blocking(p.FLASH);
@@ -664,20 +736,58 @@ async fn main(spawner: Spawner) {
     #[cfg(feature = "display-keys")]
     let lap_needed;
     {
-        let mkek = read_fused(mkek_source);
+        use rsk_rescue::otp_lock::{
+            KeyRows, PRE_OTP_DEVICE_KEY, PRE_OTP_FIDO, PRE_OTP_KEY_UNREADABLE, PRE_OTP_OATH,
+            PRE_OTP_OTP, PRE_OTP_PIV,
+        };
+        let mut key = rsk_secret::Secret::<[u8; 32]>::zeroed();
+        let rows = match otp_keys::read_boot_mkek(key.expose_mut()) {
+            // The latch burns only over fused keys, so blank rows past it are a fault
+            // too: taken for a blank page, the passes would provision under the serial.
+            KeyRows::Blank if latched => KeyRows::Unreadable,
+            rows => rows,
+        };
+        let mkek = (rows == KeyRows::Fused).then_some(&key);
         let dev = Device {
             serial_hash: &serial_hash,
             serial_id: &serial_id,
-            otp_key: mkek.as_deref(),
+            otp_key: mkek.map(|k| k.expose()),
+            latched,
         };
-        let _ = rsk_fido::seed::migrate_keydev_boot(&dev, &mut fs);
-        rsk_rescue::keydev::migrate_kbase(&dev, &mut fs, &mut rng);
-        rsk_piv::migrate_kbase(&dev, &mut fs, &mut rng);
-        rsk_oath::migrate_seal(&dev, &mut fs, &mut rng);
-        rsk_otp::migrate_seal(&dev, &mut fs, &mut rng);
-        rsk_fido::credential::migrate_rp_seal(&dev, &mut fs);
-        let _ = rsk_fido::seed::ensure_seed(&dev, &mut fs, &mut rng);
-        let _ = rsk_openpgp::scan_files(&dev, &mut fs, &mut rng);
+        // A fused key the boot cannot read is no blank page: each step in the else
+        // would re-seal, provision or migrate under the chip-serial arm what only the
+        // fused root should hold. None runs, and READ 1E/07 says why.
+        if rows == KeyRows::Unreadable {
+            rescue_platform::record_pre_otp_left(Some(PRE_OTP_KEY_UNREADABLE));
+        } else {
+            // What each pass left under the pre-burn key is what the page-58 lock waits on.
+            let passes = [
+                (
+                    rsk_fido::seed::migrate_keydev_boot(&dev, &mut fs).unwrap_or(true),
+                    PRE_OTP_FIDO,
+                ),
+                (
+                    rsk_rescue::keydev::migrate_kbase(&dev, &mut fs, &mut rng),
+                    PRE_OTP_DEVICE_KEY,
+                ),
+                (rsk_piv::migrate_kbase(&dev, &mut fs, &mut rng), PRE_OTP_PIV),
+                (
+                    rsk_oath::migrate_seal(&dev, &mut fs, &mut rng),
+                    PRE_OTP_OATH,
+                ),
+                (rsk_otp::migrate_seal(&dev, &mut fs, &mut rng), PRE_OTP_OTP),
+            ];
+            let left = passes
+                .iter()
+                .filter(|(l, _)| *l)
+                .fold(0, |m, (_, bit)| m | bit);
+            rescue_platform::record_pre_otp_left(dev.otp_key.is_some().then_some(left));
+            rsk_fido::credential::migrate_rp_seal(&dev, &mut fs);
+            let _ = rsk_fido::seed::ensure_seed(&dev, &mut fs, &mut rng);
+            let _ = rsk_openpgp::scan_files(&dev, &mut fs, &mut rng);
+        }
+        let _ = rsk_devconf::scrub_legacy_lock(&mut fs);
+        let _ = rsk_fido::credmgmt::settle_rp_records(&mut fs);
         // One-shot at-rest hardening: the seal migrations above leave the superseded
         // chip-serial-sealed copies recoverable from a flash dump until a GC lap
         // reclaims the page. The marker, the write order and the crash-safety are
@@ -726,20 +836,6 @@ async fn main(spawner: Spawner) {
         }
     }
     vendor::load_led_config(&mut fs);
-    // Only a real power cycle advances the Yubico-OTP use counter. A host-requested
-    // warm reset (the ungated vendor `INS_REBOOT` P1=0) re-runs `main`, so bumping
-    // unconditionally would let an unprivileged host walk the 15-bit counter to its
-    // ceiling — where it saturates while the RAM session counter restarts at 0, so the
-    // key re-emits (useCtr, sessionCtr) pairs a validation server rejects as replays.
-    if !pin_lock::was_warm_boot() {
-        let mkek = read_fused(mkek_source);
-        let dev = Device {
-            serial_hash: &serial_hash,
-            serial_id: &serial_id,
-            otp_key: mkek.as_deref(),
-        };
-        rsk_otp::power_up_bump(&dev, &mut fs, &mut rng);
-    }
 
     let fs_ref = FS.init(RefCell::new(fs));
     let rng_ref = RNG_CELL.init(RefCell::new(rng));
@@ -769,23 +865,9 @@ async fn main(spawner: Spawner) {
     config.max_power = 100;
     config.max_packet_size_0 = 64;
     // bcdDevice build counter; also surfaced on the trusted-display Firmware screen.
-    // 0x098A: the panel init moved to the full register set (porch/gate/gamma)
-    // with a pre-display-on GRAM blank, and the touchless `display-keys` build
-    // landed (screen+button presence, status/confirm pages, 1-key gestures).
-    // 0x098D: the touchless build's no-host idle menu — after 30 s without a
-    // host configuring the device, the STARTING wash becomes a read-only,
-    // single-button browse of the device's own metadata.
-    // 0x098E: the PIV touch consent names the slot it asks for (`9A Auth`,
-    // `Retired #1`), and the consent text line became one shared rule across
-    // the two screen builds (refactor, no pixel change there) — bcdDevice
-    // counts builds, so the refactor owes the bump too.
-    // 0x098F: PIV serves a synthesized Card Capability Container (`5FC107`,
-    // mandatory per SP 800-73-4 pt1 §3.1.1) where it previously answered 6A82 —
-    // the object a Windows key-container open reads.
-    // 0x09D7: the fork's line rejoins upstream's here and follows it from now on
-    // (decision 2026-09-20): the value is upstream develop's, taken on merge and
-    // never incremented here — a build's own identity is its `-isk.N` tag.
-    let device_release: u16 = 0x09D7;
+    // Follows upstream develop's value (decision 2026-09-20): taken on merge and
+    // never incremented here — a fork build's identity is its `-isk.N` tag.
+    let device_release: u16 = 0x0A92;
     config.device_release = device_release;
 
     let mut builder = Builder::new(
@@ -885,10 +967,10 @@ async fn main(spawner: Spawner) {
     let hp = EXECUTOR_HIGH.start(interrupt::SWI_IRQ_1);
     hp.spawn(usb_task(SendUsb(usb)).unwrap());
     if let Some(ctap) = ctap {
-        hp.spawn(ctap_task(ctap).unwrap());
+        hp.spawn(ctap_task(CTAP_STATE.init(ctap)).unwrap());
     }
     if let Some(ccid) = ccid {
-        hp.spawn(ccid_task(ccid).unwrap());
+        hp.spawn(ccid_task(CCID_STATE.init(ccid)).unwrap());
     }
     if let Some(kbd) = kbd {
         hp.spawn(otp_kbd::kbd_task(kbd).unwrap());
@@ -1126,22 +1208,25 @@ async fn main(spawner: Spawner) {
         let i2c = I2c::new_blocking(p.I2C1, p.PIN_7, p.PIN_6, i2c_cfg);
 
         let cs = Output::new(
+            // SAFETY: a board-config panel pin that `main` hands to no other driver.
             unsafe { embassy_rp::gpio::AnyPin::steal(BUILD_DISPLAY_CS) },
             Level::High,
         );
         let dc = Output::new(
+            // SAFETY: a board-config panel pin that `main` hands to no other driver.
             unsafe { embassy_rp::gpio::AnyPin::steal(BUILD_DISPLAY_DC) },
             Level::Low,
         );
         let rst = Output::new(
+            // SAFETY: a board-config panel pin that `main` hands to no other driver.
             unsafe { embassy_rp::gpio::AnyPin::steal(BUILD_DISPLAY_RST) },
             Level::High,
         );
         // Display-sleep wake button (default the BAT_PWR / KEY_BAT button on GPIO25).
         // Active-low with an internal pull-up by default (`WAKE_ACTIVE_HIGH` flips it);
         // `WAKE_PIN=none` leaves it unwired so only a touch wakes. Stealing the pin is
-        // sound: it is never handed to another driver, and a compile-time assert rejects
-        // a `WAKE_PIN` in the LCD/touch range.
+        // sound: it is never handed to another driver — the const asserts above keep it
+        // off the LCD range, the hard-wired PIO/I2C1 pins and the panel control lines.
         let wake_btn = if BUILD_WAKE_ENABLED {
             use embassy_rp::gpio::{Input, Pull};
             let pull = if BUILD_WAKE_ACTIVE_HIGH {
@@ -1151,6 +1236,7 @@ async fn main(spawner: Spawner) {
             };
             Some((
                 Input::new(
+                    // SAFETY: sound for the reason given above — no other driver gets it.
                     unsafe { embassy_rp::gpio::AnyPin::steal(BUILD_WAKE_PIN) },
                     pull,
                 ),
@@ -1183,6 +1269,7 @@ async fn main(spawner: Spawner) {
             }
         };
         let tp_rst = Output::new(
+            // SAFETY: a board-config panel pin that `main` hands to no other driver.
             unsafe { embassy_rp::gpio::AnyPin::steal(BUILD_DISPLAY_TP_RST) },
             Level::High,
         );
@@ -1202,19 +1289,21 @@ async fn main(spawner: Spawner) {
         // The device key material the read-only Passkeys tab needs to unbox the
         // resident-credential seed on demand (the same identity the worker's `Ctx`
         // carries). Copied — these are all `Copy`, so the worker below still gets them.
-        let keys = display::DeviceKeys {
+        let keys: &'static display::DeviceKeys = DISPLAY_KEYS.init(display::DeviceKeys {
             serial_id,
             serial_hash,
             mkek_source,
-        };
+        });
+        // The worker's `fs_ref` and `rng_ref`, for the panel's own screens only: the
+        // `TouchPresence` backend below gets the `Ui` alone.
+        let cells = display::Parked::new(fs_ref, keys, rng_ref);
         // Reborrow the `&'static mut` from the cell as a shared `&'static` so both
         // `status_task` and the `TouchPresence` backend can hold it (a shared
-        // reference is `Copy`; the `RefCell` provides the interior mutability). The
-        // panel also shares the worker's `fs_ref` to enumerate resident credentials.
+        // reference is `Copy`; the `RefCell` provides the interior mutability).
         let ui: &'static RefCell<display::Ui> = UI.init(RefCell::new(display::build(
-            panel, touch, info, fs_ref, keys, rng_ref, wake_btn,
+            panel, touch, info, cells, rng_ref, wake_btn,
         )));
-        spawner.spawn(display::status_task(ui).unwrap());
+        spawner.spawn(display::status_task(ui, cells).unwrap());
         ui
     };
 
@@ -1242,15 +1331,13 @@ async fn main(spawner: Spawner) {
             Irqs,
             BUILD_DISPLAY_SPI_FREQ_HZ,
         );
-        // Safety: the display control pads (CS/DC/RST/BL) are proven disjoint from
-        // every other driver's pins by the compile-time asserts above, and the
-        // display-keys compile-error requires LED_KIND=none (so the LED block,
-        // which shares PIO0/DMA_CH0, is compiled out).
         // One helper for the panel's four control pads: the touch build above
         // steals the same three inline, and two byte-identical sites cannot be
-        // keyed apart (scripts/platform_gate.py). The asserts above prove each
-        // pad unowned, so the `unsafe` is sound for the same reason as there.
+        // keyed apart (scripts/platform_gate.py).
         fn keys_output(pin: u8, level: Level) -> Output<'static> {
+            // SAFETY: the compile-time asserts above prove each control pad
+            // unowned, and a display-keys build requires LED_KIND=none, so the LED
+            // block (which shares PIO0/DMA_CH0) is compiled out.
             Output::new(unsafe { embassy_rp::gpio::AnyPin::steal(pin) }, level)
         }
         let cs = keys_output(BUILD_DISPLAY_CS, Level::High);
@@ -1358,19 +1445,22 @@ async fn main(spawner: Spawner) {
     let (kvm, kvc) = (kvmain_range(), kvcnt_range());
     let kv_total = (kvm.end - kvm.start) + (kvc.end - kvc.start);
     let fido_state_ref = FIDO_STATE.init(RefCell::new(rsk_fido::FidoState::new()));
-    let worker = Worker::new(
-        fs_ref,
-        rng_ref,
-        presence_ref,
-        platform_ref,
-        hooks_ref,
-        fido_state_ref,
-        serial_id,
-        serial_hash,
-        mkek_source,
-        devk_source,
-        kv_total,
-        openpgp_mfr,
-    );
+    // Built in its cell: `init` of a value built here kept a second copy in this frame.
+    let worker = WORKER_STATE.init_with(|| {
+        Worker::new(
+            fs_ref,
+            rng_ref,
+            presence_ref,
+            platform_ref,
+            hooks_ref,
+            fido_state_ref,
+            serial_id,
+            serial_hash,
+            mkek_source,
+            devk_source,
+            kv_total,
+            openpgp_mfr,
+        )
+    });
     spawner.spawn(worker_task(worker).unwrap());
 }

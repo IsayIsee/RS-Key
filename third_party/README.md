@@ -1,11 +1,11 @@
 # third_party — code from elsewhere
 
-Code that is not RS-Key's, kept in the tree so a checkout has what it needs. Three
+Code that is not RS-Key's, kept in the tree so a checkout has what it needs. Five
 unrelated kinds live here:
 
-- **Two external conformance suites** — `pico-fido-tests/`,
-  `openpgp-card-tests/` — vendored so the firmware can be validated without
-  checking out the upstream repos. They are **not** part of RS-Key's own test
+- **Four external conformance suites** — `pico-fido-tests/`,
+  `openpgp-card-tests/`, `ykman-tests/`, `python-fido2-tests/` — vendored so the firmware can be
+  validated without checking out the upstream repos. They are **not** part of RS-Key's own test
   suite (`tests/`, `cargo test`) — they are the upstream ecosystems' own tests,
   kept runnable against this implementation. Everything below is about them.
 - **A vendored crate carrying a local fork** — `sequential-storage/` plus
@@ -21,8 +21,23 @@ unrelated kinds live here:
   the display flavor links it — under **OFL-1.1**, which `ibm-plex/LICENSE.txt`
   carries. OFL governs the font data, AGPL-3.0-only the rest of the image; the
   two coexist because neither is a derivative of the other.
+- **Test vectors** — `acvp/`, NIST's ACVP-Server ML-DSA keyGen/sigGen/sigVer
+  cases, filtered to what `crates/rsk-mldsa` can express and written one line of
+  hex per case by `scripts/acvp_vectors.py`; and `wycheproof/`, C2SP
+  Wycheproof's RSA PKCS#1 v1.5 decryption and signing cases and its ECDH and
+  X25519 cases, plus AES-256-GCM, HMAC and HKDF cases, written the same way by
+  `scripts/wycheproof_vectors.py`. Read
+  only by host tests (`include_str!` under `#[cfg(test)]` or `rsk-rsa`'s
+  dev-only `test-util`), never by the firmware. ACVP-Server keeps its terms in a
+  README notice rather than a licence file, so `acvp/LICENSE` carries that
+  notice intact, with the origin and what was changed; `wycheproof/LICENSE` is
+  upstream's Apache-2.0, and each file's header says what was changed.
+- **Parser seeds** — `corpus/`, the Google CTAP2, OpenSK and CanoKey inputs
+  replayed by the existing fuzz targets. Its README records the revisions,
+  byte-preserving archive changes and harness adapters; Apache-2.0 licenses
+  are retained beside the JSON and inside the archives.
 
-Both suite directories carry their own licenses, distinct from the repository's own
+The suite directories carry their own licenses, distinct from the repository's own
 AGPL-3.0-only. Note the split between each file's **per-file header** (the
 operative license for that file) and the **bundled `LICENSE`** (the upstream
 repo's top-level license file):
@@ -31,6 +46,8 @@ repo's top-level license file):
 |---|---|---|---|
 | `pico-fido-tests/` | [polhenarejos/pico-fido](https://github.com/polhenarejos/pico-fido) `tests/` | **GPL-3.0-only** (headers read "GNU General Public License … version 3") | AGPL-3.0 (pico-fido's repo LICENSE) |
 | `openpgp-card-tests/` | [polhenarejos/pico-openpgp](https://github.com/polhenarejos/pico-openpgp) `tests/`, derived from [Gnuk](https://www.fsij.org/gnuk/) (NIIBE Yutaka / g10 Code GmbH) | **GPL-3.0-or-later** (Gnuk headers: "either version 3 … or any later version") | AGPL-3.0 |
+| `ykman-tests/` | [Yubico/yubikey-manager](https://github.com/Yubico/yubikey-manager) `tests/device/` with the `tests/` conftest, `util.py` and `files/` it imports | none, but `device/cli/test_otp.py` carries Yubico's BSD-2-Clause header | **BSD-2-Clause**, upstream's `COPYING` (Yubico AB) |
+| `python-fido2-tests/` | [Yubico/python-fido2](https://github.com/Yubico/python-fido2) selected `tests/device/` with its parent fixtures | none | **BSD-2-Clause**, upstream's `COPYING` |
 
 Vendored from upstream at:
 
@@ -38,10 +55,22 @@ Vendored from upstream at:
 |---|---|---|
 | `pico-fido-tests/` | `b1bacec29db76f6944f9db9ffb595934a89c5a41` | 2026-08-02 |
 | `openpgp-card-tests/` | `1472b26574b2e74d371fe052c7e5f5e30cd2a997` | 2026-07-27 |
+| `ykman-tests/` | `bc866e83129193f0c57f4fd2e14da8fbf05f3916` (tag `5.9.1`) | 2026-04-15 |
+| `python-fido2-tests/` | `d1fd71182a7b677a34e15b8b221f272c9e72d77f` | 2026-10-03 |
+| `acvp/` | `975de31eb83d87039ec88934fdc47d8c312b892d` (ACVP-Server `v1.1.0.43`) | 2026-08-12 |
+| `wycheproof/` | `3fa63dd0344abb611f1fb1d77e119938603ea230` | 2026-09-02 |
 
 Only the pytest part is taken — the docker scripts, build wrappers and C sources
 that sit beside them upstream are not vendored. Record the commit when you
-refresh, or the next refresh has nothing to diff against.
+refresh, or the next refresh has nothing to diff against. `ykman-tests/` must
+match the devshell's `yubikey-manager` release: its tests reach into ykman's
+private internals, so a newer ykman under an older copy breaks them. Its PEM
+fixtures are re-included past the tree-wide `*.pem` ignore in `.gitignore`.
+
+`python-fido2-tests/` contains the device modules `client`, `credentials`,
+`credman`, `credblob`, `info`, `largeblobs` and `prf`, with unmodified assertions
+and fixtures. Its USB/IP guest run uses the flake's python-fido2; selection and
+reconnect are supplied by `tests/third_party.py`, outside the vendored files.
 
 These suites are **run-only** (pytest/pyscard) — they are never compiled or
 linked into the firmware, and every upstream header is preserved verbatim, so
@@ -58,6 +87,7 @@ only record that it is broken.
 | File | Change |
 |---|---|
 | `pico-fido-tests/conftest.py` | filters the relying-party's allowed algorithms to those the installed python-fido2 can actually verify (the firmware can lead with ML-DSA-44, which older fido2 libraries parse but cannot check) |
+| `openpgp-card-tests/card_test_empty_card.py` | `test_key_attributes_1..3` save the default attribute before their GET DATA and the attribute they read before asserting on it, not after. With the assertion or the read a listed divergence (a card answering `6B00` to C1 alone, as a YubiKey 5.8.0 does) the save never ran, and `test_091_reset_attr`'s three tests then PUT `None` and raised `TypeError` before a byte reached the card |
 | `pico-fido-tests/pico-fido/test_021_authenticate.py` | `test_option_up` / `test_option_uv` called `doGA(options=…)`; that helper is the WebAuthn-level one and takes no such argument, so both raised `TypeError`. They call `GA()` — the raw CTAP2 helper their neighbours use — with the credential named. Unreachable upstream, whose own getInfo omits `"up"` |
 
 ## Running them
@@ -68,6 +98,7 @@ rather than against the device they were written for:
 ```sh
 python tests/third_party.py fido       # the pico-fido suite
 python tests/third_party.py openpgp    # the OpenPGP card suite
+python tests/third_party.py python-fido2 # Yubico's FIDO device tests, USB/IP guest
 ```
 
 It touches nothing in these directories at run time — the run is steered from

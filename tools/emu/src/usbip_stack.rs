@@ -35,8 +35,9 @@ use rsk_usb::ctaphid::{CtapHid, FIDO_REPORT_DESCRIPTOR, HID_RPT_SIZE, MsgHandler
 
 use crate::device::{Job, Jobs, Unplug};
 use crate::signals::Signals;
-use crate::usbip::{Ret, Urb, UrbSink, UsbDeviceInfo};
+use crate::usbip::{Ret, Urb, UsbDeviceInfo};
 use crate::usbip_driver::UsbIpDriver;
+use crate::usbip_server::{Backend, UrbSink};
 
 /// The USB identity a default firmware build carries (`VIDPID=RSKey`), because
 /// the point of this path is that a host treats the emulator the way it treats a
@@ -44,7 +45,7 @@ use crate::usbip_driver::UsbIpDriver;
 /// product string says which it is, and the serial (`RSKEMU\0\1`) already makes
 /// every value derived from it recognisably the emulator's.
 const VID: u16 = 0x1209;
-const PID: u16 = 0x0001;
+const PID: u16 = 0xF1D2;
 const MANUFACTURER: &str = "RS-Key";
 /// Deliberately not a board serial: everything derived from it is the
 /// emulator's, and the Yubico identity keeps it so a masquerade still says which
@@ -165,8 +166,15 @@ impl MsgHandler for HidJobs {
         }
     }
 
-    async fn handle_vendor(&mut self, cmd: u8, data: &[u8], out: &mut [u8]) -> Option<usize> {
+    async fn handle_vendor(
+        &mut self,
+        cid: u32,
+        cmd: u8,
+        data: &[u8],
+        out: &mut [u8],
+    ) -> Option<usize> {
         let job = Job::Vendor {
+            cid,
             cmd,
             data: data.to_vec(),
         };
@@ -326,6 +334,17 @@ fn usb_config(yubico: bool) -> UsbConfig<'static> {
 struct PoweredPort {
     inner: crate::usbip_driver::Port,
     jobs: Jobs,
+    yubico: bool,
+}
+
+impl Backend for PoweredPort {
+    fn device(&self) -> UsbDeviceInfo {
+        device_info(self.yubico)
+    }
+
+    fn interfaces(&self) -> Vec<[u8; 3]> {
+        INTERFACES.to_vec()
+    }
 }
 
 impl UrbSink for PoweredPort {
@@ -397,9 +416,10 @@ pub fn serve(addr: String, jobs: Jobs, signals: Arc<Signals>, yubico: bool) {
     let mut port = PoweredPort {
         inner: port,
         jobs: jobs.clone(),
+        yubico,
     };
     std::thread::spawn(move || {
-        if let Err(e) = crate::usbip::listen(&addr, &device_info(yubico), &INTERFACES, &mut port) {
+        if let Err(e) = crate::usbip_server::listen(&addr, &mut port) {
             eprintln!("emu: cannot serve USB/IP on {addr}: {e}");
         }
     });

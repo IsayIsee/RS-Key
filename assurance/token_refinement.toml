@@ -5,7 +5,7 @@
 # domains, flash keys, the Fs write API, the permission set and the module graph,
 # then refuses any unowned writer/outcome producer.
 #
-# `disposition` is roadmap stage 4 п.4, and every entry answers it: `step`
+# `disposition` is roadmap stage 4 item 4, and every entry answers it: `step`
 # implements the named abstract Step (the default, and the only one that may
 # carry an `op`), `stutter` moves security-visible state the abstraction does not
 # observe, `out-of-scope` is a real gate outside the abstraction's vocabulary.
@@ -89,6 +89,12 @@ function = "arm_token"
 op = "IssueToken"
 test_only = true
 
+[[volatile_writer]]
+file = "crates/rsk-fido/src/tests.rs"
+function = "dispatch_without_response_space_has_no_effect"
+op = "IssueToken"
+test_only = true
+
 [[persistent_writer]]
 file = "crates/rsk-fido/src/clientpin.rs"
 function = "spend_and_verify_pin_hash"
@@ -129,6 +135,9 @@ function = "spend_and_verify_pin_at"
 op = "Noop"
 generic = true
 
+# `pcmr` issuance is this row. Its other caller, `ensure_seed`, mints the record with
+# no PIN door at a boot, a finished reset and a vendor BACKUP_LOAD: tier A's
+# `ProvisionGrant`, which no row here owns because the function is not the writer.
 [[persistent_writer]]
 file = "crates/rsk-fido/src/seed.rs"
 function = "ensure_ppuat"
@@ -139,13 +148,28 @@ file = "crates/rsk-fido/src/seed.rs"
 function = "clear_ppuat"
 op = "RevokeGrant"
 
-# Where `ensure_ppuat`'s write physically happens: it seals whatever KeyFid it is
-# handed, and EF_PAUTHTOKEN is the only token record that reaches it.
+# Where the grant's writes physically happen: it seals whatever KeyFid it is handed,
+# and EF_PAUTHTOKEN is the only token record that reaches it — from `ensure_ppuat`'s
+# mint, which this row is for, and from the boot re-seal below, which mints nothing.
 [[persistent_writer]]
 file = "crates/rsk-fido/src/seed.rs"
 function = "put_sealed32"
 op = "MintGrant"
 generic = true
+
+# The boot pass that moves the record between kbase arms, and the helper it hands
+# the fid to. `Noop`, not `MintGrant`: the record stands before and after and the
+# token value is unchanged, so nothing tier A reads moves.
+[[persistent_writer]]
+file = "crates/rsk-fido/src/seed.rs"
+function = "migrate_slot"
+op = "Noop"
+generic = true
+
+[[persistent_writer]]
+file = "crates/rsk-fido/src/seed.rs"
+function = "migrate_keydev_boot"
+op = "Noop"
 
 [[persistent_writer]]
 file = "crates/rsk-fido/src/conformance/mod.rs"
@@ -271,10 +295,10 @@ disposition = "out-of-scope"
 why = "restores the lock from the board's boot state on every power-up; B's clause is (lock.policyMism >= MismatchLimit) => lock.soft and A has no image of it"
 
 [[softlock_owner]]
-file = "crates/rsk-device/src/ctap.rs"
-function = "handle_cbor"
+file = "crates/rsk-device/src/lib.rs"
+function = "persist_pin_lock"
 disposition = "out-of-scope"
-why = "stores the lock through Hooks after every dispatch, which is what makes it survive an ungated SCB::sys_reset"
+why = "stores the lock through Hooks after every dispatch on both transports — AppletHandler::handle_cbor and CcidApplets::handle_apdu call it — which is what makes it survive an ungated SCB::sys_reset"
 
 [[softlock_owner]]
 file = "crates/rsk-device/src/ctap.rs"
@@ -337,3 +361,10 @@ file = "crates/rsk-fido/src/reset.rs"
 function = "reset"
 disposition = "out-of-scope"
 why = "the window's only production caller, and it consults it only where the presence backend shows no prompt"
+
+[[softlock_owner]]
+file = "crates/rsk-device/src/tests.rs"
+function = "absent_board_capabilities_preserve_a_cold_unlocked_boot"
+disposition = "out-of-scope"
+test_only = true
+why = "checks the default Hooks implementation's cold boot after a lock write; compiled only under cfg(test), with no production token event"

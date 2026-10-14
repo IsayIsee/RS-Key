@@ -165,46 +165,29 @@ bulk stream, ISO-7816 APDUs, CTAP2 CBOR. Defenses:
   does not read that way — the first on a freshly configured slot, whose stored
   zero is written up to one *before* the ticket is built, so what it types is the
   moved value and not the zero it held. The two paths that ADVANCE the persisted
-  half are that press and the boot-time bump, and the step that can reach the
-  15-bit ceiling comes from one module for both, so the ceiling cannot be enforced
-  two different ways. The first-press `0 → 1` write sits beside it in `ticket.rs`
-  and cannot reach the ceiling. `UPDATE` and the boot seal migration carry a
-  slot's record forward and leave the counter alone. `SWAP` leaves the stored
-  counter alone too — but it moves the record to the *other* slot index, and the
-  RAM half travels with it, because the pair belongs to the public id inside the
-  record and not to the slot number that record happens to sit at. Because the
-  session counter lives in RAM and comes back at zero, a *cold* boot advances the
-  persisted counter of every plain Yubico-OTP slot it can read and re-seal and
-  that still has room to advance — never a HOTP, short or static slot, and never
-  one already at the ceiling — before USB is up and any press can be served, which
-  is what keeps one power cycle's pairs out of the next one's.
-  **Six residuals, and the rule above hides none of them.** A host-requested warm
-  reset is ungated and does not advance the counter — deliberately, since bumping
-  on every reboot a host can ask for would let it walk the 15-bit counter to the
-  ceiling — so the session counter restarts at zero over an unchanged use counter
-  and the current power cycle's pairs are typed again. At that ceiling neither
-  path advances anything and the key goes on typing, so the pair repeats every
-  256 presses. Of the two counter WRITES, the press's answer is read — a ticket
-  whose advance the store would not take is not typed at all, because typing it
-  re-emits: the next press reads the old counter back and pairs it with a session
-  this cycle has already used. The boot bump's is not, and cannot be: it is
-  retried, and a refusal that outlasts the retries is dropped, leaving the last
-  cycle's positions typeable again. **That one needs no fault at all** — `Fs::put`
-  answers `NoMemory` on a full store. **It is a choice and not a limit**, and the
-  page will not dress it as one: the device could deny the press instead of typing
-  a position it cannot move past, and two ways of doing that were built and
-  measured. One carries the boot pass's failure out to the applet; the other keeps
-  it in the applet entirely, by making the first press of each slot in a power
-  cycle perform the advance itself and refuse if the store will not take it. What
-  is shipped is the *other* arm of the same choice — keep typing — because a store
-  that cannot be written to would otherwise silence every slot on the key, and
-  which of those two costs more is a decision for the maintainer rather than a
-  fact about the code. A test pins the repeat, so whichever arm lands is visible. So is the boot *read* dropped, though only
-  where the medium keeps refusing: a sealed read that faults is retried, and a
-  slot the retries never reach is skipped by the bump entirely — which is the
-  faulted-read clause above wearing this applet's clothes. A press answers that
-  same refusal by typing nothing, so what the skip costs is a fault that clears
-  before the first press. And position is not monotone across
+  half are the wrapping press and a boot's first press, and the step that can
+  reach the 15-bit ceiling comes from one module for both, so the ceiling cannot
+  be enforced two different ways. The first-press `0 → 1` write sits beside it in
+  `ticket.rs` and cannot reach the ceiling. `UPDATE` and the boot seal migration
+  carry a slot's record forward and leave the counter alone. `SWAP` leaves the
+  stored counter alone too — but it moves the record to the *other* slot index,
+  and the RAM half travels with it, because the pair belongs to the public id
+  inside the record and not to the slot number that record happens to sit at.
+  Because the session counter lives in RAM and comes back at zero with every
+  boot, warm or cold, the first press of a plain Yubico-OTP slot after one
+  advances its persisted counter before it types, as a YubiKey advances it at its
+  first use after power-up — never a HOTP, short or static slot, and never one
+  already at the ceiling. That is what keeps one boot's pairs out of the next
+  one's, and since only a press moves it, no reboot a host can ask for walks the
+  counter toward the ceiling. Every advance's answer is read: a ticket whose
+  advance the store would not take is not typed at all, because typing it
+  re-emits — the next press reads the old counter back and pairs it with a
+  session already used — and a press whose read the medium refused types nothing
+  and leaves the advance owed. A store that keeps refusing therefore silences the
+  slot until it recovers: a denial of service, where typing on would repeat.
+  **Three residuals, and the rule above hides none of them.** At that ceiling
+  neither path advances anything and the key goes on typing, so the pair repeats
+  every 256 presses and every boot. And position is not monotone across
   re-provisioning: `CONFIGURE` writes a fresh record with a zeroed counter, gated
   by the slot access code whenever the existing slot reads back. And the move that
   carries the pair is not atomic: `SWAP` writes the two records one after the
@@ -220,8 +203,13 @@ bulk stream, ISO-7816 APDUs, CTAP2 CBOR. Defenses:
   full-ykman/YubiKey-compatible admin surface: a hostile USB host can silently
   rewrite the DeviceInfo / enabled-applications / USB identity — over CCID
   Management `WRITE CONFIG`, the FIDO vendor `CONFIG_WRITE`, and the CTAPHID
-  (`0x43`) and OTP-HID (`0x15`) transport writes — with **no** touch or PIN, and
-  can trigger a device-wide factory reset (that one keeps a presence gate). The
+  (`0x43`) and OTP-HID (`0x15`) transport writes — with **no** touch or PIN.
+  A configuration lock code (`ykman config set-lock-code`) closes the DeviceInfo
+  half, as on a YubiKey: once one is set, all four writes need it
+  ([protocol.md §6.2](protocol.md#62-configuration-lock)). It keeps no retry
+  counter, a YubiKey keeping none either, so a code a person could remember can be
+  guessed online — use `--generate`. It shuts RS-Key's own phy and LED records
+  too, which no code opens: they change only once the lock is cleared. The
   USB *identity* (serial, strings) is cosmetic — never proof a device is genuine,
   attestation is (§3). The **enabled-applications mask is enforced**, though: a
   disabled application's applet stops answering (PIV/OpenPGP/OATH/OTP over CCID,
@@ -229,8 +217,16 @@ bulk stream, ISO-7816 APDUs, CTAP2 CBOR. Defenses:
   can turn one off.
   That is a **reversible denial-of-service**, not a confidentiality or integrity
   break — the Management applet, the FIDO vendor command, and the OTP-HID
-  identify/config slots are never gated, so any single transport can re-enable it,
-  and no secret is exposed. **Reversible describes the mask, not the flash it is
+  identify/config slots are never gated by the mask, so any single transport can
+  re-enable it (with the code, once a lock is set), and no secret is exposed.
+  **A lock code the attacker set would end that**, so setting one where none is
+  set takes a touch of the key, on all four writers, where a YubiKey 5.8.0 asks
+  none: with a code nobody holds, nothing turns an application back on, and the
+  display build's factory reset or an `rsk-wipe` erase, both of which destroy
+  every credential, is the only way back. What is left is a touch given to the
+  wrong prompt, since the BOOTSEL button cannot show what it approves; setting a
+  code of your own at provisioning closes that too, as changing one needs the
+  current one. **Reversible describes the mask, not the flash it is
   written to.** The same ungated commands persist their records, and a host that
   replays one indefinitely spends erase cycles that nothing gives back: measured
   on the device's own store geometry, a `SET LED` replay at a nearly full ring
@@ -261,12 +257,12 @@ bulk stream, ISO-7816 APDUs, CTAP2 CBOR. Defenses:
   card. Treat FIDO as available to anything with card access, and use
   `ykman config usb --disable fido2` (or `--disable u2f`) if that is not wanted —
   the mask gates the two applications apart, over both transports. On the default
-  `0x1209:0x0001` identity most hosts never bind the CCID interface at all, so the
+  `0x1209:0xF1D2` identity most hosts never bind the CCID interface at all, so the
   surface is absent there for an unrelated reason, not by design.
 - **The residual gap is *intent*. The trusted-display flavor closes it.** Because
-  a standard key attests presence and possession, a malicious page can silently
-  drive an authorized key over WebUSB to phish a real sign-in ([demonstrated
-  against YubiKeys in Chrome](https://www.wired.com/story/chrome-yubikey-phishing-webusb/)).
+  a standard key attests presence and possession, malware on the host can have it
+  sign in to a site you never chose when you touch it for one you did: the button
+  cannot show which `rpId` a touch approves.
   The [trusted-display flavor](guides/display.md) paints the true `rpId` on the
   device's own screen and gates each signature on a tap there, so a compromised
   host cannot fake what you approve. [Qubes OS's CTAP proxy](https://doc.qubes-os.org/en/latest/user/security-in-qubes/ctap-proxy.html#the-qubes-approach-to-ctap)
@@ -282,14 +278,33 @@ bulk stream, ISO-7816 APDUs, CTAP2 CBOR. Defenses:
   fused and page-58 hard-locked, a flash dump (even with BOOTSEL access and
   the chip id) does not reproduce the sealing key. Without the burn, the
   sealing key derives from on-chip state an attacker with full flash + chip
-  access could reconstruct. The burn is what makes at-rest real.
-- **The seals give confidentiality, not authenticity.** Records written before
-  the burn are keyed from the public chip serial alone, and those pre-OTP arms
-  stay readable afterwards so a provisioned device keeps working across the
-  upgrade. So an attacker who can *write* flash (BOOTSEL) can forge a record
-  that opens under one, and the boot migration then re-seals it under the fused
-  root. Reading the flash still tells them nothing. Closing this needs a
-  fuse-rooted latch on the migration window; audit run-27 #8 has the analysis.
+  access could reconstruct. The burn is what makes at-rest real — for every
+  record a boot pass can re-root. A PIN-derived one cannot be re-rooted without
+  its secret, so it waits for its own reference to be presented; see
+  [limitations](limitations.md) and `PLAT-THREAT-002`.
+- **The seals give authenticity only past the page-58 latch.** Records written
+  before the burn are keyed from the public chip serial alone, and those pre-OTP
+  arms stay readable afterwards so a provisioned device keeps working across the
+  upgrade. So until the latch an attacker who can *write* flash (BOOTSEL) can
+  forge a record that opens under one, and the boot migration then re-seals it
+  under the fused root. Reading the flash still tells them nothing. Audit run-27
+  #8 has the analysis. `rsk otp lock-page58` burns only once a boot has moved
+  every device-sealed record off the pre-burn key, and a record a pass could not
+  read counts as not moved. What it burns is the latch: from the next boot on, no
+  pass or command opens a FIDO seed, attestation key or grant, the device key, a
+  PIV key, or an OATH or OTP record under the pre-burn key or in the clear, and a
+  command that finds the fused key unreadable opens and seals nothing rather
+  than fall back to that key. A device locked by a build before 0x0A67 has the lock without the
+  latch until `lock-page58` runs again. PIN verifiers keep their pre-burn arm, since
+  their format does not say which key made them: the FIDO PIN and the display's
+  device PIN, the PIV PIN and PUK, OpenPGP's PW1, PW3 and resetting code with their
+  DEK copies, and the OATH OTP PIN. So a flash writer can still plant one for a PIN
+  they know and use what that PIN unlocks; OpenPGP's keys stay behind a DEK the
+  planted PIN does not open ([limitations](limitations.md)).
+  A boot that cannot read the fused key at all, a page closed even to secure
+  code, runs none of those passes and says so (READ `1E/07` = `FFFE`): taken for
+  a blank page, it would re-seal, provision and migrate under the chip-serial
+  arm.
 - **Soft-lock** ([guides/soft-lock.md](guides/soft-lock.md)): optionally, the
   seed at rest is additionally wrapped with ChaCha20-Poly1305 under a 32-byte
   key only you hold (BIP-39/SLIP-39 words). A stolen device (even running
@@ -299,12 +314,14 @@ bulk stream, ISO-7816 APDUs, CTAP2 CBOR. Defenses:
   re-sealing or deleting a secret leaves the old copy on flash until its page
   is reclaimed. Two cases differ in how much that matters:
   - The **OTP-burn migration** supersedes the *pre-OTP* seed, which was sealed
-    under the chip-serial-only root (no fuse secret). Left alone, a flash dump
-    plus the chip id would recover it, bypassing the burn. So it is **not**
-    left to lazy healing: the first boot after provisioning runs a one-shot
-    compaction (`Fs::compact`, gated by the `EF_HARDENED` marker, crash-safe)
-    that drives a full GC lap over the credential partition and physically
-    erases every superseded pre-OTP record before the device re-attaches to USB.
+    under the chip-serial-only root (no fuse secret), and the persistent `pcmr`
+    grant, which provisioning mints at the first boot under that same root. Left
+    alone, a flash dump plus the chip id would recover them, bypassing the burn.
+    So it is **not** left to lazy healing: the first boot after provisioning runs
+    a one-shot compaction (`Fs::compact`, gated by the `EF_HARDENED` marker,
+    crash-safe) that drives a full GC lap over the credential partition and
+    physically erases every superseded pre-OTP record before the device
+    re-attaches to USB.
   - The **soft-lock** transition leaves the same kind of lingering record, but
     on a provisioned device it is already sealed under the fused root (moot
     against anything short of a fused-key compromise), so soft-lock's at-rest
@@ -462,11 +479,27 @@ in OTP, the chaffing RS-Key applies (see [otp-fuses.md](otp-fuses.md)). A third
 challenge (power side-channel analysis of the secure-boot AES) is open with no
 break reported ([challenge 2][c2]).
 
+**A4 does not stop a laser from turning debug back on** ([Ledger Donjon][donjon]).
+On a decapped A4, photon-emission imaging located the `DEBUGEN` register and
+laser pulses set the bits that restore Secure debug, despite
+`CRIT1.DEBUG_DISABLE` and `DEBUGEN_LOCK`; a rescue reset then stops the chip in
+the boot ROM before any firmware runs, and the OTP reads out. About $250k of
+equipment. Raspberry Pi will not respin: the attack is destructive, and with
+per-device keys it has single-device scope ([response][rpi-laser]).
+
 **What this means for RS-Key.** Our development boards are **A2**: the broken
 stepping, kept as the conservative worst case. The firmware is **A4-compatible**,
 and A4 is recommended for the fault / boot-ROM attacks above. Against the antifuse
 readout (which no stepping fixes), RS-Key applies the chaffing mitigation
-directly ([otp-fuses.md](otp-fuses.md)). What remains out of scope is unchanged: a
+directly ([otp-fuses.md](otp-fuses.md)). The laser attack applies to RS-Key as
+it is: page 58's lock is the one the challenge used, and a read through debug
+sees the rows as the chip does, so the chaff does not help. It yields that
+device's MKEK and DEVK and, with them, every record sealed under the key base:
+the FIDO seed, PIV and OATH keys, an org attestation key. The PIN verifiers are
+not stretched, so the PINs then fall to an offline guess. The off-chip key of
+[soft-lock](guides/soft-lock.md) survives it, for the FIDO seed only. Per-device
+keys keep the damage to the device in hand; an org attestation key shared by a
+fleet does not ([attestation](guides/attestation.md)). What remains out of scope is unchanged: a
 funded lab with FIB/PVC, laser fault injection, or power/EM analysis against a
 device in hand. No software or provisioning choice on a general-purpose die closes
 those. That is what a dedicated secure element is for ([limitations.md](limitations.md)).
@@ -478,6 +511,8 @@ those. That is what a dedicated secure element is for ([limitations.md](limitati
 [c38c3]: https://media.ccc.de/v/38c3-hacking-the-rp2350
 [courk]: https://courk.cc/rp2350-challenge-laser
 [ioactive]: https://www.ioactive.com/raspberry-pi-2350-hacking-challenge/
+[donjon]: https://donjon.ledger.com/blog/rp2350-secure-debug-laser-fault-injection/
+[rpi-laser]: https://www.raspberrypi.com/news/everything-is-better-with-lasers/
 
 ## Seed backup (the deliberate exception)
 
@@ -538,11 +573,35 @@ the MKEK exist in RAM only inside the operation that asked for one and are wiped
 when it returns. That is what puts them out of reach of a parser bug — parsing
 runs before any store access, so at that moment neither key is anywhere in
 memory. It buys nothing against code execution, which can drive the same reads.
-Accepted residuals: `Copy` temporaries inside RustCrypto curve arithmetic, digest
-internals, and heap limbs inside `num-bigint-dig` (which has no zeroizing `Drop`
-of its own — every value `rsk-rsa` owns rides in a `Zeroizing`, but a temporary
-the library allocates internally does not). Short-lived, library-internal, not
-wipeable without forking the crates.
+Accepted residuals: `Copy` temporaries inside RustCrypto curve arithmetic and
+digest internals, in stack slots until the work that made them is done: core0's
+dead stack is zeroed after each request, keyboard OTP frame, typed ticket and
+panel flow, and core1's after each prime search (`firmware/src/sweep.rs`). The
+few hundred bytes above the shallowest of those callers — the tasks' own poll
+frames, interrupt frames taken while the worker idles — no sweep reaches. The
+working buffers `num-bigint-dig` allocates inside its own
+arithmetic — a division's, a modular inverse's, a modular exponentiation's — it
+frees unwiped; `rsk-rsa` holds a key's values, its blinding values and a private
+operation's result and intermediates in a `Secret` or a key type whose `Drop`
+wipes them, except the primes and `d` of a key `RsaKey::from_p_q` refuses. The
+heap closes both for what it holds: it wipes each block as it frees it
+(`ZeroingHeap` in `firmware/src/main.rs`), so a freed buffer's bytes do not
+outlive the free. A `num-bigint-dig` value of eight limbs or fewer is held inline,
+not on the heap, and a local one stays in its stack slot like those temporaries.
+
+What holds the first sentence is a type, not a habit. Key-grade bytes live in
+`rsk_secret::Secret` — or, for a buffer that outlives the scope, under a
+`WipeGuard` — whose `Drop` runs on every exit a scope has, a `?` included, and
+the root `clippy.toml` refuses a bare `Zeroize::zeroize` or a `Zeroizing` in
+every crate. A wipe no `Secret` can make — state that outlives a command, a key
+type's own `Drop` — stays bare under an `#[expect]` that names its wipe point,
+and rustc holds that list both ways. Two exits no type reaches. A panic runs
+nothing — `panic-halt` spins with no unwinding and no `Drop`, so a panic reached
+with a key unsealed leaves it in SRAM until power is cut; what bounds that is
+keeping a panic unreachable from host input, which is what the fuzz targets are
+for. And a move is a `memcpy` whose source nothing wipes: a secret is built in
+place and handed on by reference, and the compiler's own copies stay the
+residual named above.
 
 A WebAuthn **large-blob key is obtainable without user interaction**. CTAP 2.1
 §12.3 puts no UP/UV precondition on the `largeBlobKey` extension output — unlike
@@ -583,6 +642,15 @@ the image it ran on. This is a property of the silicon revision and boot
 configuration, so it is re-measured when either moves; the explicit wipes stay as
 depth in case a future one keeps SRAM.
 
+Every reset goes through `worker::reboot`. `clippy.toml` refuses `SCB::sys_reset`,
+`rom_data::reset_to_usb_boot`, `rom_data::reboot` / `reboot_ns` and
+`Watchdog::trigger_reset` anywhere else, so a new path to a reset cannot skip the
+wipe without an `#[expect]` that says why. Not covered, and none of it in the
+tree today: a watchdog started and left unfed (`Watchdog::start`), a raw write
+to the watchdog or power-manager registers through `rp_pac`, an `AIRCR` write
+through `SCB::PTR`, a ROM function called through its `ptr()`, and the ROM's
+`chain_image`.
+
 ## Supply chain & process
 
 - `cargo audit` + `cargo deny` (advisories, license allow-list, source
@@ -594,9 +662,9 @@ depth in case a future one keeps SRAM.
   has no fixed release — went away with the crate itself in 0.4.12; `rsk-rsa`
   owns the key type and both private paths now. The mitigation that carve-out
   rested on is still in force and is now the whole defence: per-operation base
-  blinding on **every** private-key path (PKCS#1 v1.5 sign, decipher, and the
-  raw fallback `rsa_raw`). The [constant-time audit](ct-audit.md) verified that
-  this blinding leaves no unblinded private-exponent path.
+  blinding on **every** private-key path (PKCS#1 v1.5 sign and decipher). The
+  [constant-time audit](ct-audit.md) verified that this blinding leaves no
+  unblinded private-exponent path.
 
 ## Post-quantum notes
 
@@ -604,11 +672,11 @@ ML-DSA-44 (COSE −48), ML-DSA-65 (−49) and ML-DSA-87 (−50) FIDO2 credential
 (all three the in-tree `rsk-mldsa` crate) with hedged signing (32 fresh DRBG
 bytes per signature; the hedge and expanded keys are zeroized). `rsk-mldsa`
 streams the FIPS 204 matrix A on the fly so even ML-DSA-87's keygen+sign fit
-the RP2350 stack — measured, its keygen frame is the largest in the image at
-123 KiB against a 205 KiB ceiling. It is hand-written, so its constant-time posture is a source-level
+the RP2350 stack — measured, ML-DSA-87's keygen runs 69 KiB deep and its
+signing frame is 65 KiB, against a 205 KiB ceiling. It is hand-written, so its constant-time posture is a source-level
 claim (branch-free reductions, masked norm checks, no secret division), not
-proven at machine code. It is checked byte-for-byte against NIST ACVP KATs,
-with Kani proofs over the reductions and rounding. ML-KEM-768 is compiled in as
+proven at machine code. It is checked byte-for-byte against NIST ACVP KATs;
+Kani proves its rounding, not its reductions. ML-KEM-768 is compiled in as
 scaffolding but nothing calls it until a CTAP PQC PIN/UV protocol exists.
 None of these has a third-party audit yet, the same standing as the rest of
 the RustCrypto stack, tracked via cargo-audit/deny.

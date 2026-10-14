@@ -23,8 +23,8 @@ verification, cross-reset refinement, or liveness.
 The TLA+ module owns `AStates`, `Ops`, `Outcomes`, and `AllowedRelation`.
 `scripts/export_token_relation.py` only captures TLA+-serialized values;
 `scripts/generate_token_edges.py` generates the Rust enums, `AState`, and exact
-bitset. The exhaustive host test checks all 63,888 tuples. The current export is
-44 states, 11 operations, 3 outcomes, and 871 allowed edges; these are printed
+bitset. The exhaustive host test checks all 69,696 tuples. The current export is
+44 states, 12 operations, 3 outcomes, and 1,039 allowed edges; these are printed
 facts, not hand-maintained requirements.
 
 ## Concrete domain and boot boundary
@@ -37,8 +37,10 @@ abstract token retired. `ValidBootInput` bounds the restored mismatch byte by
 to that range.
 
 `ValidPersistent` admits all four presence combinations of `EF_PIN` and
-`EF_PAUTHTOKEN`. This is intentional, including `grant && !pinSet`: firmware
-before 0x08BF and a torn reset could leave that shape. Because A observes only
+`EF_PAUTHTOKEN`. This is intentional, including `grant && !pinSet`: since 0x09CB
+`ensure_seed` writes the grant record with no PIN behind it, so that shape is the
+factory state and the state after every completed reset, and firmware before
+0x08BF or a torn reset could leave it too. Because A observes only
 record presence, not record contents, no older-firmware version assumption is
 needed for R0p. Every projected write and power cut remains inside those four
 states.

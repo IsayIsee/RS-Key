@@ -15,20 +15,20 @@ pub(crate) fn write_legacy_cbc<S: Storage>(
     fid: KeyFid,
     seed: &[u8; 32],
 ) {
-    let mut ct = *seed;
+    let mut ct = rsk_secret::Secret::new(*seed);
     let mut kbase = dev.derive_kbase();
     let mut iv = [0u8; 16];
     iv.copy_from_slice(&dev.serial_hash[..16]);
-    aes_encrypt(&kbase, &iv, Mode::Cbc, &mut ct).unwrap();
-    kbase.zeroize();
+    aes_encrypt(kbase.expose(), &iv, Mode::Cbc, ct.expose_mut()).unwrap();
+    kbase.wipe();
     let mut out = [0u8; KEYDEV_F1_LEN];
     out[0] = if dev.otp_key.is_some() {
         FORMAT_F1_OTP
     } else {
         FORMAT_F1
     };
-    out[1..].copy_from_slice(&ct);
-    ct.zeroize();
+    out[1..].copy_from_slice(ct.expose());
+    ct.wipe();
     fs.put_key(fid, Sealed::wrap(&out)).unwrap();
 }
 
@@ -44,11 +44,80 @@ impl Rng for SeqRng {
 
 const OTP_KEY: [u8; 32] = [0x77; 32];
 
+#[test]
+fn out_of_range_credential_counters_preserve_every_existing_slot() {
+    let mut fs = fs();
+    set_cred_sign_counter(&mut fs, 0, 7).unwrap();
+    set_cred_sign_counter(&mut fs, MAX_RESIDENT_CREDENTIALS - 1, 9).unwrap();
+    let generation = fs.write_gen();
+    for slot in [MAX_RESIDENT_CREDENTIALS, u16::MAX] {
+        assert_eq!(
+            set_cred_sign_counter(&mut fs, slot, 0),
+            Err(Error::ExecError)
+        );
+        assert_eq!(fs.write_gen(), generation);
+        assert_eq!(cred_sign_counter(&mut fs, 0).unwrap(), Some(7));
+        assert_eq!(
+            cred_sign_counter(&mut fs, MAX_RESIDENT_CREDENTIALS - 1).unwrap(),
+            Some(9)
+        );
+    }
+}
+
+#[test]
+fn first_boot_retries_invalid_keys_and_zero_serials_without_changing_identity() {
+    struct RetryRng {
+        keys: usize,
+        serials: usize,
+    }
+    impl Rng for RetryRng {
+        fn fill(&mut self, out: &mut [u8]) {
+            match out.len() {
+                32 => {
+                    out.fill(match self.keys {
+                        0 => 0,
+                        1 => 0xff,
+                        _ => 1,
+                    });
+                    self.keys += 1;
+                }
+                16 => {
+                    out.fill(1);
+                    if self.serials == 0 {
+                        out[0] = 0x80;
+                    }
+                    self.serials += 1;
+                }
+                _ => out.fill(1),
+            }
+            assert!(self.keys < 8 && self.serials < 8);
+        }
+    }
+    let mut rng = RetryRng {
+        keys: 0,
+        serials: 0,
+    };
+    let mut fs = fs();
+    ensure_seed(&dev(), &mut fs, &mut rng).unwrap();
+    assert_eq!(load_keydev(&dev(), &mut fs).unwrap().expose(), &[1; 32]);
+    // Three seed candidates, followed by the persistent token's independent draw.
+    assert_eq!((rng.keys, rng.serials), (4, 2));
+    let mut certificate = [0; 512];
+    let n = fs.read(EF_EE_DEV, &mut certificate).unwrap();
+    assert!(cert_matches_template(
+        &certificate[..n],
+        &P256Key::from_scalar(&[1; 32]).unwrap()
+    ));
+    ensure_seed(&dev(), &mut fs, &mut rng).unwrap();
+    assert_eq!((rng.keys, rng.serials), (4, 2));
+}
+
 fn dev() -> Device<'static> {
     Device {
         serial_hash: &[0xAB; 32],
         serial_id: &[1, 2, 3, 4, 5, 6, 7, 8],
         otp_key: None,
+        latched: false,
     }
 }
 
@@ -75,7 +144,10 @@ fn seed_roundtrips_through_flash() {
     fs.read(EF_KEY_DEV.get(), &mut raw).unwrap();
     assert_eq!(raw[0], FORMAT_G1);
     assert_ne!(&raw[13..45], &seed); // the ciphertext, not the seed
-    assert_eq!(load_keydev(&d, &mut fs), Some(seed));
+    assert_eq!(
+        crate::bare(load_keydev(&d, &mut fs)),
+        Some(crate::bare(&seed))
+    );
 }
 
 #[test]
@@ -87,7 +159,7 @@ fn wrong_device_cannot_decrypt_seed() {
         ..dev()
     };
     // A different root key derives a different AEAD key → the tag rejects it.
-    assert_eq!(load_keydev(&other, &mut fs), None);
+    assert!((load_keydev(&other, &mut fs)).is_none());
 }
 
 #[test]
@@ -101,7 +173,7 @@ fn seal_is_authenticated_against_tamper() {
     fs.read(EF_KEY_DEV.get(), &mut raw).unwrap();
     raw[13] ^= 0x01; // flip a ciphertext byte
     fs.put_key(EF_KEY_DEV, Sealed::wrap(&raw)).unwrap();
-    assert_eq!(load_keydev(&d, &mut fs), None);
+    assert!((load_keydev(&d, &mut fs)).is_none());
 }
 
 #[test]
@@ -120,8 +192,14 @@ fn seed_and_att_key_never_share_a_nonce() {
     fs.read(EF_ATT_KEY.get(), &mut b).unwrap();
     assert_ne!(&a[1..13], &b[1..13]); // distinct nonces
     assert_ne!(&a[13..45], &b[13..45]); // distinct ciphertext
-    assert_eq!(load_keydev(&d, &mut fs), Some(value));
-    assert_eq!(load_att_key(&d, &mut fs), Some(value));
+    assert_eq!(
+        crate::bare(load_keydev(&d, &mut fs)),
+        Some(crate::bare(&value))
+    );
+    assert_eq!(
+        crate::bare(load_att_key(&d, &mut fs)),
+        Some(crate::bare(&value))
+    );
 }
 
 #[test]
@@ -133,13 +211,19 @@ fn legacy_cbc_record_loads_and_upgrades_at_boot() {
     let seed = [0x5A; 32];
     write_legacy_cbc(&d, &mut fs, EF_KEY_DEV, &seed);
     assert_eq!(fs.size(EF_KEY_DEV.get()), Some(KEYDEV_F1_LEN));
-    assert_eq!(load_keydev(&d, &mut fs), Some(seed));
+    assert_eq!(
+        crate::bare(load_keydev(&d, &mut fs)),
+        Some(crate::bare(&seed))
+    );
 
     migrate_keydev_boot(&d, &mut fs).unwrap();
     let mut raw = [0u8; KEYDEV_G1_LEN];
     assert_eq!(fs.read(EF_KEY_DEV.get(), &mut raw), Some(KEYDEV_G1_LEN));
     assert_eq!(raw[0], FORMAT_G1);
-    assert_eq!(load_keydev(&d, &mut fs), Some(seed));
+    assert_eq!(
+        crate::bare(load_keydev(&d, &mut fs)),
+        Some(crate::bare(&seed))
+    );
 
     // Idempotent AND byte-deterministic (synthetic nonce): a second pass
     // leaves the record identical.
@@ -156,12 +240,18 @@ fn att_key_legacy_cbc_migrates_at_boot() {
     let mut fs = fs();
     let att = [0x21; 32];
     write_legacy_cbc(&d, &mut fs, EF_ATT_KEY, &att);
-    assert_eq!(load_att_key(&d, &mut fs), Some(att));
+    assert_eq!(
+        crate::bare(load_att_key(&d, &mut fs)),
+        Some(crate::bare(&att))
+    );
     migrate_keydev_boot(&d, &mut fs).unwrap();
     let mut raw = [0u8; KEYDEV_G1_LEN];
     assert_eq!(fs.read(EF_ATT_KEY.get(), &mut raw), Some(KEYDEV_G1_LEN));
     assert_eq!(raw[0], FORMAT_G1);
-    assert_eq!(load_att_key(&d, &mut fs), Some(att));
+    assert_eq!(
+        crate::bare(load_att_key(&d, &mut fs)),
+        Some(crate::bare(&att))
+    );
 }
 
 #[test]
@@ -173,16 +263,22 @@ fn legacy_pin_wrapped_seed_unreadable_until_pin_migrates_it() {
     wrap_keydev_legacy(&d, &mut fs, &seed, &pin_hash);
     assert_eq!(fs.size(EF_KEY_DEV.get()), Some(KEYDEV_F3_LEN));
     // The wrapped blob is unreadable (the UP-only failure window)…
-    assert_eq!(load_keydev(&d, &mut fs), None);
+    assert!((load_keydev(&d, &mut fs)).is_none());
     // …until a PIN verify unwraps it forward to plain ChaCha, permanently.
     migrate_keydev_pin(&d, &mut fs, &pin_hash).unwrap();
     let mut raw = [0u8; KEYDEV_G1_LEN];
     assert_eq!(fs.read(EF_KEY_DEV.get(), &mut raw), Some(KEYDEV_G1_LEN));
     assert_eq!(raw[0], FORMAT_G1);
-    assert_eq!(load_keydev(&d, &mut fs), Some(seed));
+    assert_eq!(
+        crate::bare(load_keydev(&d, &mut fs)),
+        Some(crate::bare(&seed))
+    );
     // Idempotent.
     migrate_keydev_pin(&d, &mut fs, &pin_hash).unwrap();
-    assert_eq!(load_keydev(&d, &mut fs), Some(seed));
+    assert_eq!(
+        crate::bare(load_keydev(&d, &mut fs)),
+        Some(crate::bare(&seed))
+    );
 }
 
 #[test]
@@ -203,18 +299,21 @@ fn ensure_seed_is_idempotent() {
     let mut rng = SeqRng(7);
     ensure_seed(&d, &mut fs, &mut rng).unwrap();
     let seed1 = load_keydev(&d, &mut fs).unwrap();
-    assert!(fs.has_data(EF_COUNTER));
+    assert!(fs.has_counter(EF_COUNTER));
     assert_eq!(global_sign_counter(&mut fs).unwrap(), 0);
     // A second scan must not regenerate the seed.
     ensure_seed(&d, &mut fs, &mut rng).unwrap();
-    assert_eq!(load_keydev(&d, &mut fs).unwrap(), seed1);
-    assert!(P256Key::from_scalar(&seed1).is_some());
+    assert_eq!(
+        crate::bare(load_keydev(&d, &mut fs).unwrap()),
+        crate::bare(&seed1)
+    );
+    assert!(P256Key::from_scalar(seed1.expose()).is_some());
 }
 
 #[test]
 fn counter_bumps_and_persists() {
     let mut fs = fs();
-    fs.put(EF_COUNTER, &[0u8; 4]).unwrap();
+    fs.put_counter(EF_COUNTER, &[0u8; 4]).unwrap();
     assert_eq!(bump_sign_counter(&mut fs).unwrap(), 0);
     assert_eq!(bump_sign_counter(&mut fs).unwrap(), 1);
     assert_eq!(global_sign_counter(&mut fs).unwrap(), 2);
@@ -226,13 +325,16 @@ fn lock_blob_roundtrips_and_authenticates() {
     let key = [0x4D; 32];
     let seed = [0x5A; 32];
     let blob = seal_seed_locked(&mut rng, &key, &seed);
-    assert_eq!(open_seed_locked(&key, &blob), Some(seed));
+    assert_eq!(
+        crate::bare(open_seed_locked(&key, &blob)),
+        Some(crate::bare(&seed))
+    );
     // Wrong key, tampered ciphertext, truncated blob: all refused.
-    assert_eq!(open_seed_locked(&[0x4E; 32], &blob), None);
+    assert!((open_seed_locked(&[0x4E; 32], &blob)).is_none());
     let mut bad = blob;
     bad[20] ^= 1;
-    assert_eq!(open_seed_locked(&key, &bad), None);
-    assert_eq!(open_seed_locked(&key, &blob[..LOCK_BLOB_LEN - 1]), None);
+    assert!((open_seed_locked(&key, &bad)).is_none());
+    assert!((open_seed_locked(&key, &blob[..LOCK_BLOB_LEN - 1])).is_none());
 }
 
 #[test]
@@ -246,7 +348,7 @@ fn ensure_seed_skips_generation_when_locked() {
     fs.put(EF_KEY_DEV_ENC.get(), &blob).unwrap();
     ensure_seed(&d, &mut fs, &mut rng).unwrap();
     assert!(!fs.has_data(EF_KEY_DEV.get()));
-    assert!(fs.has_data(EF_COUNTER)); // the rest of the scan still runs
+    assert!(fs.has_counter(EF_COUNTER)); // the rest of the scan still runs
     assert!(!fs.has_data(EF_EE_DEV)); // cert step skipped (seed unreadable)
 }
 
@@ -260,11 +362,101 @@ fn boot_migration_reseals_plain_seed_to_otp_kbase() {
     let mut raw = [0u8; KEYDEV_G1_LEN];
     fs.read(EF_KEY_DEV.get(), &mut raw).unwrap();
     assert_eq!(raw[0], FORMAT_G1_OTP);
-    assert_eq!(load_keydev(&otp_dev(), &mut fs), Some(seed));
+    assert_eq!(
+        crate::bare(load_keydev(&otp_dev(), &mut fs)),
+        Some(crate::bare(&seed))
+    );
 
     // Idempotent: a second pass is a no-op (tag already 0x12).
     migrate_keydev_boot(&otp_dev(), &mut fs).unwrap();
-    assert_eq!(load_keydev(&otp_dev(), &mut fs), Some(seed));
+    assert_eq!(
+        crate::bare(load_keydev(&otp_dev(), &mut fs)),
+        Some(crate::bare(&seed))
+    );
+}
+
+/// Past the fuse latch a record only the pre-OTP arm opens was planted: a seed a
+/// flash writer sealed under the public chip serial is neither loaded nor moved
+/// onto the fused root, in any of its three pre-OTP shapes. The same records open
+/// and move on an unlatched device; the tests above hold that half.
+#[test]
+fn past_the_latch_no_pre_otp_seed_opens_or_moves() {
+    let latched = Device {
+        latched: true,
+        ..otp_dev()
+    };
+    let seed = [0x5A; 32];
+    let pin_hash = [0x99u8; 16];
+    type Plant = fn(&mut Fs<RamStorage>);
+    let plants: [(&str, Plant); 3] = [
+        ("ChaCha 0x02", |fs| {
+            encrypt_keydev_f1(&dev(), fs, &[0x5A; 32]).unwrap()
+        }),
+        ("CBC 0x01", |fs| {
+            write_legacy_cbc(&dev(), fs, EF_KEY_DEV, &[0x5A; 32])
+        }),
+        ("PIN-wrapped 0x03", |fs| {
+            wrap_keydev_legacy(&dev(), fs, &[0x5A; 32], &[0x99; 16])
+        }),
+    ];
+    for (shape, plant) in plants {
+        let mut fs = fs();
+        plant(&mut fs);
+        let mut before = [0u8; 64];
+        let n = fs.read(EF_KEY_DEV.get(), &mut before).unwrap();
+        assert!(
+            load_keydev(&latched, &mut fs).is_none(),
+            "{shape}: a planted seed loaded past the latch"
+        );
+        assert_eq!(migrate_keydev_boot(&latched, &mut fs), Ok(false), "{shape}");
+        migrate_keydev_pin(&latched, &mut fs, &pin_hash).unwrap();
+        let mut after = [0u8; 64];
+        assert_eq!(fs.read(EF_KEY_DEV.get(), &mut after), Some(n));
+        assert_eq!(
+            after, before,
+            "{shape}: a planted seed moved past the latch"
+        );
+        assert!(load_keydev(&latched, &mut fs).is_none(), "{shape}");
+    }
+    // The control: unlatched, the same plant opens.
+    let mut fs = fs();
+    encrypt_keydev_f1(&dev(), &mut fs, &seed).unwrap();
+    assert_eq!(
+        crate::bare(load_keydev(&otp_dev(), &mut fs)),
+        Some(crate::bare(&seed))
+    );
+}
+
+/// The grant rides the same pass, and it has to: provisioning mints it and the burn
+/// comes after the first boot, so a record left at 0x02 is one a flash dump plus the
+/// public serial opens — the `pcmr` reads and getInfo's encIdentifier with it.
+#[test]
+fn boot_migration_reseals_the_grant_record_to_otp_kbase() {
+    let mut fs = fs();
+    let token = ensure_ppuat(&dev(), &mut fs, &mut SeqRng(3)).unwrap();
+    let mut raw = [0u8; KEYDEV_G1_LEN];
+    fs.read(EF_PAUTHTOKEN.get(), &mut raw).unwrap();
+    assert_eq!(raw[0], FORMAT_G1, "fixture: minted before the burn");
+
+    migrate_keydev_boot(&otp_dev(), &mut fs).unwrap();
+    fs.read(EF_PAUTHTOKEN.get(), &mut raw).unwrap();
+    assert_eq!(raw[0], FORMAT_G1_OTP, "the burn must move the grant too");
+    assert_eq!(
+        crate::bare(load_ppuat(&otp_dev(), &mut fs)),
+        Some(crate::bare(&token)),
+        "and the platform holding it keeps the token it was handed"
+    );
+    assert!(
+        (load_ppuat(&dev(), &mut fs)).is_none(),
+        "the chip-serial arm no longer opens the record"
+    );
+
+    // Idempotent: a second pass is a no-op (tag already 0x12).
+    migrate_keydev_boot(&otp_dev(), &mut fs).unwrap();
+    assert_eq!(
+        crate::bare(load_ppuat(&otp_dev(), &mut fs)),
+        Some(crate::bare(&token))
+    );
 }
 
 #[test]
@@ -325,7 +517,10 @@ fn the_boot_pass_re_arms_the_lap_before_it_supersedes_a_pre_otp_seed() {
     migrate_keydev_boot(&otp_dev(), &mut fs).unwrap();
     fs.read(EF_KEY_DEV.get(), &mut raw).unwrap();
     assert_eq!(raw[0], FORMAT_G1_OTP);
-    assert_eq!(load_keydev(&otp_dev(), &mut fs), Some(seed));
+    assert_eq!(
+        crate::bare(load_keydev(&otp_dev(), &mut fs)),
+        Some(crate::bare(&seed))
+    );
     assert!(!medium.live(rsk_fs::EF_HARDENED));
 
     // The other pre-OTP tag the same arm accepts: a legacy fixed-IV CBC record
@@ -343,7 +538,29 @@ fn the_boot_pass_re_arms_the_lap_before_it_supersedes_a_pre_otp_seed() {
         |_| false,
         "migrate_keydev_boot's 0x01 arm",
     );
-    assert_eq!(load_att_key(&otp_dev(), &mut fs), Some(seed));
+    assert_eq!(
+        crate::bare(load_att_key(&otp_dev(), &mut fs)),
+        Some(crate::bare(&seed))
+    );
+
+    // And the grant slot, which the same helper carries: its pre-OTP copy is
+    // chip-serial-rooted like the seed's, so it owes the re-arm on the same terms.
+    let (cut, medium) = Cut::new();
+    let mut fs = Fs::new(cut);
+    fs.scan();
+    let token = ensure_ppuat(&dev(), &mut fs, &mut SeqRng(5)).unwrap();
+    fs.put(rsk_fs::EF_HARDENED, &[1]).unwrap();
+    medium.clear_ops();
+    migrate_keydev_boot(&otp_dev(), &mut fs).unwrap();
+    medium.assert_re_armed_before(
+        EF_PAUTHTOKEN.get(),
+        |_| false,
+        "migrate_keydev_boot's grant arm",
+    );
+    assert_eq!(
+        crate::bare(load_ppuat(&otp_dev(), &mut fs)),
+        Some(crate::bare(&token))
+    );
 }
 
 #[test]
@@ -366,7 +583,7 @@ fn otp_era_seed_fails_cleanly_without_otp_key() {
     let mut raw = [0u8; KEYDEV_G1_LEN];
     fs.read(EF_KEY_DEV.get(), &mut raw).unwrap();
     assert_eq!(raw[0], FORMAT_G1_OTP);
-    assert_eq!(load_keydev(&dev(), &mut fs), None);
+    assert!((load_keydev(&dev(), &mut fs)).is_none());
 }
 
 #[test]
@@ -392,11 +609,17 @@ fn pre_otp_wrapped_seed_migrates_to_otp_plain_at_verify() {
     let mut g = [0u8; KEYDEV_G1_LEN];
     assert_eq!(fs.read(EF_KEY_DEV.get(), &mut g), Some(KEYDEV_G1_LEN));
     assert_eq!(g[0], FORMAT_G1_OTP);
-    assert_eq!(load_keydev(&otp_dev(), &mut fs), Some(seed));
+    assert_eq!(
+        crate::bare(load_keydev(&otp_dev(), &mut fs)),
+        Some(crate::bare(&seed))
+    );
 
     // Idempotent.
     migrate_keydev_pin(&otp_dev(), &mut fs, &pin_hash).unwrap();
-    assert_eq!(load_keydev(&otp_dev(), &mut fs), Some(seed));
+    assert_eq!(
+        crate::bare(load_keydev(&otp_dev(), &mut fs)),
+        Some(crate::bare(&seed))
+    );
 }
 
 #[test]
@@ -415,13 +638,16 @@ fn otp_wrapped_seed_migrates_to_plain_at_verify() {
     migrate_keydev_pin(&dev(), &mut fs, &pin_hash).unwrap();
     fs.read(EF_KEY_DEV.get(), &mut raw).unwrap();
     assert_eq!(raw[0], FORMAT_F3_OTP);
-    assert_eq!(load_keydev(&dev(), &mut fs), None);
+    assert!((load_keydev(&dev(), &mut fs)).is_none());
 
     migrate_keydev_pin(&otp_dev(), &mut fs, &pin_hash).unwrap();
     let mut g = [0u8; KEYDEV_G1_LEN];
     assert_eq!(fs.read(EF_KEY_DEV.get(), &mut g), Some(KEYDEV_G1_LEN));
     assert_eq!(g[0], FORMAT_G1_OTP);
-    assert_eq!(load_keydev(&otp_dev(), &mut fs), Some(seed));
+    assert_eq!(
+        crate::bare(load_keydev(&otp_dev(), &mut fs)),
+        Some(crate::bare(&seed))
+    );
 }
 
 /// Recover the identifier the way a platform holding the persistent token would:
@@ -485,10 +711,10 @@ fn enc_identifier_is_fresh_per_call_but_stable_underneath() {
     assert_ne!(first, second, "a repeated blob is a device fingerprint");
     assert_ne!(first[..16], second[..16], "the IV itself must be fresh");
 
-    let id = open_enc_identifier(&token, &first);
+    let id = open_enc_identifier(token.expose(), &first);
     assert_eq!(
         id,
-        open_enc_identifier(&token, &second),
+        open_enc_identifier(token.expose(), &second),
         "the same device must decrypt to the same identifier"
     );
     assert_ne!(id, [0u8; 16], "an all-zero identifier identifies nothing");
@@ -549,25 +775,25 @@ fn enc_cred_store_state_is_fresh_per_call_and_carries_the_stored_tag() {
     assert_ne!(first[..16], second[..16], "the IV itself must be fresh");
     assert_ne!(first, second, "a repeated blob is a fingerprint");
     assert_eq!(
-        open_enc_cred_store_state(&token, &first),
-        open_enc_cred_store_state(&token, &second),
+        open_enc_cred_store_state(token.expose(), &first),
+        open_enc_cred_store_state(token.expose(), &second),
         "an unchanged store must decrypt to an unchanged tag"
     );
-    assert_eq!(
-        open_enc_cred_store_state(&token, &first),
+    assert_ne!(
+        open_enc_cred_store_state(token.expose(), &first),
         [0u8; 16],
-        "a store nothing has written to is the zero tag"
+        "a new store starts from its seed's tag, not the zero tag older devices share"
     );
 
-    crate::credential::bump_cred_store_state(&mut f).unwrap();
+    crate::credential::renew_store_state(&mut f, &mut SeqRng(21)).unwrap();
     let after = enc_cred_store_state(&d, &mut f, &mut rng).unwrap();
     assert_ne!(
-        open_enc_cred_store_state(&token, &after),
-        open_enc_cred_store_state(&token, &first),
-        "a bumped tag must reach the platform"
+        open_enc_cred_store_state(token.expose(), &after),
+        open_enc_cred_store_state(token.expose(), &first),
+        "a renewed tag must reach the platform"
     );
     assert_eq!(
-        open_enc_cred_store_state(&token, &after),
+        open_enc_cred_store_state(token.expose(), &after),
         crate::credential::cred_store_state(&mut f).unwrap(),
         "and it must be the tag the record holds, not some other value"
     );
@@ -585,17 +811,17 @@ fn the_two_encrypted_members_do_not_decrypt_to_each_other() {
 
     let id_blob = enc_identifier(&d, &mut f, &mut rng).unwrap();
     let state_blob = enc_cred_store_state(&d, &mut f, &mut rng).unwrap();
-    let id = open_enc_identifier(&token, &id_blob);
-    let state = open_enc_cred_store_state(&token, &state_blob);
+    let id = open_enc_identifier(token.expose(), &id_blob);
+    let state = open_enc_cred_store_state(token.expose(), &state_blob);
 
     assert_ne!(id, state, "the identifier is not the store tag");
     assert_ne!(
-        open_enc_cred_store_state(&token, &id_blob),
+        open_enc_cred_store_state(token.expose(), &id_blob),
         id,
         "the identifier must not open under the encCredStoreState label"
     );
     assert_ne!(
-        open_enc_identifier(&token, &state_blob),
+        open_enc_identifier(token.expose(), &state_blob),
         state,
         "the store tag must not open under the encIdentifier label"
     );
@@ -609,11 +835,17 @@ fn enc_identifier_follows_the_seed_across_a_reseed() {
     let (d, mut f, mut rng) = (dev(), fs(), SeqRng(13));
     ensure_seed(&d, &mut f, &mut rng).unwrap();
     let token = ensure_ppuat(&d, &mut f, &mut rng).unwrap();
-    let before = open_enc_identifier(&token, &enc_identifier(&d, &mut f, &mut rng).unwrap());
+    let before = open_enc_identifier(
+        token.expose(),
+        &enc_identifier(&d, &mut f, &mut rng).unwrap(),
+    );
 
     f.delete_key(EF_KEY_DEV).unwrap();
     ensure_seed(&d, &mut f, &mut rng).unwrap();
-    let after = open_enc_identifier(&token, &enc_identifier(&d, &mut f, &mut rng).unwrap());
+    let after = open_enc_identifier(
+        token.expose(),
+        &enc_identifier(&d, &mut f, &mut rng).unwrap(),
+    );
 
     assert_ne!(before, after, "a new seed must mean a new identity");
 }
@@ -626,13 +858,20 @@ fn enc_identifier_is_not_the_seed_nor_the_at_rest_key() {
     let (d, mut f, mut rng) = (dev(), fs(), SeqRng(17));
     ensure_seed(&d, &mut f, &mut rng).unwrap();
     let token = ensure_ppuat(&d, &mut f, &mut rng).unwrap();
-    let id = open_enc_identifier(&token, &enc_identifier(&d, &mut f, &mut rng).unwrap());
+    let id = open_enc_identifier(
+        token.expose(),
+        &enc_identifier(&d, &mut f, &mut rng).unwrap(),
+    );
 
     let seed = load_keydev(&d, &mut f).unwrap();
-    assert_ne!(id, seed[..16], "the identifier must not expose the seed");
+    assert_ne!(
+        id,
+        seed.expose()[..16],
+        "the identifier must not expose the seed"
+    );
 
     let mut sibling = [0u8; 16];
-    hkdf_sha256(d.serial_hash, &seed, INFO_SEED_ENC, &mut sibling).unwrap();
+    hkdf_sha256(d.serial_hash, seed.expose(), INFO_SEED_ENC, &mut sibling).unwrap();
     assert_ne!(id, sibling, "labels must separate the domains");
 }
 
@@ -655,7 +894,7 @@ fn a_faulted_probe_does_not_mint_a_second_device_seed() {
         .value(EF_KEY_DEV.get())
         .expect("and is on the medium");
     let counter = medium
-        .value(EF_COUNTER)
+        .value(EF_COUNTER.get())
         .expect("so is the signature counter");
 
     // The next boot re-runs `ensure_seed`, with EF_KEY_DEV's reads faulting.
@@ -672,14 +911,14 @@ fn a_faulted_probe_does_not_mint_a_second_device_seed() {
         "a faulted probe minted a new device seed over the live one"
     );
     assert_eq!(
-        medium.value(EF_COUNTER).as_deref(),
+        medium.value(EF_COUNTER.get()).as_deref(),
         Some(&counter[..]),
         "and rolled the signature counter back to zero"
     );
     medium.stick(None);
     assert_eq!(
-        load_keydev(&d, &mut fs),
-        Some(seed),
+        crate::bare(load_keydev(&d, &mut fs)),
+        Some(crate::bare(&seed)),
         "the credentials derived from this seed must still resolve"
     );
 }
@@ -697,11 +936,11 @@ fn a_faulted_probe_does_not_reinitialise_the_counter_or_the_large_blob() {
     fs.scan();
     ensure_seed(&d, &mut fs, &mut SeqRng(1)).unwrap();
     // Move both off the values a first boot writes, so a re-initialisation shows.
-    fs.put(EF_COUNTER, &[9, 8, 7, 6]).unwrap();
+    fs.put_counter(EF_COUNTER, &[9, 8, 7, 6]).unwrap();
     fs.put(EF_LARGEBLOB, &[0xAB; 8]).unwrap();
 
     for (fid, what) in [
-        (EF_COUNTER, "the signature counter"),
+        (EF_COUNTER.get(), "the signature counter"),
         (EF_LARGEBLOB, "the large-blob array"),
     ] {
         let before = medium.value(fid).expect("on the medium");
@@ -720,6 +959,67 @@ fn a_faulted_probe_does_not_reinitialise_the_counter_or_the_large_blob() {
     }
 }
 
+/// Every boot ends `ensure_seed` in `ensure_ppuat`, whose read took "could not read"
+/// for "never minted": one faulted read minted a token over the live one, revoking
+/// every platform's `pcmr` grant and changing getInfo's encIdentifier under them.
+#[test]
+fn a_faulted_grant_read_does_not_rotate_the_persistent_token() {
+    let d = dev();
+    let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    ensure_seed(&d, &mut fs, &mut SeqRng(1)).unwrap();
+    let token = load_ppuat(&d, &mut fs).expect("provisioning mints the grant");
+    let stored = medium
+        .value(EF_PAUTHTOKEN.get())
+        .expect("and it is on the medium");
+
+    // The next boot, with ONE read of the grant record failing and then recovering.
+    let mut fs = Fs::new(fs.into_storage());
+    fs.scan();
+    medium.stick_once(EF_PAUTHTOKEN.get());
+    let r = ensure_seed(&d, &mut fs, &mut SeqRng(2));
+    assert_eq!(
+        medium.value(EF_PAUTHTOKEN.get()).as_deref(),
+        Some(&stored[..]),
+        "a faulted read minted a new persistent token over the live one"
+    );
+    assert!(
+        r.is_err(),
+        "a boot that could not read the grant must say so, not re-mint it"
+    );
+    assert_eq!(
+        crate::bare(load_ppuat(&d, &mut fs)),
+        Some(crate::bare(&token)),
+        "every platform holding the grant must still hold it"
+    );
+}
+
+/// The OTP root is read per operation and a failed read looks unprovisioned, so an
+/// OTP-arm record can refuse to open for one operation. Minting there rotated a live
+/// grant and sealed the replacement under the serial-only arm the fuses retire.
+#[test]
+fn a_grant_that_will_not_open_is_not_reminted() {
+    let mut fs = Fs::new(RamStorage::new());
+    fs.scan();
+    let token = ensure_ppuat(&otp_dev(), &mut fs, &mut SeqRng(1)).unwrap();
+    let mut before = [0u8; 64];
+    let n = fs.read_key(EF_PAUTHTOKEN, &mut before).unwrap();
+
+    assert!(
+        ensure_ppuat(&dev(), &mut fs, &mut SeqRng(2)).is_err(),
+        "a grant this operation's key cannot open must not be replaced"
+    );
+    let mut after = [0u8; 64];
+    assert_eq!(fs.read_key(EF_PAUTHTOKEN, &mut after), Some(n));
+    assert_eq!(after[..n], before[..n], "the sealed record was rewritten");
+    assert_eq!(
+        crate::bare(ensure_ppuat(&otp_dev(), &mut fs, &mut SeqRng(3)).unwrap()),
+        crate::bare(&token),
+        "the next operation that can open it hands out the same grant"
+    );
+}
+
 /// The global signature counter is FIDO's clone-detection signal, and a collapsing
 /// `Fs::read` of it answers the same 0 for "never written" and "I could not look".
 /// `bump_sign_counter` then persists 1 over whatever was there, and U2F
@@ -733,14 +1033,14 @@ fn a_faulted_counter_probe_does_not_roll_the_global_counter_back() {
     fs.scan();
     ensure_seed(&d, &mut fs, &mut SeqRng(1)).unwrap();
     // Off the value a first boot writes, so a roll-back shows.
-    fs.put(EF_COUNTER, &77u32.to_le_bytes()).unwrap();
-    let before = medium.value(EF_COUNTER).expect("on the medium");
+    fs.put_counter(EF_COUNTER, &77u32.to_le_bytes()).unwrap();
+    let before = medium.value(EF_COUNTER.get()).expect("on the medium");
 
-    medium.stick(Some(EF_COUNTER));
+    medium.stick(Some(EF_COUNTER.get()));
     let bumped = bump_sign_counter(&mut fs);
     medium.stick(None);
     assert_eq!(
-        medium.value(EF_COUNTER).as_deref(),
+        medium.value(EF_COUNTER.get()).as_deref(),
         Some(&before[..]),
         "a faulted probe rolled the global signature counter back"
     );
@@ -764,13 +1064,15 @@ fn a_faulted_cred_counter_probe_does_not_zero_the_other_slots() {
     for (slot, v) in [(0u16, 11u32), (1, 22), (2, 33)] {
         set_cred_sign_counter(&mut fs, slot, v).unwrap();
     }
-    let before = medium.value(EF_CRED_CTR).expect("on the medium");
+    let before = medium.value(EF_CRED_CTR.get()).expect("on the medium");
     assert_eq!(before.len(), 12, "three packed slots");
 
-    medium.stick(Some(EF_CRED_CTR));
+    medium.stick(Some(EF_CRED_CTR.get()));
     let wrote = set_cred_sign_counter(&mut fs, 1, 23);
     medium.stick(None);
-    let after = medium.value(EF_CRED_CTR).expect("still on the medium");
+    let after = medium
+        .value(EF_CRED_CTR.get())
+        .expect("still on the medium");
     assert_eq!(
         after.len(),
         before.len(),
@@ -804,7 +1106,7 @@ fn a_faulted_cred_counter_probe_is_not_an_unmaterialized_slot() {
     let mut fs = Fs::new(backend);
     fs.scan();
     ensure_seed(&d, &mut fs, &mut SeqRng(1)).unwrap();
-    fs.put(EF_COUNTER, &60u32.to_le_bytes()).unwrap();
+    fs.put_counter(EF_COUNTER, &60u32.to_le_bytes()).unwrap();
 
     // Absent: no packed file at all.
     assert_eq!(cred_sign_counter(&mut fs, 0), Ok(None));
@@ -818,7 +1120,7 @@ fn a_faulted_cred_counter_probe_is_not_an_unmaterialized_slot() {
     // Live-zero gap: writing slot 2 zero-extends the file across slot 1, which is
     // a real 0 on the medium and still unmaterialized.
     set_cred_sign_counter(&mut fs, 2, 55).unwrap();
-    assert_eq!(medium.value(EF_CRED_CTR).map(|v| v.len()), Some(12));
+    assert_eq!(medium.value(EF_CRED_CTR.get()).map(|v| v.len()), Some(12));
     assert_eq!(cred_sign_counter(&mut fs, 1), Ok(None));
     assert_eq!(report_sign_counter(&mut fs, 1).unwrap(), 60);
     // Live: its own value, never the global.
@@ -826,7 +1128,7 @@ fn a_faulted_cred_counter_probe_is_not_an_unmaterialized_slot() {
     assert_eq!(report_sign_counter(&mut fs, 0).unwrap(), 44);
 
     // Faulted: the fourth state, and the only one that is not an answer.
-    medium.stick(Some(EF_CRED_CTR));
+    medium.stick(Some(EF_CRED_CTR.get()));
     let read = cred_sign_counter(&mut fs, 0);
     let reported = report_sign_counter(&mut fs, 0);
     medium.stick(None);
@@ -842,7 +1144,7 @@ fn a_faulted_cred_counter_probe_is_not_an_unmaterialized_slot() {
 
 /// The platform-facing half of the same probe. `encCredStoreState` is the only place
 /// the tag is published, and the collapsed answer is the ZERO tag — which is not a
-/// neutral value here but the one a fresh (or just-reset) device serves, so a
+/// neutral value here but the one a device an older build provisioned serves, so a
 /// platform that cached it is told its cache is still good while the store has
 /// gained credentials since.
 ///
@@ -857,19 +1159,21 @@ fn a_faulted_cred_state_probe_does_not_publish_the_zero_tag() {
     fs.scan();
     ensure_seed(&d, &mut fs, &mut SeqRng(29)).unwrap();
     let token = ensure_ppuat(&d, &mut fs, &mut SeqRng(31)).unwrap();
+    // An older build provisioned without a tag, and absent reads as zero.
+    fs.delete(crate::consts::EF_CRED_STATE).unwrap();
     let fresh = enc_cred_store_state(&d, &mut fs, &mut SeqRng(33)).unwrap();
     assert_eq!(
-        open_enc_cred_store_state(&token, &fresh),
+        open_enc_cred_store_state(token.expose(), &fresh),
         [0u8; 16],
-        "control: a store nothing has written to publishes the zero tag"
+        "control: a store an older build provisioned, untouched since, publishes zero"
     );
 
-    crate::credential::bump_cred_store_state(&mut fs).unwrap();
+    crate::credential::renew_store_state(&mut fs, &mut SeqRng(21)).unwrap();
     medium.stick_once(crate::consts::EF_CRED_STATE);
     let faulted = enc_cred_store_state(&d, &mut fs, &mut SeqRng(35));
     medium.stick(None);
     assert!(
-        faulted.is_none_or(|b| open_enc_cred_store_state(&token, &b) != [0u8; 16]),
+        faulted.is_none_or(|b| open_enc_cred_store_state(token.expose(), &b) != [0u8; 16]),
         "a faulted probe published the zero tag — the platform that cached it \
          is told the credential set is unchanged"
     );
@@ -915,7 +1219,7 @@ fn a_faulted_cert_probe_reissues_the_leaf_and_keeps_the_identity() {
          proves nothing about the identity below"
     );
     let seed = load_keydev(&d, &mut fs).expect("the seed it certifies");
-    let key = P256Key::from_scalar(&seed).unwrap();
+    let key = P256Key::from_scalar(seed.expose()).unwrap();
     assert!(
         cert_matches_template(&after, &key),
         "the reissued leaf must still certify this device's own attestation key"
@@ -956,7 +1260,163 @@ fn a_truncated_scan_still_issues_the_attestation_certificate() {
     );
     let seed = load_keydev(&d, &mut fs).expect("and the seed it certifies");
     assert!(
-        cert_matches_template(&cert, &P256Key::from_scalar(&seed).unwrap()),
+        cert_matches_template(&cert, &P256Key::from_scalar(seed.expose()).unwrap()),
         "and it certifies that seed's public key"
     );
+}
+
+/// What the boot pass reports keeps the page-58 lock waiting (audit run-27 #8): a
+/// pre-OTP seed it moved is not left, a PIN-wrapped one it cannot touch is, until
+/// the first PIN verify moves it, and one whose re-seal the medium refused is the
+/// error. Without the fused key nothing is judged left.
+#[test]
+fn the_boot_pass_reports_what_it_left_under_the_chip_serial_arm() {
+    let seed = [0x5A; 32];
+    let pin_hash = [0x99u8; 16];
+
+    let mut store = fs();
+    encrypt_keydev_f1(&dev(), &mut store, &seed).unwrap();
+    assert_eq!(
+        migrate_keydev_boot(&otp_dev(), &mut store),
+        Ok(false),
+        "moved"
+    );
+    assert_eq!(
+        migrate_keydev_boot(&otp_dev(), &mut store),
+        Ok(false),
+        "already current"
+    );
+
+    let mut store = fs();
+    wrap_keydev_legacy(&dev(), &mut store, &seed, &pin_hash);
+    assert_eq!(
+        migrate_keydev_boot(&otp_dev(), &mut store),
+        Ok(true),
+        "PIN-wrapped"
+    );
+    assert_eq!(
+        migrate_keydev_boot(&dev(), &mut store),
+        Ok(false),
+        "no fused key"
+    );
+    migrate_keydev_pin(&otp_dev(), &mut store, &pin_hash).unwrap();
+    assert_eq!(
+        migrate_keydev_boot(&otp_dev(), &mut store),
+        Ok(false),
+        "after the PIN"
+    );
+
+    let (cut, medium) = rsk_fs::storage::faults::Cut::new();
+    let mut store = Fs::new(cut);
+    store.scan();
+    encrypt_keydev_f1(&dev(), &mut store, &seed).unwrap();
+    medium.arm(0);
+    assert!(
+        migrate_keydev_boot(&otp_dev(), &mut store).is_err(),
+        "refused re-seal"
+    );
+}
+
+/// A read of a slot the flash failed is not a slot with nothing left in it (review
+/// of the page-58 verdict). Whichever read the fault lands on, or every read, the
+/// pass either moved the pre-OTP record or keeps the lock waiting.
+#[test]
+fn a_faulted_read_of_a_pre_otp_slot_is_never_reported_clear() {
+    for fault in [None, Some(0), Some(1), Some(2)] {
+        let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+        let mut store = Fs::new(backend);
+        store.scan();
+        encrypt_keydev_f1(&dev(), &mut store, &[0x5A; 32]).unwrap();
+        let before = medium.value(EF_KEY_DEV.get());
+        match fault {
+            None => medium.stick(Some(EF_KEY_DEV.get())),
+            Some(skip) => medium.stick_after(EF_KEY_DEV.get(), skip),
+        }
+        let verdict = migrate_keydev_boot(&otp_dev(), &mut store);
+        medium.stick(None);
+        assert!(
+            verdict != Ok(false) || medium.value(EF_KEY_DEV.get()) != before,
+            "fault {fault:?}: reported clear over the pre-OTP seed it never moved"
+        );
+    }
+}
+
+/// CTAP 2.3 §6.6 gives a new store a new state. The tag is written ahead of the seed,
+/// so provisioning cut anywhere — and the boot that retries it, cut again — never
+/// leaves a live seed over no tag, which would read as the zero every older store has.
+#[test]
+fn a_torn_provisioning_never_leaves_a_seed_without_its_store_state() {
+    use rsk_fs::cut::{Snap, sweep_recovery};
+    sweep_recovery(
+        |_fs| (),
+        |fs, _| {
+            let _ = ensure_seed(&dev(), fs, &mut SeqRng(41));
+        },
+        |fs| {
+            let _ = ensure_seed(&dev(), fs, &mut SeqRng(43));
+        },
+        |fs: &mut Fs<Snap>, first, second| {
+            assert!(
+                load_keydev(&dev(), fs).is_some(),
+                "cuts {first}/{second}: the boot after a cut provisions a seed"
+            );
+            assert!(
+                fs.has_data(crate::consts::EF_CRED_STATE),
+                "cuts {first}/{second}: a live seed over no store state"
+            );
+        },
+    );
+}
+
+/// An upgrade mints no tag: a seed already there is an existing store, so a platform
+/// holding an older build's zero tag keeps a valid cache until the store changes.
+#[test]
+fn an_existing_seed_keeps_its_store_state() {
+    let (d, mut f) = (dev(), fs());
+    ensure_seed(&d, &mut f, &mut SeqRng(45)).unwrap();
+    f.delete(crate::consts::EF_CRED_STATE).unwrap();
+    ensure_seed(&d, &mut f, &mut SeqRng(47)).unwrap();
+    assert!(
+        !f.has_data(crate::consts::EF_CRED_STATE),
+        "a boot over an existing seed must not mint a store state"
+    );
+}
+
+#[test]
+fn each_pre_otp_pin_wrapped_slot_keeps_the_boot_migration_pending() {
+    let mut source = fs();
+    wrap_keydev_legacy(&dev(), &mut source, &[0x5a; 32], &[0x99; 16]);
+    let mut blob = [0; KEYDEV_F3_LEN];
+    assert_eq!(source.read(EF_KEY_DEV.get(), &mut blob), Some(blob.len()));
+    for fid in [EF_KEY_DEV, EF_ATT_KEY, EF_PAUTHTOKEN] {
+        let mut store = fs();
+        store.put_key(fid, Sealed::wrap(&blob)).unwrap();
+        let generation = store.write_gen();
+        assert_eq!(migrate_keydev_boot(&otp_dev(), &mut store), Ok(true));
+        assert_eq!(store.write_gen(), generation);
+        let mut retained = [0; KEYDEV_F3_LEN];
+        assert_eq!(store.read(fid.get(), &mut retained), Some(blob.len()));
+        assert_eq!(retained, blob);
+    }
+}
+
+#[test]
+fn a_current_tag_with_an_invalid_authenticator_is_not_resealed_as_a_seed() {
+    let mut store = fs();
+    encrypt_keydev_f1(&dev(), &mut store, &[0x5a; 32]).unwrap();
+    let mut blob = [0; KEYDEV_G1_LEN];
+    assert_eq!(store.read(EF_KEY_DEV.get(), &mut blob), Some(blob.len()));
+    assert_eq!(blob[0], FORMAT_G1);
+    blob[KEYDEV_G1_LEN - 1] ^= 1;
+    store.put_key(EF_KEY_DEV, Sealed::wrap(&blob)).unwrap();
+    let generation = store.write_gen();
+    assert_eq!(migrate_keydev_boot(&dev(), &mut store), Ok(false));
+    assert!(load_keydev(&dev(), &mut store).is_none());
+    assert_eq!(store.write_gen(), generation);
+    let mut retained = [0; KEYDEV_G1_LEN];
+    assert_eq!(
+        store.read(EF_KEY_DEV.get(), &mut retained),
+        Some(blob.len())
+    );
+    assert_eq!(retained, blob);
 }

@@ -3,6 +3,7 @@
 
 import copy
 import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -13,6 +14,8 @@ import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import gate_lines
 import security_trace
+
+pytestmark = pytest.mark.assurance
 
 TRACE = pathlib.Path(__file__).parents[1] / "formal" / "traces" / "security-phase4.jsonl"
 
@@ -122,7 +125,10 @@ def names_of(event, ledger=None):
 
 
 def test_mapper_infers_set_pin_without_using_the_hint():
-    assert names_of(set_pin()) == ["SetPinStart", "SetPinClearPpuat", "SetPinWrite"]
+    ledger = security_trace.new_ledger()
+    assert names_of(set_pin(), ledger) == ["SetPinStart", "SetPinClearPpuat", "SetPinWrite"]
+    # `SetPinClearPpuat` deletes the grant record, so the next reset sweeps one less.
+    assert ledger["ppuat_rec"] is False
 
 
 def test_a_power_cycle_is_one_power_cut_and_reads_no_state_difference():
@@ -143,12 +149,13 @@ def test_the_secret_sweep_does_not_grow_with_the_records_the_seed_opens():
     ledger["cred"].update({"rp1", "rp2"})
     ledger["rpent"].update({"rp1", "rp2"})
     ledger["pin_set"] = True
+    ledger["ppuat_rec"] = False  # the setPIN revoked it
     names = [n for n, _ in security_trace.reset_path(ledger)]
     assert names.count("ResetSweepSecrets") == 2  # the seed, then the advance
     assert names.count("ResetSweepGates") == 2  # pin + advance
     assert names[0] == "ResetStart" and names[-2] == "ResetFinish"
     # The grant is its own arm (`PpuatIsASecret`), so it does add a step.
-    ledger["ppuat"] = True
+    ledger["ppuat_rec"] = True
     assert [n for n, _ in security_trace.reset_path(ledger)].count("ResetSweepSecrets") == 3
     assert security_trace.reset_path(security_trace.new_ledger()).count(
         ("ResetSweepGates", "ResetSweepGates")
@@ -158,6 +165,7 @@ def test_the_secret_sweep_does_not_grow_with_the_records_the_seed_opens():
 def test_a_seedless_store_holding_records_has_no_sweep_length():
     ledger = security_trace.new_ledger()
     ledger["seed"] = False
+    ledger["ppuat_rec"] = False  # `ensure_seed` mints the record only beside a seed
     ledger["cred"].add("rp1")
     with pytest.raises(SystemExit, match="no modelled sweep length"):
         security_trace.reset_path(ledger)
@@ -169,14 +177,15 @@ def test_a_seedless_store_holding_records_has_no_sweep_length():
 def test_each_gate_the_sweep_deletes_costs_its_own_step():
     # `always_uv` and `sealed` are `GatesLive` terms the recording never sets, so
     # nothing else here would notice one moved to the secrets phase.
-    base = security_trace.new_ledger()
-    assert [n for n, _ in security_trace.reset_path(base)].count("ResetSweepGates") == 1
+    base = [n for n, _ in security_trace.reset_path(security_trace.new_ledger())]
+    assert base.count("ResetSweepGates") == 1
+    assert base.count("ResetSweepSecrets") == 3  # the seed, the grant record, the advance
     for gate in ("pin_set", "always_uv", "sealed"):
         ledger = security_trace.new_ledger()
         ledger[gate] = True
         names = [n for n, _ in security_trace.reset_path(ledger)]
         assert names.count("ResetSweepGates") == 2, gate
-        assert names.count("ResetSweepSecrets") == 2, gate
+        assert names.count("ResetSweepSecrets") == 3, gate
 
 
 def test_a_wrong_pin_needs_both_counters_to_move():
@@ -361,11 +370,17 @@ def test_a_gate_row_is_held_to_the_action_hint_too():
 def test_the_power_cycle_reopens_the_reset_window_for_b_as_well():
     ledger = security_trace.new_ledger()
     ledger["clock"] = 1
+    ledger["ppuat_rec"] = False
     event = copy.deepcopy(clay())
     event["command_raw"] = security_trace.POWER_CYCLE
     event["post"] = copy.deepcopy(event["pre"])
-    security_trace.infer(event, ledger)
+    actions, _ = security_trace.infer(event, ledger)
     assert ledger["clock"] == 0
+    # And predicts the mint of the grant record a PIN change had revoked. B's boot
+    # MAY skip it, and R4a is an invariant, so an unpinned `PowerCut` would leave TLC
+    # a successor the recording contradicts.
+    assert ledger["ppuat_rec"] is True
+    assert actions == [("PowerCut", "/\\ PowerCut /\\ gate'.ppuatRec = TRUE")]
 
 
 def test_an_older_schema_is_refused_rather_than_read(tmp_path):
@@ -418,9 +433,9 @@ def test_a_configuration_floors_txt_names_no_verdict_for_is_fatal(monkeypatch, t
         security_trace.trace_verdicts()
 
 
-def test_check_sh_runs_this_row():
+def test_check_assurance_sh_runs_this_row():
     """`NAMED` says this table exists; only this says the guard is wired in."""
-    check = (pathlib.Path(__file__).parents[1] / "scripts/check.sh").read_text()
+    check = (pathlib.Path(__file__).parents[1] / "scripts/check-assurance.sh").read_text()
     assert gate_lines.runs(check, "scripts/security_trace.py --check-data")
 
 
@@ -762,7 +777,9 @@ def test_the_fields_the_recording_never_varies_are_the_registered_ones():
     """
     rows, seen, constant = constant_fields()
     assert len(rows) == 40, len(rows)
-    assert (len(seen), len(constant)) == (81, 35), (len(seen), len(constant))
+    # 35 until provisioning minted the grant record (0x09CB): the recording opens
+    # with one and setPIN deletes it, so pre and post, raw and abstract, vary.
+    assert (len(seen), len(constant)) == (81, 31), (len(seen), len(constant))
     # The ones a P0-launch conjunct reads. `token_user_present_raw` and
     # `soft_lock_raw` are the antecedents of BOTH clauses of
     # `NoAuthorizationBypass`, which is the flagship row.
@@ -773,8 +790,6 @@ def test_the_fields_the_recording_never_varies_are_the_registered_ones():
         "post.token_user_present_raw",
         "pre.warm_boot_raw",
         "post.warm_boot_raw",
-        "pre.persistent_grant_record",
-        "post.persistent_grant_record",
         "pre.backup_sealed_record",
         "post.backup_sealed_record",
         "pre.keydev_ram_raw",
@@ -826,7 +841,7 @@ def test_an_unexcused_shrug_names_the_event_and_the_direction_c_answered():
 
 
 def test_a_power_cycle_carrying_a_status_is_not_the_pseudo_command_excused():
-    """`tools/emu/src/device.rs:751-752` passes the literal 0 as the status of a
+    """`tools/emu/src/device.rs:810-811` passes the literal 0 as the status of a
     replug, so `delta_c` of it is a placeholder, not the device answering — and
     THAT is the class's whole reason, so the arm asserts it.
 
@@ -920,13 +935,13 @@ class Row:
         assert text.count(old) == count, f"anchor {old!r} appears {text.count(old)}x, not {count}"
         path.write_text(text.replace(old, new))
 
-    def run(self, flag="--check-data"):
+    def run(self, flag="--check-data", env=None):
         """The row's own command, argument for argument."""
         return subprocess.run(
             [sys.executable, str(self.root / "scripts/security_trace.py"), flag,
              str(self.root / "formal/TraceSecurityData.tla"),
              str(self.root / "formal/traces" / TRACE.name)],
-            capture_output=True, text=True, check=False,
+            capture_output=True, text=True, check=False, env=env,
         )
 
 
@@ -997,6 +1012,16 @@ def test_the_check_sh_row_falls_for_each_shrug_mutant(tmp_path, name, patch, cod
     else:
         assert message not in done.stderr, done.stderr[-800:]
         assert "GREEN commands=40" in done.stdout, done.stdout[-800:]
+
+
+def test_the_row_keeps_a_java_io_tmpdir_of_its_own(tmp_path):
+    """SANY writes each standard module into java.io.tmpdir, so TLCs sharing one
+    parsed each other's half-written Naturals.tla (exit 150). A default nothing can
+    be written to stands in for a shared one, without a race."""
+    absent = tmp_path / "no-such-tmp"
+    poisoned = {**os.environ, "JAVA_TOOL_OPTIONS": f"-Djava.io.tmpdir={absent}"}
+    done = Row(tmp_path).run(env=poisoned)
+    assert done.returncode == 0, done.stderr[-800:]
 
 
 def test_the_unpatched_copy_of_the_row_is_green(tmp_path):

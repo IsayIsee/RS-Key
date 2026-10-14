@@ -12,7 +12,8 @@ EXTENDS FiniteSets
 VARIABLE a
 
 Ops == {"Noop", "IssueToken", "RevokeToken", "SetPin", "ClearPin",
-        "MintGrant", "RevokeGrant", "UseMc", "UseGa", "UseCm", "UseAcfg"}
+        "MintGrant", "ProvisionGrant", "RevokeGrant",
+        "UseMc", "UseGa", "UseCm", "UseAcfg"}
 
 Outcomes == {"Silent", "Authorized", "Rejected"}
 
@@ -94,6 +95,13 @@ AllowedEventRel(pre, op, outcome, post) ==
                /\ outcome = "Authorized" /\ pre.pinSet
                /\ post.persistentGrant /\ post.pinSet = pre.pinSet
                /\ SameVolatile(pre, post)
+         [] op = "ProvisionGrant" ->
+               \* `ensure_seed` at a boot, a finished reset or a backup load: the
+               \* record appears through no PIN door. A boot retires the session;
+               \* a backup load leaves it standing.
+               /\ outcome \in {"Silent", "Authorized"}
+               /\ post.persistentGrant /\ post.pinSet = pre.pinSet
+               /\ (SameVolatile(pre, post) \/ Retired(post))
          [] op = "RevokeGrant" ->
                /\ outcome = "Silent" /\ ~post.persistentGrant
                /\ post.pinSet = pre.pinSet /\ SameVolatile(pre, post)

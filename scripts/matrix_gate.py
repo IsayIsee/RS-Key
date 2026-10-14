@@ -191,7 +191,7 @@ FLOOR_PACKAGES = 22
 #: Same fork modification as the package floor above: 6 -> 7, for the
 #: `firmware/boards/waveshare-geek.toml` preset this fork adds.
 FLOOR_BOARDS = 7
-FLOOR_ROWS = 40
+FLOOR_ROWS = 41
 #: A `why` or a settling question shorter than this is a placeholder rather than
 #: prose: `.strip()` alone let `"?"` and `"TODO"` stand as the question that would
 #: settle a whole column. Six, because the ledger's shortest real question is

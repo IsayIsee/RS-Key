@@ -13,6 +13,10 @@
 /// The nine wire bytes; see the module docs for each element's Table 8 origin.
 pub(crate) const CCC: [u8; 9] = [0xF0, 0x00, 0xF1, 0x00, 0xF2, 0x00, 0xF5, 0x01, 0x10];
 
+/// [`CCC`]'s wire length, so a serving buffer slices by a constant
+/// (`get_data`'s arm; the CHUID path slices by [`chuid::CHUID_LEN`] the same way).
+pub(crate) const CCC_LEN: usize = CCC.len();
+
 #[cfg(test)]
 #[path = "ccc_tests.rs"]
 mod tests;

@@ -1375,18 +1375,20 @@ dependencies = [
  "ml-kem",
  "p256",
  "rsk-mldsa",
+ "rsk-secret",
  "rsk-sha512",
  "sha1",
  "sha2 0.10.9",
- "zeroize",
 ]
 
 [[package]]
 name = "rsk-devconf"
 version = "0.1.0"
 dependencies = [
+ "rsk-crypto",
  "rsk-fs",
  "rsk-sdk",
+ "rsk-secret",
 ]
 
 [[package]]
@@ -1425,6 +1427,7 @@ dependencies = [
  "p384",
  "p521",
  "rfc6979",
+ "rsk-secret",
  "x25519-dalek",
  "zeroize",
 ]
@@ -1446,6 +1449,7 @@ dependencies = [
  "rsk-led",
  "rsk-phy",
  "rsk-sdk",
+ "rsk-secret",
  "zeroize",
 ]
 
@@ -1483,6 +1487,7 @@ dependencies = [
  "rsk-rescue",
  "rsk-rsa",
  "rsk-sdk",
+ "rsk-secret",
  "rsk-sha512",
  "rsk-store",
  "rsk-ui",
@@ -1509,6 +1514,7 @@ dependencies = [
 name = "rsk-mldsa"
 version = "0.1.0"
 dependencies = [
+ "rsk-secret",
  "sha3 0.10.9",
  "zeroize",
 ]
@@ -1520,7 +1526,7 @@ dependencies = [
  "rsk-crypto",
  "rsk-fs",
  "rsk-sdk",
- "zeroize",
+ "rsk-secret",
 ]
 
 [[package]]
@@ -1532,6 +1538,8 @@ dependencies = [
  "rsk-fs",
  "rsk-rsa",
  "rsk-sdk",
+ "rsk-secret",
+ "rsk-x509",
  "zeroize",
 ]
 
@@ -1543,7 +1551,7 @@ dependencies = [
  "rsk-devconf",
  "rsk-fs",
  "rsk-sdk",
- "zeroize",
+ "rsk-secret",
 ]
 
 [[package]]
@@ -1563,6 +1571,8 @@ dependencies = [
  "rsk-fs",
  "rsk-rsa",
  "rsk-sdk",
+ "rsk-secret",
+ "rsk-x509",
  "zeroize",
 ]
 
@@ -1572,10 +1582,11 @@ version = "0.1.0"
 dependencies = [
  "k256",
  "rsk-crypto",
+ "rsk-devconf",
  "rsk-fs",
  "rsk-phy",
  "rsk-sdk",
- "zeroize",
+ "rsk-secret",
 ]
 
 [[package]]
@@ -1585,11 +1596,20 @@ dependencies = [
  "cc",
  "num-bigint-dig",
  "num-integer",
+ "rsk-secret",
  "zeroize",
 ]
 
 [[package]]
 name = "rsk-sdk"
+version = "0.1.0"
+dependencies = [
+ "rsk-secret",
+ "zeroize",
+]
+
+[[package]]
+name = "rsk-secret"
 version = "0.1.0"
 dependencies = [
  "zeroize",
@@ -1629,6 +1649,7 @@ dependencies = [
  "embassy-time",
  "embassy-usb",
  "rsk-sdk",
+ "rsk-secret",
  "zeroize",
 ]
 
@@ -1636,8 +1657,18 @@ dependencies = [
 name = "rsk-vendor"
 version = "0.1.0"
 dependencies = [
+ "rsk-devconf",
  "rsk-fs",
  "rsk-led",
+ "rsk-sdk",
+]
+
+[[package]]
+name = "rsk-x509"
+version = "0.1.0"
+dependencies = [
+ "rsk-crypto",
+ "rsk-ec",
  "rsk-sdk",
 ]
 
@@ -2003,17 +2034,3 @@ name = "zeroize"
 version = "1.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
-dependencies = [
- "zeroize_derive",
-]
-
-[[package]]
-name = "zeroize_derive"
-version = "1.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85a5b4158499876c763cb03bc4e49185d3cccbabb15b33c627f7884f43db852e"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]

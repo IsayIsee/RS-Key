@@ -30,11 +30,49 @@ cross-reset state, the store — tying a model to the code it claims to abstract
 under models that actually run, and keeping the checks-of-the-checks honest:
 a proof nobody executes is documentation with a false badge on it.
 
+**Testing with measured decisions and failures.** The
+[testing roadmap](testing-roadmap.md) adapts SQLite's methods to the
+authenticator: branch and MC/DC measurements, independent result checks,
+compound storage failures, stateful fuzzing and tests of the delivered image.
+Its eight phases have explicit completion criteria and remain open. High host
+line coverage alone does not complete this direction.
+
 **Conformance parity.** The bar is a real YubiKey and the specification, in
 that order when they disagree and the spec is on our side, and the other order
 when it is not — matching a behaviour real hosts depend on beats being right
 alone ([interop.md](interop.md)). The direction is closing divergences one at a
 time, each with the measurement that found it.
+
+The next target is conformance parity with pico-fido, compared by applicable
+case IDs under the same tool version and profile. Record each build and the
+reasons for pending cases: host-test counts and a different runner's totals do
+not establish parity. The complete official run on
+2026-10-04 reached **250 passed / 4 failed / 70 pending** in 685.92 seconds
+([testing.md](testing.md#fido-conformance)).
+
+The `uvm` and `pinComplexityPolicy` extension paths now have dispatcher tests,
+including authenticated policy configuration, RP privacy, PIN changes and
+reset. Keep the accepted per-device attestation design visible in the results:
+its empty root list affects official metadata tests. The standard MDS3 legal
+header is restored; P-36 passes in the official Metadata-group rerun, which
+reached **25 passed / 1 failed / 11 pending**. A new complete run remains pending.
+A published result must list the remaining outcomes alongside its pass count.
+
+The seven failures in the private Go replay are accounted for: three runner
+defects are fixed, two enterprise cases pass with the official test fixture,
+and two are the accepted empty-root differences. The complete emulator replay
+is **223 passed / 2 failed / 70 skipped**, with no exclusions. The official
+hardware run also exposed three no-touch HID failures and the old tool's
+strictly increasing non-resident counter assertion. The subsequent official
+HID-group run on the touch image reached **16 passed / 0 failed**, including
+the three previously failing cases. The enterprise test certificate is now
+installed, and the complete October 4 touch run passes both EA comparisons and
+those three HID cases. Compare the remaining counter and metadata failures and
+pending cases against pico-fido; there is no fixed pass-count target.
+A separate `largeblob-ext` emulator replay exercised eleven
+additional cases but made eleven others inapplicable, retaining **223 passed /
+2 failed / 70 skipped**. That alternative build is not a pass-count increase.
+A software reboot does not satisfy the board's CTAP Reset window.
 
 **The trusted display.** The variant with a screen is where the anti-phishing
 promise lives: what you are approving, shown by something the host cannot

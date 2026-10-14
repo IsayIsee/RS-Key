@@ -15,7 +15,7 @@
 # the thing it is about does not exist — the four `no-touch` packages remove the
 # physical-consent gate the P0-launch authorization properties are ABOUT.
 #
-# The five dispositions (roadmap §6 stage 0 п.2):
+# The five dispositions (roadmap §6 stage 0 item 2):
 #   covered       the registry's evidence was produced on this configuration.
 #                 That first sentence is the CLAIM; the rest is how it is
 #                 spelled, and reading the spelling alone is how this word goes
@@ -83,7 +83,7 @@
 # over the whole workspace, clears 190 of the same 954. 77% of the matrix on one
 # derivation, which would be the largest weakening this row could take, so it is
 # a programme decision and not a gate edit.
-# Why not taken: roadmap §8A п.3 lets a CONCRETE equivalence proof stand in
+# Why not taken: roadmap §8A item 3 lets a CONCRETE equivalence proof stand in
 # for a repeated one, and a closure comparison is not one. It cannot see a
 # property whose own evidence is itself feature-conditional, and it cannot see a
 # violation that arrives from composition OUTSIDE the owner crate — the glue that
@@ -112,7 +112,7 @@ p0-launch = [
 ]
 # §5.2 — the next security-critical queue.
 p0b = [
-  "SEC-LAT-001", "SEC-LAT-002", "SEC-LAT-003",
+  "SEC-LAT-001", "SEC-LAT-002", "SEC-LAT-003", "SEC-LAT-004",
   "SEC-POL-001", "SEC-POL-002", "SEC-POL-003",
   "SEC-POL-004", "SEC-POL-005", "SEC-POL-006",
   "SEC-SEAM-001", "SEC-SEAM-002", "SEC-SEAM-003", "SEC-SEAM-006",
@@ -188,7 +188,7 @@ properties = [
   "SEC-FIDO-005", "SEC-FIDO-006", "SEC-FIDO-006A", "SEC-FIDO-006B",
   "SEC-FIDO-006C", "SEC-FIDO-007", "SEC-FIDO-008", "SEC-STORE-001",
   "SEC-STORE-002", "SEC-STORE-003", "SEC-STORE-004", "SEC-STORE-005",
-  "SEC-STORE-006", "SEC-LAT-001", "SEC-LAT-002", "SEC-LAT-003",
+  "SEC-STORE-006", "SEC-LAT-001", "SEC-LAT-002", "SEC-LAT-003", "SEC-LAT-004",
   "SEC-POL-001", "SEC-POL-002", "SEC-POL-003", "SEC-POL-004", "SEC-POL-005",
   "SEC-POL-006", "SEC-SEAM-001", "SEC-SEAM-002", "SEC-SEAM-003",
   "SEC-SEAM-006", "SEC-ADM-002", "SEC-ADM-004", "SEC-BOOT-001",
@@ -232,8 +232,8 @@ columns = [
   "firmware-strict-up", "firmware-strict-up-pqc", "firmware-pico",
   "firmware-2mb", "firmware-16mb", "firmware-strict-config", "keygen-bench",
   "core1-stats", "bench", "fido-conformance", "ea-conformance-rpid",
-  "largeblob-ext", "abrobot-16m", "abrobot-4m", "seeed-xiao", "tenstar-usb",
-  "waveshare-one", "waveshare-touch-lcd",
+  "largeblob-ext", "preview-sign", "abrobot-16m", "abrobot-4m", "seeed-xiao",
+  "tenstar-usb", "waveshare-one", "waveshare-touch-lcd",
 ]
 disposition = "out-of-scope"
 basis = "crate-absent"
@@ -252,7 +252,7 @@ properties = [
   "SEC-FIDO-005", "SEC-FIDO-006", "SEC-FIDO-006A", "SEC-FIDO-006B",
   "SEC-FIDO-006C", "SEC-FIDO-007", "SEC-FIDO-008", "SEC-STORE-001",
   "SEC-STORE-002", "SEC-STORE-003", "SEC-STORE-004", "SEC-STORE-005",
-  "SEC-STORE-006", "SEC-LAT-001", "SEC-LAT-002", "SEC-LAT-003",
+  "SEC-STORE-006", "SEC-LAT-001", "SEC-LAT-002", "SEC-LAT-003", "SEC-LAT-004",
   "SEC-POL-001", "SEC-POL-002", "SEC-POL-003", "SEC-POL-004", "SEC-POL-005",
   "SEC-POL-006", "SEC-SEAM-001", "SEC-SEAM-002", "SEC-SEAM-003",
   "SEC-SEAM-006", "SEC-ADM-002", "SEC-ADM-004", "SEC-BOOT-001",
@@ -284,7 +284,7 @@ properties = [
   "SEC-FIDO-005", "SEC-FIDO-006", "SEC-FIDO-006A", "SEC-FIDO-006B",
   "SEC-FIDO-006C", "SEC-FIDO-007", "SEC-FIDO-008", "SEC-STORE-001",
   "SEC-STORE-002", "SEC-STORE-003", "SEC-STORE-004", "SEC-STORE-005",
-  "SEC-STORE-006", "SEC-LAT-001", "SEC-LAT-002", "SEC-LAT-003",
+  "SEC-STORE-006", "SEC-LAT-001", "SEC-LAT-002", "SEC-LAT-003", "SEC-LAT-004",
   "SEC-POL-001", "SEC-POL-002", "SEC-POL-003", "SEC-POL-004", "SEC-POL-005",
   "SEC-POL-006", "SEC-SEAM-001", "SEC-SEAM-002", "SEC-SEAM-003",
   "SEC-SEAM-006", "SEC-ADM-002", "SEC-ADM-004", "SEC-BOOT-001",
@@ -315,7 +315,7 @@ properties = [
   "SEC-FIDO-006A", "SEC-FIDO-006B", "SEC-FIDO-006C", "SEC-FIDO-007",
   "SEC-FIDO-008", "SEC-STORE-001", "SEC-STORE-002", "SEC-STORE-003",
   "SEC-STORE-004", "SEC-STORE-005", "SEC-STORE-006", "SEC-LAT-001",
-  "SEC-LAT-002", "SEC-LAT-003", "SEC-POL-001", "SEC-POL-002", "SEC-POL-003",
+  "SEC-LAT-002", "SEC-LAT-003", "SEC-LAT-004", "SEC-POL-001", "SEC-POL-002", "SEC-POL-003",
   "SEC-POL-005", "SEC-POL-006", "SEC-SEAM-001", "SEC-SEAM-002",
   "SEC-SEAM-003", "SEC-SEAM-006", "SEC-ADM-004", "SEC-BOOT-001",
   "SEC-BOOT-002", "SEC-TRANS-001", "SEC-TRANS-002", "SEC-TRANS-003",
@@ -510,8 +510,8 @@ columns = ["tenstar-usb"]
 same_as = "firmware"
 knob_delta = [
   "flash.kvmain_kb=1408", "flash.size_mb=16", "led.kind=ws2812",
-  "led.order=grb", "led.pin=22", "presence.active_high=False",
-  "presence.pin=15", "presence.source=gpio", "usb.vidpid=RSKey",
+  "led.order=grb", "led.pin=22", "presence.source=bootsel",
+  "usb.vidpid=RSKey",
 ]
 disposition = "equivalent"
 basis = "same-cargo-features"
@@ -734,7 +734,7 @@ the alwaysUv gate surviving a reset, with a compiled-in default this column \
 moves. Do the model's gate constants cover the alwaysUv-on arm? THE MODEL \
 HALF IS ANSWERED: `AlwaysUvShipped` is AS-AUTH-2 in \
 `assurance/assumptions.toml`, and `formal/AlwaysUv.cfg` runs `TypeOK` plus \
-the eight P0-launch invariants with it TRUE — GREEN over 23 521 512 distinct \
+the eight P0-launch invariants with it TRUE — GREEN over 31 451 172 distinct \
 states at depth 51, per `formal/runs.toml`. Read the cfg for that count, \
 never this sentence: it said "all six invariants", and the file has carried \
 nine entries in every commit it has ever had, so the number was wrong when \
@@ -926,6 +926,16 @@ swapped surface move any credential-management or authorization transition the \
 P0-launch models name?"""
 
 [[question]]
+column = "preview-sign"
+owner = "contributor"
+settled_by = "evidence"
+text = """
+Yubico's draft previewSign extension, off by default: a registration that asks \
+for it gains an ARKG seed and a second attestation object, and an assertion \
+signs the site's digest behind the same UP and UV gates, storing nothing. Does \
+either path move a gate, a counter or a record a P0-launch model names?"""
+
+[[question]]
 column = "abrobot-16m"
 owner = "contributor"
 settled_by = "evidence"
@@ -958,7 +968,7 @@ text = "2 MB with `KVMAIN` at 896 K — the `firmware-2mb` question on a board t
 column = "tenstar-usb"
 owner = "contributor"
 settled_by = "evidence"
-text = "The 16 MB geometry question, plus a GPIO presence source on 15."
+text = "The 16 MB geometry question of `firmware-16mb`; presence is BOOTSEL, as on the default image (issue #125)."
 
 [[question]]
 column = "waveshare-touch-lcd"

@@ -5,6 +5,37 @@ use super::*;
 use crate::{AlwaysConfirm, FidoState};
 use rsk_fs::storage::ram::RamStorage;
 
+#[path = "journal_decisions_tests.rs"]
+mod decisions;
+
+#[test]
+fn attestation_key_retries_a_reproducible_out_of_range_hkdf_scalar() {
+    let mut seed = [1; 32];
+    seed[..8].copy_from_slice(&1_341_577_486u64.to_le_bytes());
+    let mut info = [0; 25];
+    info[..24].copy_from_slice(b"RSK audit attestation v1");
+    let mut scalar = [0; 32];
+    hkdf_sha256(&[0xab; 32], &seed, &info, &mut scalar).unwrap();
+    assert_eq!(
+        scalar,
+        [
+            0xff, 0xff, 0xff, 0xff, 0x8e, 0x3c, 0x9e, 0xb7, 0xe9, 0x5f, 0x61, 0xd4, 0x43, 0x01,
+            0x29, 0x3a, 0x3a, 0x1b, 0x30, 0x0e, 0x0e, 0xa9, 0x6d, 0x0c, 0xe9, 0x3a, 0x21, 0x8f,
+            0x15, 0xa5, 0xcb, 0xd5,
+        ]
+    );
+    assert!(P256Key::from_scalar(&scalar).is_none());
+    info[24] = 1;
+    hkdf_sha256(&[0xab; 32], &seed, &info, &mut scalar).unwrap();
+    let expected = P256Key::from_scalar(&scalar).unwrap();
+    let actual = attestation_key(&seed, &[0xab; 32]).unwrap();
+    assert_eq!(actual.public_xy(), expected.public_xy());
+    assert_eq!(
+        attestation_key(&seed, &[0xab; 32]).unwrap().public_xy(),
+        actual.public_xy()
+    );
+}
+
 struct SeqRng(u64);
 impl Rng for SeqRng {
     fn fill(&mut self, buf: &mut [u8]) {
@@ -20,6 +51,7 @@ fn dev() -> Device<'static> {
         serial_hash: &[0xAB; 32],
         serial_id: &[1, 2, 3, 4, 5, 6, 7, 8],
         otp_key: None,
+        latched: false,
     }
 }
 
@@ -372,7 +404,10 @@ fn checkpoint_requires_devk_and_signature_verifies() {
     });
     assert_eq!(err, Err(CtapError::NotAllowed));
 
-    state.devk_source = Some(|| Some([7; 32]));
+    state.devk_source = Some(rsk_crypto::FusedKey::open(|out: &mut [u8; 32]| {
+        *out = [7; 32];
+        true
+    }));
     run_ctx(&mut fs, &mut state, |ctx| {
         append(ctx, EV_MAKE_CRED, 0, &[1; 8]);
     });
@@ -483,14 +518,15 @@ fn the_checkpoint_reads_the_devk_per_call() {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     static READS: AtomicUsize = AtomicUsize::new(0);
-    fn source() -> Option<[u8; 32]> {
+    fn source(out: &mut [u8; 32]) -> bool {
         READS.fetch_add(1, Ordering::Relaxed);
-        Some([7; 32])
+        *out = [7; 32];
+        true
     }
 
     let mut fs = Fs::new(RamStorage::new());
     let mut state = FidoState::new();
-    state.devk_source = Some(source);
+    state.devk_source = Some(rsk_crypto::FusedKey::open(source));
     let mut out = [0u8; 512];
 
     run_ctx(&mut fs, &mut state, |ctx| {

@@ -568,3 +568,13 @@ fn g_a_cancel_during_a_hold_ends_the_wait() {
         Gesture::Cancelled
     );
 }
+
+#[test]
+fn a_default_arbiter_has_no_pending_ceremony_or_cancel() {
+    let arb = Arbiter::default();
+    for scope in [SCOPE_NONE, SCOPE_FIDO, SCOPE_CCID, SCOPE_OTP] {
+        assert!(!arb.pending_for(scope));
+    }
+    assert!(!arb.cancel_requested());
+    assert_eq!(arb.timeout_ms(), 30_000);
+}

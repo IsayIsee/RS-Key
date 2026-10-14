@@ -31,7 +31,7 @@ record half is written into the region as [`OPEN`], with its cost, rather than
 faked with a placeholder.
 
 That is also the reason [`stable`] exists. A generated region is byte-diffed on
-every `check.sh` run, so a value that changes on every commit would leave the
+every gate run, so a value that changes on every commit would leave the
 region permanently dirty and the row a nuisance instead of a guard. Every value
 below is a function of a file's CONTENT, so it moves when that file moves and at
 no other time; the rule refuses any hex in the rendered region that names a
@@ -86,7 +86,10 @@ asserts rather than assumes.
    must be exactly `release-build.yml`, because that identity is what the
    published `cosign verify-blob --certificate-identity-regexp` checks and what
    makes the provenance SLSA Build L3 rather than L2 — and because a second
-   called workflow is a release step this manifest never opens.
+   called workflow is a release step this manifest never opens. And the builder
+   runs only AT the tag it releases ([`REF_TEST`]): the signature and the
+   attestation carry the run's ref, and the verify commands take the release's
+   own tag, so a run at a branch or at another tag publishes what they refuse.
 7. **[`stable`]** — see above.
 8. **The published set, both ways and on both pages.** Every asset a page names
    is one this workflow writes AND one `gh release create` uploads; nothing is
@@ -255,7 +258,7 @@ ENTRIES = (
     {
         "step": "resolve tag",
         "subject": "admission",
-        "statement": "Shape, charset, and an ancestor-of-`main` test. Defence in depth only: an actor who can push a tag also controls this file at that ref, so the primary control is a repository tag ruleset.",
+        "statement": "Shape, charset, the run's own ref, and an ancestor-of-`main` test. The ref test makes the published identity the release's: a run anywhere but at the tag it releases stops here. The rest is defence in depth: an actor who can push a tag also controls this file at that ref, so the primary control is a repository tag ruleset.",
     },
     {
         "step": "build the",
@@ -381,6 +384,16 @@ CALLED = re.compile(r"^\s+uses:\s*(?P<path>\S+?\.ya?ml)(?P<ref>@\S+)?\s*(?:#.*)?
 #: every tag-shaped ref to a job holding `contents: write`, and the tag gate is
 #: defence in depth by its own entry's statement.
 TRIGGER = '["v*"]'
+
+#: The admission step's test that a run is AT the tag it releases, as the step
+#: spells it, and the exit that makes it a test. Rule 6 holds WHICH workflow
+#: signs; this holds at WHICH ref, the other half of the identity a verifier checks.
+REF_TEST = 'if [ "$GITHUB_REF" != "refs/tags/$TAG" ]; then'
+#: A status bash reads as a failure: 1-255, since `exit 256` is `exit 0`.
+EXIT = re.compile(r"exit (?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d?)")
+#: A line that ends the test's `then` branch, or opens a nested one the exit
+#: could hide in: its `fi` (`fi;` too), an `else`, an `elif`, an inner `if`.
+BRANCH_END = re.compile(r"(?:fi|else|elif|if)\b")
 
 #: `for pkg in a b c; do`, the shape both flavor loops use.
 LOOP = re.compile(r"for pkg in (?P<list>[\w\s-]+?);\s*do")
@@ -1311,6 +1324,42 @@ def check_caller(root: pathlib.Path, findings: list[str]) -> None:
         )
 
 
+def check_ref_is_tag(paired: dict[str, dict], findings: list[str]) -> None:
+    """Rule 6, the ref half: the admission step stops a run not AT its tag.
+
+    Read off the commands of the step whose shape is `admission`, the way
+    [`SHAPE`] reads a subject: [`REF_TEST`], and its `then` branch read up to the
+    first line that could end or nest it ([`BRANCH_END`]) must END in an [`EXIT`]
+    and hold no other exit. Anywhere else an exit may sit in an `else`, an inner
+    `if`, a pipe or a heredoc, past a `fi;`, or behind an `exit 0`, and this
+    refuses each rather than modelling it.
+
+    Out of reach for a text rule, like every rule here: a function holding the
+    test that nothing calls, a `GITHUB_REF` reassigned above it, a `trap` that
+    turns the exit into a success.
+    """
+    step = next((s for s in paired.values() if subject_of(s) == "admission"), None)
+    if step is None:
+        return
+    code, held = step["code"], False
+    if REF_TEST in code:
+        start = code.index(REF_TEST) + 1
+        end = next((i for i in range(start, len(code)) if BRANCH_END.match(code[i])), len(code))
+        branch = code[start:end]
+        # One exit, the last line: an `exit 0` above it ends the step as a success.
+        held = bool(branch) and EXIT.fullmatch(branch[-1]) is not None and not any(
+            re.match(r"exit\b", line) for line in branch[:-1]
+        )
+    if not held:
+        findings.append(
+            f"{WORKFLOW}'s step {step['title']!r} does not stop a run whose ref is"
+            f" not the tag it releases (`{REF_TEST}` with its `then` branch ending"
+            " in `exit 1`-`255`) — the signature and the attestation carry the"
+            " run's ref and the published verify commands take the release's own"
+            " tag, so a run at a branch or at another tag publishes what they refuse"
+        )
+
+
 #: What `gh release create` uploads. Captured as the trailing operands so the
 #: published set can be held against it: `dist/*` uploads everything the job
 #: wrote, and `dist/*.uf2` — measured by review at exit 0 — uploads none of the
@@ -1534,6 +1583,7 @@ def audit(
     check_counts(job, loops, findings)
     check_page_count(root, flavors, findings)
     check_caller(root, findings)
+    check_ref_is_tag(paired, findings)
     published = assets(job, [label_of(name) for name in flavors])
     check_uploaded(job, published, findings)
     check_named_writes(job, findings)
@@ -1578,7 +1628,7 @@ def body(root, job, packages, flavors, built, published) -> list[str]:
         + ", ".join(f"`{path}`" for path in PROCEDURE[:-1])
         + f" and `{PROCEDURE[-1]}`. Every command and every input below was read"
         " out of those files on the run that wrote this table; a file that no"
-        " longer says the same thing fails `check.sh`.",
+        " longer says the same thing fails `check-assurance.sh`.",
         "",
         "**This is a recipe, not a record.** It says what a release runs, over"
         " which inputs. It is bound to no tag, no commit and no artifact — see"
@@ -1650,7 +1700,7 @@ def body(root, job, packages, flavors, built, published) -> list[str]:
         "### The image each flavor is",
         "",
         "The build step and the reproducibility gate iterate the same list, and"
-        " a difference between them is a `check.sh` failure. Every published"
+        " a difference between them is a `check-assurance.sh` failure. Every published"
         f" image is `{NIX}`'s package of the same name.",
         "",
         "| Flavor | Published as | Build selection |",

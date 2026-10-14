@@ -27,8 +27,8 @@ covers the security boundary. This page covers feature and hardware gaps.
   crate is gone from the tree (0.4.12), and with it RUSTSEC-2023-0071 — the
   Marvin timing side channel, which never had a fixed release. What replaced it
   is `rsk-rsa`: its own key type, `RsaKey`, and a software private operation for
-  the two paths the asm CRT core cannot serve (PIV certificate signing, and a
-  legacy `P‖Q` key whose prime width is not a multiple of 32). Both are
+  the paths the asm CRT core cannot serve (a legacy `P‖Q` key whose prime width is
+  not a multiple of 32; PIV certificate signing too, until 0x0A15 dropped it). Both are
   base-blinded and Bellcore-fault-checked like the asm path, and every signature
   and decryption is checked byte-for-byte against OpenSSL vectors in the host
   tests. It is still ours, still single-maintainer, and still unaudited — the
@@ -123,7 +123,9 @@ covers the security boundary. This page covers feature and hardware gaps.
   remain out of scope. The public RP2350 hacking challenge broke the **A2**
   stepping. The **A4** stepping fixes the boot-ROM and OTP power-glitch attacks
   in silicon, but **not** the antifuse-array readout (mitigated only by how
-  secrets are stored: the chaffing RS-Key applies). Our development boards are
+  secrets are stored: the chaffing RS-Key applies), and **not** a laser that sets
+  `DEBUGEN` on a decapped A4 and reads the OTP through debug, which the chaffing
+  does not touch ([threat model](threat-model.md)). Our development boards are
   A2. The firmware is A4-compatible and A4 is recommended. *Status: never. These
   are silicon properties, not firmware ones; closing them fully is what a
   dedicated secure element is for.*
@@ -142,15 +144,70 @@ covers the security boundary. This page covers feature and hardware gaps.
   notice. *Status: accepted. The desk-conditions measurement that IS reachable is
   `PLAT-TRNG-002`, and this corner gap is `PLAT-TRNG-003`, both in
   [platform assumptions](platform-assumptions.md).*
-- **The at-rest seals are not authenticated against a flash writer.** They keep a
-  flash *dump* from yielding key material, which is what the OTP burn buys. They
-  do not stop someone who can *write* flash over BOOTSEL from planting a record:
-  the pre-OTP key base derives from the public chip serial, and those arms stay
-  readable after the burn so an already-provisioned device survives the upgrade.
-  The boot migration then re-seals the planted record under the fused root.
-  *Status: needs a fuse-rooted latch that closes the migration window once the
-  device is provisioned; the analysis is audit run-27 #8, the decision is the
-  maintainer's because it makes `lock-page58` load-bearing for boot correctness.*
+- **The at-rest seals authenticate a record only past the page-58 latch.** They
+  keep a flash *dump* from yielding key material, which is what the OTP burn
+  buys. Before the page-58 latch they do not stop someone who can *write* flash
+  over BOOTSEL from planting a record either: the pre-OTP key base derives from
+  the public chip serial, and those arms stay readable after the burn so an
+  already-provisioned device survives the upgrade. The latch closes them for
+  every device-sealed record: `rsk otp lock-page58` burns it only over a device
+  whose boot read every such record and left none on the pre-burn key (READ
+  `1E/07`), and from the next boot on none opens under that key or in the clear.
+  PIN verifiers are the exception, in the next item. A legacy RP record an older
+  build stored in the clear still opens too, so a flash writer can also rename
+  the domain the credential manager lists for a credential the device holds.
+  *Status: shipped in 0x0A67, for a device locked by it; one an older build
+  locked takes the latch at a second `lock-page58`. The latch is read once per
+  boot, and a lock row that boot cannot read counts as no latch: closing on a
+  fault could strand a record a device never latched still holds. A latched
+  device whose fused key does not read at a command opens and seals nothing
+  rather than fall back to the chip-serial arm: most commands refuse (`6400`,
+  CTAP `0x7F`), and the OTP applet answers as if its slots were empty. The next
+  command reads the key again.*
+- **A PIN verifier is not authenticated against a flash writer, even past the
+  latch.** A verifier written under the pre-burn key still verifies after
+  `lock-page58`. That holds for the FIDO PIN and the display build's device PIN,
+  the PIV PIN and PUK, OpenPGP's PW1, PW3 and resetting code with the DEK copy
+  each one wraps, and the OATH OTP PIN, whose legacy format is keyed from the chip
+  serial alone. A verifier is an opaque hash, so the device cannot tell one
+  written before the burn from one written after, and it keeps the older one
+  working so a provisioned key survives the burn. The OTP slots' access codes are
+  not on the list: they sit inside the sealed slot records the latch closes. So
+  someone who steals the board and can write its store over BOOTSEL can plant a
+  verifier for a PIN they know, then use what that PIN unlocks. That covers the
+  FIDO credentials and the PIV keys, the stored passwords of an OATH password
+  safe on an applet with no access code, and the display build's device-PIN
+  gates. A FIDO PIN reaches further: with a touch, the backup channel exports the
+  seed (unless `BACKUP_FINALIZE` sealed export off) and loads a seed or an
+  attestation key of the planter's (`BACKUP_LOAD`, `ATT_IMPORT`), which then
+  lands under the fused root. OpenPGP's private keys stay out of reach: they are
+  sealed under a DEK, and a planted verifier does not open the DEK copy the
+  owner's PIN wraps. All of it takes writing the store over BOOTSEL. A secure-boot
+  board's partition table refuses that, unless an older signed image without a
+  table still boots ([production.md](production.md)). On a board without secure
+  boot the attacker can flash firmware of their own instead, which reads the
+  fused key outright ([threat model](threat-model.md)). Presenting every PIN once
+  after the burn moves each verifier to the fused root
+  ([production.md](production.md)). That closes the at-rest gap in the next item,
+  not this one. *Status: kept, by the maintainer's decision. Closing it needs a
+  verifier format that records which key made it, a persistent-format change.*
+- **A PIN-derived record stays on the weaker root until its own reference is
+  presented after the burn.** Every record sealed under the key base alone is
+  moved to the fused root by a boot pass, but re-keying a PIN-derived one needs
+  the secret, so it happens at that reference's next VERIFY. Ordinary use presents
+  PW1; PW3 gates the admin surface only, and an OpenPGP resetting code may never
+  be presented at all. Until one is, a flash dump plus the public chip serial
+  opens the DEK copy behind it — every OpenPGP private key and the AES key with
+  them — and a PW3 still on its published default needs no search at all. PIV's
+  PUK has the same shape, with no DEK behind it. The card cannot retire what it
+  cannot recognise: a verifier is an opaque hash, so a record written before the
+  burn and one written after are indistinguishable. *Status: registered as
+  `PLAT-THREAT-002`. After the burn, present every PIN once, as the burn
+  procedure in [production.md](production.md) says: presenting a reference is
+  what moves it, and ordinary use presents neither PW3 nor the resetting code.
+  Closing it for good needs the DEK copies under an outer device-rooted seal a
+  boot pass can move, which is a persistent-format decision and the
+  maintainer's.*
 - **A flash read that fails still reads as an absent record in most of the
   tree.** The store's `read` and `size` return the same "nothing there" for a key
   that was never written and for one the medium could not serve, and an absent
@@ -170,9 +227,8 @@ covers the security boundary. This page covers feature and hardware gaps.
   It does not back them at rest: the seal rule covers key material, so a flash
   dump of a provisioned device yields whatever a host put in them. Their names
   are the standard's, not a capability of this firmware — there is no sensor, no
-  enrolment and no matching here, and the 1900-byte object ceiling is far under a
-  real FIPS 201 biometric template, so what they hold is whatever the owner chose
-  to store. *Status: won't fix. The read condition is an access rule, not a
+  enrolment and no matching here, so what they hold is whatever the owner chose
+  to store, up to the 3063 bytes any object takes. *Status: won't fix. The read condition is an access rule, not a
   confidentiality promise, and the device cannot produce the content a seal here
   would be protecting.*
 - **XIP TOCTOU residual**: secure boot verifies the image in external QSPI
@@ -219,7 +275,7 @@ covers the security boundary. This page covers feature and hardware gaps.
 
 ## Protocol / compatibility
 
-- **The default USB identity is RS-Key's own** (`0x1209:0x0001` on the
+- **The default USB identity is RS-Key's own** (`0x1209:0xF1D2` on the
   pid.codes FOSS VID, manufacturer `RS-Key`, product `RS-Key Security Key`,
   reported firmware 5.8.0), *not* a YubiKey masquerade. We no longer ship
   Yubico's identifiers by default. A YubiKey identity (`0x1050:0x0407`,
@@ -244,7 +300,7 @@ covers the security boundary. This page covers feature and hardware gaps.
 - **The PIV attestation identity cannot be replaced by a host.** A YubiKey lets
   one load its own chain — `IMPORT` into slot `f9` for the key,
   `PUT DATA 5FFF01` for the certificate — and that is a documented enterprise
-  feature there. RS-Key refuses both (`6A86` and `6A80`). The `f9` key is
+  feature there. RS-Key refuses both, `6A80` each. The `f9` key is
   generated by the device at first boot and never leaves it, so accepting those
   two commands would let anyone holding the management key swap the device's
   attestation identity irreversibly, over a single APDU, for a key they control.
@@ -253,12 +309,28 @@ covers the security boundary. This page covers feature and hardware gaps.
   `PUT DATA 5FFF01`, and no reset brings it back. `ATTEST` and `GET METADATA` at
   `f9` work normally, and a factory reset regenerates the identity.
   *Status: never — deliberate.*
+- **The OpenPGP attestation identity cannot be replaced by a host either.** A
+  YubiKey takes an attestation key and its certificate from a host:
+  `ykman openpgp keys import ATT` loads one under the template
+  `B6 { 84 01 81 }`, and `ykman openpgp certificates import ATT` writes DO `FC`.
+  RS-Key mints its attestation key on the card and takes neither: PUT DATA refuses
+  its attributes `DA` and its certificate `FC` (`6B00`), and IMPORT or GENERATE
+  `P1 = 80` under that template answers `6A80`, for the reason the PIV identity
+  above is closed. Its certificate is self-signed, so a
+  verifier pins the device's `FC` where a YubiKey's chains to Yubico's CA, and a
+  reset mints a new identity. *Status: never — deliberate.*
 - **`SET RETRIES` will not set a zero budget.** `00 FA 00 00` on a YubiKey
   answers `9000` and leaves the card at `0/0` tries, permanently blocked, with
   only a factory reset — which destroys every key — to recover. RS-Key answers
   `6A80` and changes nothing. The project matches a YubiKey everywhere except
   where matching would lose user data, and this is that exception.
   *Status: never — deliberate.*
+- **A SELECT with `P2 = 04` still selects.** A YubiKey 5.8.0 takes only
+  `P2 = 00` as a SELECT by AID and hands `04` to the current application, which
+  answers `6D00`. RS-Key selects on `04` as on `00`, because PicoForge opens the
+  management and rescue applets that way (`APDU_P2_RETURN_FCI = 0x04` in its
+  `src/hal/rescue/constants.rs`), and the YubiKey's answer would cut it off the
+  device. *Status: never — deliberate.*
 - **OpenPGP secure messaging** is not implemented (rarely used by clients;
   PINs gate everything in practice).
 - **One physical button on the base build.** Touch = the BOOTSEL button, and
@@ -273,9 +345,10 @@ covers the security boundary. This page covers feature and hardware gaps.
   enabling the soft-lock) leaves the old record in the log until compaction
   naturally overwrites it, so most at-rest guarantees harden over time rather
   than instantly. *(On a provisioned device the superseded copy is sealed to
-  the fused root.)* The one record that is **not** left to lazy healing is the
-  pre-OTP seed superseded by the OTP-burn migration. It is sealed under the
-  chip-serial-only root, so the first boot after provisioning scrubs it eagerly
-  with a one-shot full-GC-lap compaction.
+  the fused root — unless it is PIN-derived, which the burn cannot re-root.)*
+  What is **not** left to lazy healing is every record the boot passes re-seal
+  off the chip-serial root — the seed, the attestation key and the persistent
+  `pcmr` grant: the first boot after provisioning scrubs their superseded copies
+  eagerly with a one-shot full-GC-lap compaction.
 - **The board is the security boundary**: anyone with the device and your
   PIN is you. Same as every security key.

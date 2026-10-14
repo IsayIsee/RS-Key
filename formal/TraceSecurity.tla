@@ -52,7 +52,7 @@ ModelProjection ==
     [ pinSet       |-> pin.set,
       pinRetries   |-> pin.retries,
       alwaysUv     |-> gate.alwaysUv,
-      grant        |-> gate.ppuat,
+      grant        |-> gate.ppuatRec,
       backupSealed |-> gate.backupSealed,
       seed         |-> store.seed,
       credAny      |-> store.cred # {},
@@ -127,7 +127,7 @@ R4bEventConsensus ==
 (* BugTokenlessIgnoresAlwaysUv there.                                       *)
 (***************************************************************************)
 
-\* CTAP 2.1 6.1.2, crates/rsk-fido/src/makecredential.rs:574-592. Two arms, and
+\* CTAP 2.1 6.1.2, crates/rsk-fido/src/makecredential.rs:618-636. Two arms, and
 \* the recording now carries both:
 \*   step 6.2/6.4 -- alwaysUv with no way to verify refuses whatever `rk` says;
 \*   step 10      -- otherwise a DISCOVERABLE credential still needs a token
@@ -142,16 +142,16 @@ R4bEventConsensus ==
 \* only where it is a function of these two, and the recording it was omitted for
 \* is the one that refutes `pin.set /\ rk` on its own (event 26: alwaysUv on,
 \* rk FALSE, PUAT_REQUIRED, where that rule predicts served). The pad is
-\* `clientpin.rs:612`'s first conjunct, recorded per boundary.
+\* `clientpin.rs:677`'s first conjunct, recorded per boundary.
 \*
 \* `alwaysUv` here is B's, and B reads it from the RECORD (`Beta`, above). The
 \* firmware falls back to `cfg!(feature = "always-uv")` when EF_ALWAYS_UV is
-\* absent (`config.rs:315`), so this arm assumes a build that does not ship the
+\* absent (`config.rs:316`), so this arm assumes a build that does not ship the
 \* feature -- which every recording apparatus is, `tools/emu` having no
 \* passthrough for it. Stated, like the pad, rather than left to be discovered.
 McTokenlessRefused(rk, alwaysUv, pinSet) == alwaysUv \/ (pinSet /\ rk)
 
-\* CTAP 2.1 6.6, crates/rsk-fido/src/reset.rs:260 -- the same predicate the
+\* CTAP 2.1 6.6, crates/rsk-fido/src/reset.rs:267 -- the same predicate the
 \* model already gates ResetStart on, read for its answer instead of its
 \* enabling. `InResetWindowGuard` is the Guard and not the Policy on purpose:
 \* what is being predicted is what the DEVICE does.

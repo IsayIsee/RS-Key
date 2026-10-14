@@ -79,6 +79,15 @@ the host enumerates a mute device and times out. That is the "blink red / not
 recognised until several replugs" report that motivated attaching to the bus
 only after everything else is ready.
 
+The TRNG seed is drawn so that it can fail only closed: a draw holding an all-zero
+192-bit block, the part's answer to a failed health check, is drawn again, and
+after three such draws the board halts there, before the pull-up, rather than seed
+the DRBG from a constant; it wipes the seed and the dead stack first, and nothing
+else holds a secret yet. The 64 KiB reseed draws the same way; failing, it leaves
+the operation in flight to the DRBG as its checked seeds left it and queues a warm
+reboot, which the worker runs through its RAM scrub, and the boot after it draws
+the seed afresh.
+
 ![Boot sequence — bootrom secure-boot verify, then a provision-and-recover phase (OTP keys, KV mount, phy record, TRNG seed, seal migrations, at-rest scrub) that completes before the USB pull-up, then attach-and-serve (build, spawn usb_task, transports live, worker dispatches applets)](images/boot-flow.svg)
 
 ## Crates
@@ -87,7 +96,7 @@ The workspace splits along a strict dependency gradient: the `firmware` binary
 is thin glue over the applet crates, which build on a handful of host-tested
 platform libraries. The per-crate detail is in the table. The shape is:
 
-![Crate dependency layers: 28 crates in 9 tiers, from the 2 flashable binaries at the top, down through the 8 applets, to the 4 algorithm crates. All 100 in-workspace dependencies point strictly downward, and applet-to-applet edges number 0.](images/crate-graph.svg)
+![Crate dependency layers: 30 crates in 10 tiers, from the 2 flashable binaries at the top, down through the 8 applets, to the 1 secrets crate at the bottom. All 125 in-workspace dependencies point strictly downward, and applet-to-applet edges number 0.](images/crate-graph.svg)
 
 **No applet names another applet — the count is zero, in code and in the manifests.** This page used to name three cross-edges (`piv→openpgp`, `openpgp→rsa`, `piv→rsa`), only the first of which was one applet reaching sideways; the manifests carried **six** — `fido→mgmt`, `fido→rescue`, `openpgp→mgmt`, `piv→mgmt`, `piv→openpgp`, `otp→mgmt`. The machinery under each moved *down* instead: the phy record into `rsk-phy`, the DeviceInfo record into `rsk-devconf`, RSA into `rsk-rsa`, and the EC key type both card applets seal (`PrivKey` over `Curve`, the `[curve_id] ‖ scalar` blob) into `rsk-ec`. Six `rsk_<applet>::` mentions do survive across the applet tier, every one inside a comment where one applet explains its ordering by pointing at a sibling — a cross-reference, not a dependency.
 
@@ -102,21 +111,23 @@ What holds that now is `deny.toml`: each applet crate is banned except behind th
 | `rsk-crypto` | one wrapper over RustCrypto: hashes, HMAC/HKDF, AES-CBC/CFB/GCM, ChaCha20-Poly1305, PIN KDFs, HMAC-DRBG, ML-DSA-44/-65/-87 (`rsk-mldsa`) / ML-KEM, base64url, CRC |
 | `rsk-mldsa` | stack-optimized ML-DSA (FIPS 204) for all three parameter sets: streams the matrix A on the fly (one polynomial resident, not the full k×l) so even ML-DSA-87 fits the RP2350 stack where the by-value `fips204` crate's -65 overflowed it. `no_std`, no alloc, no `unsafe`; checked byte-for-byte vs NIST ACVP KATs, with Kani proofs over the reductions and rounding |
 | `rsk-sha512` | SHA-512/384 for the Cortex-M33, byte-identical to `sha2` but a compact rolled compression (~0.9 KB) that fits the XIP cache instead of `sha2`'s ~28 KB unrolled body — ~4× faster end-to-end on a FIDO getAssertion, with the identical digest, so `hmac`/`hkdf` compose over it byte-for-byte |
+| `rsk-secret` | key-grade bytes in a type that wipes itself: `Secret` (no `Copy`, `Clone`, `Debug` or `==`, and zeroized when it drops — on every exit, a `?` included) and `WipeGuard` for a borrowed buffer that outlives the scope. The bottom of the graph, so every crate that holds a secret can name it |
 | `rsk-usb` | the CTAPHID reassembler/framer and the CCID state machine, transport-agnostic and fully host-testable |
 | `rsk-fido` | FIDO2 (CTAP 2.1) + U2F: credentials, clientPIN (protocols 1+2), credManagement, extensions (hmac-secret, credProtect, credBlob, largeBlobs, minPinLength), enterprise attestation, seed backup + soft-lock vendor commands |
-| `rsk-openpgp` | OpenPGP card 3.4: DO model, PW1/RC/PW3, import/generate, PSO, AES PSO, certs — EC + RSA-2048/3072/4096 |
-| `rsk-piv` | PIV: 24 key slots + F9 attestation, management-key auth, generate/import/sign/ECDH, on-card X.509 via a hand-rolled backward DER writer |
+| `rsk-openpgp` | OpenPGP card 3.4: DO model, PW1/RC/PW3, import/generate, PSO, AES PSO, certs, Yubico's key attestation (`ATTEST`, DO `FC`) — EC + RSA-2048/3072/4096 |
+| `rsk-piv` | PIV: 24 key slots + F9 attestation, management-key auth, generate/import/sign/ECDH, on-card X.509 through `rsk-x509` |
 | `rsk-oath` | YKOATH protocol: TOTP/HOTP, touch-required accounts, access codes |
 | `rsk-otp` | Yubico OTP slots ×4: CCID command surface + the keyboard frame protocol and typed-ticket generation |
-| `rsk-mgmt` | the YubiKey management applet: the CCID command surface for READ/WRITE CONFIG and the device-wide reset (the record itself is `rsk-devconf`), served over both CCID and CTAPHID |
+| `rsk-mgmt` | the YubiKey management applet: the CCID command surface for READ/WRITE CONFIG (the record itself is `rsk-devconf`), served over both CCID and CTAPHID |
 | `rsk-rescue` | recovery/provisioning applet: identity, the phy config record (codec in `rsk-phy`), flash info, secure-boot status, attestation key, reboot, the one OTP-lock write |
 | `rsk-store` | the `rsk_fs::Storage` backend the device runs: two `sequential-storage` map partitions (credentials vs. the hot counters), the counter-FID routing, and the scrub lap that physically destroys superseded secrets — generic over the flash, so the fuzzer can cut its power and the emulator can mount a file |
-| `rsk-device` | the applet wiring both the firmware and the emulator run: which applets exist, what capability gates each, and how a CTAPHID or CCID message reaches one — the board's own parts behind a `Hooks` trait. Also the presence-scope arbitration (`presence`): which transport owns the one button, whose cancel may end its wait, and the `spent` latch, with the button and clock behind a `Board` seam |
+| `rsk-device` | the applet wiring both the firmware and the emulator run: which applets exist, what capability gates each, and how a CTAPHID or CCID message reaches one — the board's own parts behind a `Hooks` trait. Also the presence-scope arbitration (`presence`): which transport owns the one button, whose cancel may end its wait, and the `spent` latch, with the button and clock behind a `Board` seam. And the reboot slot (`reboot`) the worker takes a queued reboot from and the trusted display parks on, pending from the request until the reset |
 | `rsk-vendor` | the vendor AID: the persisted test counter, SET/GET LED, the reboot request, and — gated out of every shipped image — core1 stats and the measurement benches; the hardware behind a `Platform` the firmware fills in |
 | `rsk-rsa` | the RSA family: the key type, key generation, the sealed CRT layout and its blinded, fault-checked private operation, PKCS#1 v1.5, the `7F49` public-key DO — over vendored C/ARM-asm modular exponentiation behind one FFI fn (host build uses a pure-Rust fallback). The OpenPGP and PIV applets add only their own framing and seal I/O |
 | `rsk-ec` | the EC family: the private key both card applets seal (`PrivKey` over `Curve` — the persisted `[curve_id] ‖ scalar` blob), its ECDSA/EdDSA signing, `d·G` public-point derivation and ECDH, the `7F49 { 86 }` public-key DO, and underneath them the fixed-base Lim–Lee comb `k·G`/`d·G` that FIDO, PIV and OpenPGP all sign on — bit-identical to the RustCrypto generic path, several× faster on the Cortex-M33 |
 | `rsk-led` | the `EF_LED_CONF` codec for the status-LED config block, shared by the firmware and the `rsk led` host tool |
 | `rsk-devconf` | the `EF_DEV_CONF` codec: the Yubico DeviceInfo record — which applications are enabled, the capability vocabulary, the validate/merge/trim write path and the READ CONFIG response built around it. Written by four command surfaces (CCID, the OTP keyboard slots, CTAPHID, the FIDO vendor config-write), so it sits below all of them rather than inside the management applet |
+| `rsk-x509` | the on-card X.509 builder: a backward DER writer, the `C=ES, O=RS-Key` names, the SPKI for EC, RSA and RFC 8410 keys, the standard extensions (an attestation statement goes without keyUsage) and any the caller adds, and the signature. PIV's F9 and attestation certificates go through it, and OpenPGP's attestation statements, so it sits below both card applets rather than inside the first that needed it |
 | `rsk-phy` | the `EF_PHY` codec: the PicoForge-compatible device-config TLV record — USB identity, LED wiring, the interface mask — plus its clamped load and its read-modify-write save. Read by the rescue and FIDO applets, `rsk-device`, `rsk-display` and the boot path, so it sits below all of them rather than inside one |
 | `rsk-bench` | robust summary statistics (median, MAD, a separate cold sample) for the on-device latency harness. Steady-state timing on the RP2350 is XIP-cache sensitive to ±~30 ms, so a mean fakes regressions; compiled in only under the `bench` feature, never into a shipped image |
 | `rsk-bip39` | BIP-39 mnemonic encode for the trusted display's recovery-phrase screen; `display` build only |
@@ -135,7 +146,7 @@ Two KV partitions at fixed offsets (`firmware/memory.x`): the main store, and
 a small separate partition for the per-operation counters so their churn
 never forces compaction of long-lived records. Files are 16-bit ids. Each
 applet owns disjoint ranges (FIDO `0x10xx/0xCxxx/0xCFxx/0xD0xx`, OpenPGP DO
-mirrors, PIV `0xD1xx/0xD2xx`, OTP slots `0xBBxx`, phy/rescue `0xE0xx`) and a
+mirrors, PIV `0xD1xx/0xD2xx/0xD4xx/0xD6xx`, OTP slots `0xBBxx`, phy/rescue `0xE0xx`) and a
 reset wipes exactly its own predicate, never a range shared with another
 applet.
 
@@ -193,14 +204,17 @@ capacity no one reaches. Empty flash here is headroom, not waste.
 
 USB VID/PID, product strings and the reported firmware version are
 compile-time knobs ([build.md](build.md)). The default is RS-Key's own
-identity: VID:PID `0x1209:0x0001` (pid.codes), manufacturer "RS-Key",
+identity: VID:PID `0x1209:0xF1D2` (pid.codes), manufacturer "RS-Key",
 product "RS-Key Security Key" (the `RSKey` preset). An opt-in `VIDPID=Yubikey5`
 preset builds the Yubico interop flavor (`0x1050:0x0407`, reader name "Yubico
 YubiKey") for the tools that auto-recognize the device purely by that reader
 name. A flash-resident *phy* record can override VID/PID and the product
 string at boot (the store mounts before the USB builder runs for exactly this
 reason). FIDO tools find the device by HID usage page, CCID tools by the
-reader name.
+reader name. From build `0x0A8A`, the default PID is the allocated `F1D2`
+instead of the former test PID `0001`. An existing explicit VID/PID override in
+`EF_PHY` remains effective after an upgrade, including `1209:0001`; firmware
+does not rewrite that record. Keys and credentials are unaffected.
 
 ## User presence
 
@@ -214,6 +228,18 @@ raised — a CTAP2 command, or the pinpad's "Allow host PIN entry?" gate — whi
 alone can be cancelled mid-wait (`CTAPHID_CANCEL`) and so alone can answer
 `Presence::Cancelled`. The no-touch build (`--features no-touch`)
 auto-confirms. For test rigs, not for daily use.
+
+## Without a board
+
+`tools/emu`, a workspace of its own, serves what a host sees of the device —
+CTAPHID reports and CCID messages over TCP, or the whole USB device over USB/IP —
+from one of two backends. The default runs the applet crates on the host through
+`rsk-device`, the wiring the firmware runs, with the worker's sequencing written a
+second time. `--image` runs the firmware ELF itself: cold-booted through the real
+bootrom on picoem's RP2350 cores, over the chip models in `tools/emu/src/image/`
+(USB controller, OTP, QMI and NOR flash, SHA-256, TRNG), with an emulated host
+controller on the far side of the bus. [testing.md](testing.md) says what each
+proves.
 
 ## Provenance
 

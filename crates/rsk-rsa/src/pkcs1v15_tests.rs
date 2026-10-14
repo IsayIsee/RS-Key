@@ -2,7 +2,7 @@
 // Copyright (C) 2026 RS-Key contributors
 
 use super::*;
-use crate::fixtures::{SeqRng, crt_of, test_key, test_key_640};
+use crate::fixtures::{DI_SHA256, SeqRng, crt_of, test_key};
 use crate::vectors::{ENCRYPT, SIGN_SHA256, hex};
 
 /// `00 ‖ 02 ‖ PS(ps_len non-zero) ‖ 00 ‖ msg`.
@@ -109,36 +109,9 @@ fn decrypts_an_openssl_ciphertext_on_both_arms() {
 }
 
 #[test]
-fn sign_digestinfo_matches_openssl() {
-    let key = test_key();
-    for (i, (digest, want)) in SIGN_SHA256.iter().enumerate() {
-        // A SHA-256 DigestInfo (what gpg sends for an RSA signature).
-        let mut di = DI_SHA256.to_vec();
-        di.extend_from_slice(&hex(digest));
-        let mut sig = [0u8; MAX_RSA_BYTES];
-        let n = rsa_sign(&key, &di, &mut SeqRng(1 + i as u64), &mut sig).unwrap();
-        assert_eq!(n, 256);
-        assert_eq!(&sig[..n], hex(want).as_slice(), "signature {i}");
-    }
-}
-
-#[test]
-fn sign_bare_hash_infers_alg() {
-    // A bare 32-byte hash is treated as SHA-256 (length inference), so it must
-    // produce the same signature the DigestInfo spelling does.
-    let key = test_key();
-    for (i, (digest, want)) in SIGN_SHA256.iter().enumerate() {
-        let mut sig = [0u8; MAX_RSA_BYTES];
-        let n = rsa_sign(&key, &hex(digest), &mut SeqRng(2 + i as u64), &mut sig).unwrap();
-        assert_eq!(&sig[..n], hex(want).as_slice(), "signature {i}");
-    }
-}
-
-#[test]
 fn sign_crt_digestinfo_matches_openssl() {
     // The applets' asm CRT signer, over the CRT view built at seal time, must
-    // produce OpenSSL's signature — and the software signer's, since PKCS#1 v1.5
-    // is deterministic and the two paths are only allowed to differ in speed.
+    // produce OpenSSL's signature over the SHA-256 DigestInfo gpg sends.
     let key = test_key();
     let crt = crt_of(&key);
     for (i, (digest, want)) in SIGN_SHA256.iter().enumerate() {
@@ -148,41 +121,27 @@ fn sign_crt_digestinfo_matches_openssl() {
         let n = rsa_sign_crt(&crt, &di, &mut SeqRng(1 + i as u64), &mut asm).unwrap();
         assert_eq!(n, 256);
         assert_eq!(&asm[..n], hex(want).as_slice(), "signature {i}");
-        let mut soft = [0u8; MAX_RSA_BYTES];
-        let cn = rsa_sign(&key, &di, &mut SeqRng(2 + i as u64), &mut soft).unwrap();
-        assert_eq!(&asm[..n], &soft[..cn], "asm and software arms disagree");
     }
 }
 
 #[test]
-fn sign_crt_refuses_a_raw_block_wider_than_the_modulus() {
-    // Not a DigestInfo and not a length-inferable hash, so it takes the raw arm —
-    // where anything past the modulus width is `BadBlock` (`WRONG_DATA`).
+fn sign_crt_pads_up_to_k_minus_11_bytes_and_refuses_past_it() {
+    // Type 1 needs `00 01`, eight bytes of padding and the `00` separator: 245 bytes
+    // of data is the most a 2048-bit block carries, and 246 is `BadWidth`.
     let key = test_key();
+    let crt = crt_of(&key);
     let mut out = [0u8; MAX_RSA_BYTES];
-    let wide = [0x11u8; 257];
+    let most = [0x11u8; 245];
+    let n = rsa_sign_crt(&crt, &most, &mut SeqRng(6), &mut out).unwrap();
+    let (n_be, e_be) = (key.n_be(), key.e_be());
+    assert!(crate::verify::verify_pkcs1v15(
+        &n_be,
+        &e_be,
+        &most,
+        &out[..n]
+    ));
     assert_eq!(
-        rsa_sign_crt(&crt_of(&key), &wide, &mut SeqRng(6), &mut out),
-        Err(RsaError::BadBlock)
+        rsa_sign_crt(&crt, &[0x11u8; 246], &mut SeqRng(7), &mut out),
+        Err(RsaError::BadWidth)
     );
-}
-
-/// The raw RSA fallback must be base-blinded yet still compute `m^d mod n`
-/// exactly, independent of the blinding factor (CT-audit finding #1).
-#[test]
-fn rsa_raw_blinded_equals_unblinded() {
-    use num_bigint_dig::BigUint;
-    let key = test_key_640();
-    let ks = key.size();
-    let data = [0x2au8; 40];
-    let mut out = [0u8; MAX_RSA_BYTES];
-    let n = rsa_raw(&key, &data, &mut out, &mut SeqRng(99)).unwrap();
-    assert_eq!(n, ks);
-    let got = BigUint::from_bytes_be(&out[..ks]);
-    let want = BigUint::from_bytes_be(&data).modpow(key.d(), key.n());
-    assert_eq!(got, want, "blinded raw RSA must equal m^d mod n");
-    // The result must not depend on the random blinding factor.
-    let mut out2 = [0u8; MAX_RSA_BYTES];
-    rsa_raw(&key, &data, &mut out2, &mut SeqRng(424242)).unwrap();
-    assert_eq!(out[..ks], out2[..ks], "blinding must cancel");
 }

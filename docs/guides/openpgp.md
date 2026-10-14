@@ -4,6 +4,12 @@ A full OpenPGP card 3.4 over CCID: three key slots (signature, decryption,
 authentication), works with stock GnuPG. The same slots cover commit signing,
 SSH login (via gpg-agent), and end-to-end mail/file encryption.
 
+GET DATA returns `6581` if its output buffer cannot hold the complete data
+object. An undersized buffer does not produce a successful partial template.
+GET DATA `7A` also returns `6581` when the signature counter is absent,
+unreadable or not exactly three bytes; it never publishes a partial counter
+template as a successful response.
+
 Prereqs: on Linux, `pcscd` + the `scdaemon.conf` lines from
 [linux.md](../linux.md). Check the card is visible:
 
@@ -60,6 +66,20 @@ direction — charging afterwards would mean an interrupted write leaves a wrong
 guess free, and this counter is the only limit the card has. `gpg --card-status` prints them
 as `PIN retry counter : 3 3 3` (PW1, RC, PW3: all three default to 3).
 
+The admin PIN can set how many tries each one gets, with the command a YubiKey
+takes for it:
+
+```sh
+ykman openpgp access set-retries 5 3 10   # PW1, Reset Code, PW3; asks for the admin PIN
+```
+
+Each number becomes that PIN's limit and gives it that many tries at once, a
+blocked PIN included, which keeps its value. ykman takes 1 to 99; the card takes
+up to 255, and a 0 in the raw command leaves that PIN as it is. The Reset Code's number waits
+until a Reset Code is set, which then starts with it. The limits survive a replug,
+and a factory reset (below) puts back 3, 3, 3. More tries is more guesses for
+whoever holds the key: the admin PIN can hand PW1 fresh tries without knowing it.
+
 Change them first:
 
 ```sh
@@ -74,11 +94,13 @@ admin PIN lives somewhere offline.
 
 **Two ways admin operations lock:**
 
-- **Three wrong PW3** blocks the admin PIN. Unlike PW1, the admin PIN has no
-  higher authority to unblock it. Recovery is a **factory reset** of the
-  applet (below). Plan to keep PW3 written down somewhere offline.
-- **Three wrong PW1** blocks the user PIN. This one *is* recoverable: unblock it
-  with the admin PIN or the Reset Code (see [Unblocking PW1](#unblocking-pw1)).
+- **Three wrong PW3** (or as many as `set-retries` gave it) blocks the admin PIN.
+  Unlike PW1, the admin PIN has no higher authority to unblock it. Recovery is a
+  **factory reset** of the applet (below). Plan to keep PW3 written down
+  somewhere offline.
+- **Three wrong PW1** (likewise) blocks the user PIN. This one *is* recoverable:
+  unblock it with the admin PIN or the Reset Code (see
+  [Unblocking PW1](#unblocking-pw1)).
 
 ### KDF (`kdf-setup`) — hashing the PIN before it leaves the host
 
@@ -193,8 +215,11 @@ The **size** counts as much as the family: a 2048-bit key offered to a slot
 announcing RSA-4096 is refused, because the attribute is what `gpg
 --card-status` and every other host reads back as the truth about that slot.
 A mismatched algorithm/curve/size returns "Wrong data" / "Function not supported"
-and a missing admin (PW3) session returns "Security status not satisfied". gpg
-surfaces one of these as a card refusal.
+and a missing admin (PW3) session returns "Security status not satisfied". An RSA
+key whose numbers make no working key (`p = q`, composite primes, a modulus
+shorter than the attribute) returns "Memory failure", a YubiKey's answer there.
+gpg surfaces each as a card refusal, and a refused import leaves the slot's key
+and its `0xDE` origin as they were.
 
 Importing keeps an off-card copy in your keyring until you delete it. Your call
 which way the trade-off goes. The usual recoverable setup: generate the master
@@ -283,6 +308,32 @@ by any command — `PUT DATA` answers `6985` — so a host that learns PW3 still
 cannot turn your signatures touchless. Clearing it takes `TERMINATE DF` +
 `ACTIVATE FILE`, which wipes the applet. Set it only when you mean it.
 
+## Key attestation
+
+The card can vouch that a key was generated on it, the way a YubiKey does. It
+signs an X.509 statement about the key with its own attestation key, which it
+minted at first boot and never lets out (a card an older firmware set up mints it
+at its first ATTEST). Only keys generated on the card are attested; an imported
+key is refused.
+
+```sh
+ykman openpgp keys attest sig sig-att.pem          # PW1; sig · dec · aut
+ykman openpgp certificates export att card-att.pem # the card's attestation root
+openssl verify -CAfile card-att.pem sig-att.pem
+```
+
+The statement lands in the key's certificate slot (the one `gpg` shows as the
+cardholder certificate) and carries Yubico's extensions: firmware version,
+serial, touch policy, form factor, cardholder name, fingerprint and generation
+time, the signature counter for the signing key, and the key source. Like a
+YubiKey's, it names no key usage. With
+`forcesig` on, each ATTEST spends the PIN as a signature does. A YubiKey's chain ends
+at Yubico's CA; this card's attestation certificate is self-signed, so pin the
+`card-att.pem` you read off your own device. A factory reset mints a new
+attestation key, and no host can replace it or its certificate
+([limitations](../limitations.md)). The `att` touch policy gates ATTEST like the
+others gate their keys: `ykman openpgp keys set-touch att on`.
+
 ## AES encryption (PSO)
 
 The card carries one **AES** key, in DO `D5`. It belongs to the card, not to a key
@@ -367,9 +418,9 @@ one that works there.
 rsk openpgp reset      # or: gpg --card-edit → admin → factory-reset
 ```
 
-`rsk openpgp reset` blocks both PINs, then drives the spec-compliant
-`TERMINATE` (0xE6) + `ACTIVATE` (0x44) and reseeds factory defaults
-(PW1 `123456`, PW3 `12345678`). It wipes the OpenPGP applet (keys, PINs, DOs,
+`rsk openpgp reset` blocks both PINs, however many tries they have, then
+drives the spec-compliant `TERMINATE` (0xE6) + `ACTIVATE` (0x44) and reseeds
+factory defaults (PW1 `123456`, PW3 `12345678`). It wipes the OpenPGP applet (keys, PINs, DOs,
 reset code) and **nothing else**. FIDO / PIV / OATH / OTP survive (the
 TERMINATE is scoped to the OpenPGP FIDs). This is also the only way out of a
 PW3 that you have blocked: a blocked admin PIN cannot be unblocked, only reset
@@ -381,6 +432,12 @@ as the only escape.
 It is destructive but idempotent, so it is the clean way to clear non-default
 PINs a prior gpg session left behind (which otherwise block the test suite at
 VERIFY).
+
+Between the two commands the applet is terminated, as a YubiKey's is: every
+command, SELECT included, answers `6285` until ACTIVATE FILE, across a replug
+too. An interrupted reset leaves it there rather than half-wiped; run
+`rsk openpgp reset` or `gpg-card factory-reset` again, or send ACTIVATE FILE
+(`00 44 00 00`) yourself.
 
 ## Troubleshooting
 

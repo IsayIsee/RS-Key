@@ -2,6 +2,7 @@
 // Copyright (C) 2026 RS-Key contributors
 
 use super::*;
+
 use crate::storage::faults::{Cut, RemoveStuck, TruncatedWalk};
 use crate::storage::ram::RamStorage;
 
@@ -381,7 +382,7 @@ fn requesting_a_rescrub_clears_the_hardened_marker() {
     let mut fs = fs();
     fs.put(crate::EF_HARDENED, b"\x01").unwrap();
     assert!(fs.has_data(crate::EF_HARDENED));
-    crate::request_rescrub(&mut fs).expect("a healthy medium re-arms and says so");
+    let _rearmed = crate::request_rescrub(&mut fs).expect("a healthy medium re-arms and says so");
     assert!(
         !fs.has_data(crate::EF_HARDENED),
         "a rescrub request must clear the marker, or the lap never runs again"
@@ -434,8 +435,8 @@ fn a_reset_between_a_re_key_and_its_rescrub_leaves_the_marker_lying() {
     fs.put(REKEYED, b"pre-otp").unwrap();
     fs.put(crate::EF_HARDENED, b"\x01").unwrap();
     medium.arm(1);
-    crate::request_rescrub(&mut fs).expect("the re-arm is what the cut let through");
-    let _ = fs.put(REKEYED, b"otp");
+    let rearmed = crate::request_rescrub(&mut fs).expect("the re-arm is what the cut let through");
+    let _ = fs.put_over(REKEYED, b"otp", Some(&rearmed));
     assert_eq!(
         medium.value(REKEYED).as_deref(),
         Some(&b"pre-otp"[..]),
@@ -1662,8 +1663,8 @@ fn a_marker_probe_that_cannot_answer_is_a_refusal_too() {
     medium.stick(Some(crate::EF_HARDENED));
 
     assert_eq!(
-        crate::request_rescrub(&mut fs),
-        Err(Error::MemoryFatal),
+        crate::request_rescrub(&mut fs).err(),
+        Some(Error::MemoryFatal),
         "fixture: the probe faulted rather than reading the marker back"
     );
     assert!(
@@ -1794,4 +1795,293 @@ fn a_re_arm_the_present_cache_skipped_is_not_reported_as_landed() {
         "the swallow one layer down again: a cache-skipped re-arm the retry \
          recovered is still a re-arm this power cycle could not be shown to land"
     );
+}
+
+/// A record whose length runs past the end of `EF_META` is where the walk stops.
+/// Both parsers own that stop — the reader and the rebuild a later `meta_add`
+/// runs — so a truncated tail is unreadable, never a slice out of bounds, and it
+/// is dropped rather than carried forward into the blob that gets written back.
+#[test]
+fn a_meta_record_longer_than_the_blob_stops_both_walks() {
+    let mut st = RamStorage::new();
+    let mut blob = std::vec![0xB0, 0x00, 0x00, 0x07];
+    blob.extend_from_slice(b"keep-me");
+    // Claims 16 bytes and carries none.
+    blob.extend_from_slice(&[0xB0, 0x01, 0x00, 0x10]);
+    st.write(EF_META, &blob).unwrap();
+    let mut fs = Fs::new(st);
+    fs.scan();
+
+    let mut out = [0u8; 32];
+    assert_eq!(fs.meta_find(0xB000, &mut out), Some(7));
+    assert_eq!(&out[..7], b"keep-me");
+    assert_eq!(
+        fs.meta_find(0xB001, &mut out),
+        None,
+        "a truncated record read"
+    );
+
+    fs.meta_add(0xB002, b"new").unwrap();
+    assert_eq!(fs.meta_find(0xB000, &mut out), Some(7));
+    assert_eq!(fs.meta_find(0xB002, &mut out), Some(3));
+    assert_eq!(
+        fs.meta_find(0xB001, &mut out),
+        None,
+        "the rebuild carried the truncated tail forward"
+    );
+}
+
+#[path = "fs_decisions_tests.rs"]
+mod decisions;
+
+/// A backend whose enumeration yields every key TWICE — what a ring holding two
+/// live copies of one fid looks like from `for_each_key`.
+struct DoubleWalk(RamStorage);
+
+impl Storage for DoubleWalk {
+    fn read(&mut self, fid: u16, buf: &mut [u8]) -> Option<usize> {
+        self.0.read(fid, buf)
+    }
+    fn write(&mut self, fid: u16, data: &[u8]) -> Result<()> {
+        self.0.write(fid, data)
+    }
+    fn remove(&mut self, fid: u16) -> Result<()> {
+        self.0.remove(fid)
+    }
+    fn size(&mut self, fid: u16) -> Option<usize> {
+        self.0.size(fid)
+    }
+    fn for_each_key(&mut self, f: &mut dyn FnMut(u16)) -> bool {
+        let mut seen = std::vec::Vec::new();
+        let complete = self.0.for_each_key(&mut |fid| seen.push(fid));
+        for fid in seen {
+            f(fid);
+            f(fid);
+        }
+        complete
+    }
+}
+
+/// The registry `scan` rebuilds is a set, not a tally: a key yielded twice spends
+/// ONE file of the capacity budget, or a store carrying a duplicate would bind the
+/// cap at half the files it actually holds.
+#[test]
+fn an_enumeration_that_yields_a_key_twice_registers_it_once() {
+    let mut st = RamStorage::new();
+    st.write(0xCC10, b"one").unwrap();
+    st.write(0xCC11, b"two").unwrap();
+    let mut fs = Fs::new(DoubleWalk(st));
+    fs.scan();
+    assert_eq!(fs.free_dynamic(), MAX_DYNAMIC_FILES - 2);
+}
+
+#[test]
+fn the_metadata_fault_medium_fails_only_the_armed_metadata_read() {
+    let (mut backend, medium) = crate::storage::faults::MetaStuck::new();
+    backend.write(EF_META, b"metadata").unwrap();
+    backend.write(KEY_DEV, b"other").unwrap();
+    let mut data = [0; 8];
+    assert_eq!(backend.read(EF_META, &mut data), Some(8));
+    assert_eq!(backend.size(EF_META), Some(8));
+    assert_eq!(&data, b"metadata");
+    assert!(!backend.last_error());
+    medium.stick(true);
+    assert_eq!(backend.read(KEY_DEV, &mut data), Some(5));
+    assert_eq!(&data[..5], b"other");
+    assert!(!backend.last_error());
+    assert_eq!(backend.read(EF_META, &mut data), None);
+    assert!(backend.last_error());
+    assert_eq!(backend.size(KEY_DEV), Some(5));
+    assert!(!backend.last_error());
+    assert_eq!(backend.size(EF_META), None);
+    assert!(backend.last_error());
+    medium.stick(false);
+    assert_eq!(backend.read(EF_META, &mut data), Some(8));
+    assert!(!backend.last_error());
+}
+
+#[test]
+fn the_undead_medium_starts_removing_exactly_after_its_ceiling() {
+    let (mut backend, count) = crate::storage::faults::Undead::new(2);
+    backend.write(KEY_DEV, b"value").unwrap();
+    for n in 1..=3 {
+        backend.remove(KEY_DEV).unwrap();
+        assert_eq!(count.removals(), n);
+        assert_eq!(backend.size(KEY_DEV), (n <= 2).then_some(5));
+    }
+}
+
+#[test]
+fn a_one_read_change_leaves_other_fids_and_the_physical_value_alone() {
+    let (mut backend, control) = crate::read_change::ChangingRead::new();
+    backend.write(KEY_DEV, b"original").unwrap();
+    backend.write(KEY_DEV + 1, b"other").unwrap();
+    control.replace_on_read(KEY_DEV, 1, Some(b"changed"));
+    let mut data = [0; 8];
+    assert_eq!(backend.read(KEY_DEV + 1, &mut data), Some(5));
+    assert_eq!(&data[..5], b"other");
+    assert!(!control.served());
+    assert_eq!(backend.read(KEY_DEV, &mut data), Some(8));
+    assert_eq!(&data, b"original");
+    assert_eq!(backend.read(KEY_DEV, &mut data), Some(7));
+    assert_eq!(&data[..7], b"changed");
+    assert!(control.served());
+    assert_eq!(backend.value(KEY_DEV, &mut data), Some(8));
+    assert_eq!(&data, b"original");
+    assert_eq!(backend.size(KEY_DEV), Some(8));
+    let mut seen = std::vec::Vec::new();
+    assert!(backend.for_each_key(&mut |fid| seen.push(fid)));
+    seen.sort_unstable();
+    assert_eq!(seen, [KEY_DEV, KEY_DEV + 1]);
+    backend.remove(KEY_DEV).unwrap();
+    assert_eq!(backend.size(KEY_DEV), None);
+    assert_eq!(backend.read(KEY_DEV, &mut data), None);
+    assert_eq!(backend.value(KEY_DEV, &mut data), None);
+}
+
+#[test]
+#[should_panic(expected = "vacuous: no cut left a store whose recovery wrote anything")]
+fn a_recovery_sweep_refuses_a_command_that_never_mutates() {
+    crate::cut::sweep_recovery(|_| (), |_, ()| {}, |_| {}, |_, _, _| {});
+}
+
+#[test]
+#[should_panic(expected = "vacuous: no cut left a store whose recovery wrote anything")]
+fn a_recovery_sweep_refuses_a_recovery_that_never_mutates() {
+    crate::cut::sweep_recovery(
+        |_| (),
+        |fs, ()| {
+            let _ = fs.put(0xb000, b"value");
+        },
+        |_| {},
+        |_, _, _| {},
+    );
+}
+
+#[test]
+fn the_rearm_order_oracle_skips_an_unrelated_remove_before_the_marker() {
+    let (backend, medium) = crate::storage::faults::Cut::new();
+    let mut fs = Fs::new(backend);
+    fs.put(0xb001, b"unrelated").unwrap();
+    fs.put(0xb000, b"weak").unwrap();
+    medium.clear_ops();
+    fs.force_delete(0xb001).unwrap();
+    fs.force_delete(crate::EF_HARDENED).unwrap();
+    fs.put(0xb000, b"strong").unwrap();
+    medium.assert_re_armed_before(0xb000, |value| value == b"weak", "unrelated-remove control");
+}
+
+#[test]
+fn the_undead_medium_keeps_forwarding_reads_and_walks_across_refused_removals() {
+    let (backend, count) = crate::storage::faults::Undead::new(2);
+    let mut store = Fs::new(backend);
+    store.put(KEY_DEV, b"value").unwrap();
+    store.put(KEY_DEV + 1, b"other").unwrap();
+    for removal in 0..=3 {
+        let mut value = [0xa5; 8];
+        assert_eq!(store.read(KEY_DEV, &mut value), (removal < 3).then_some(5));
+        if removal < 3 {
+            assert_eq!(&value[..5], b"value");
+            assert_eq!(&value[5..], &[0xa5; 3]);
+        }
+        let mut seen = std::vec::Vec::new();
+        assert!(store.for_each_key(&mut |fid| seen.push(fid)));
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            if removal < 3 {
+                vec![KEY_DEV, KEY_DEV + 1]
+            } else {
+                vec![KEY_DEV + 1]
+            }
+        );
+        assert_eq!(count.removals(), removal);
+        if removal < 3 {
+            assert_eq!(store.force_delete_halves(KEY_DEV).value, Ok(()));
+            store = Fs::new(store.into_storage());
+            store.scan();
+        }
+    }
+}
+
+#[test]
+fn the_fault_projection_backend_exercises_the_real_cache_return_paths() {
+    use super::store_assurance::{CacheView, fresh};
+    for faulted in [false, true] {
+        let mut store = fresh(faulted);
+        let mut value = [0xa5; 8];
+        assert_eq!(store.cache_view(KEY_DEV), CacheView::CLEAR);
+        store
+            .put(KEY_DEV, b"not persisted by the projection")
+            .unwrap();
+        assert_eq!(store.cache_view(KEY_DEV), CacheView::LIVE);
+        assert_eq!(
+            store.try_read(KEY_DEV, &mut value),
+            if faulted {
+                Err(Error::MemoryFatal)
+            } else {
+                Ok(None)
+            }
+        );
+        assert_eq!(value, [0xa5; 8]);
+        assert_eq!(
+            store.cache_view(KEY_DEV),
+            if faulted {
+                CacheView::LIVE
+            } else {
+                CacheView::ABSENT
+            }
+        );
+        assert!(!store.has_data(KEY_DEV + 1));
+        assert_eq!(
+            store.cache_view(KEY_DEV + 1),
+            if faulted {
+                CacheView::CLEAR
+            } else {
+                CacheView::ABSENT
+            }
+        );
+        let mut seen = std::vec::Vec::new();
+        assert!(store.for_each_key(&mut |fid| seen.push(fid)));
+        assert!(seen.is_empty());
+        let removal = store.force_delete_halves(KEY_DEV);
+        assert_eq!(removal.value, Ok(()));
+        assert_eq!(
+            removal.record,
+            if faulted {
+                Err(Error::MemoryFatal)
+            } else {
+                Ok(())
+            }
+        );
+        assert_eq!(store.cache_view(KEY_DEV), CacheView::ABSENT);
+    }
+}
+
+#[test]
+#[should_panic(expected = "nothing superseded")]
+fn the_rearm_order_oracle_refuses_a_missing_supersession() {
+    let (backend, medium) = crate::storage::faults::Cut::new();
+    let mut store = Fs::new(backend);
+    store.force_delete(crate::EF_HARDENED).unwrap();
+    medium.assert_re_armed_before(KEY_DEV, |_| false, "missing supersession");
+}
+
+#[test]
+#[should_panic(expected = "nothing re-armed the at-rest lap")]
+fn the_rearm_order_oracle_refuses_a_missing_scrub_marker_removal() {
+    let (backend, medium) = crate::storage::faults::Cut::new();
+    let mut store = Fs::new(backend);
+    store.put(KEY_DEV, b"replacement").unwrap();
+    medium.assert_re_armed_before(KEY_DEV, |_| false, "missing marker");
+}
+
+#[test]
+fn fault_operation_diagnostics_name_the_fid_and_value_length() {
+    use crate::storage::faults::Op;
+    assert_eq!(
+        format!("{:?}", Op::Write(0x1234, vec![7; 300])),
+        "Write(0x1234, 300B)"
+    );
+    assert_eq!(format!("{:?}", Op::Remove(0x1234)), "Remove(0x1234)");
 }

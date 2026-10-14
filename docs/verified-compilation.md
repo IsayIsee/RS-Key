@@ -33,14 +33,14 @@ subset, one is already C, and three are not code a C compiler could accept.
 
 | Candidate | Where | Size | Portable to a verified C subset? |
 |---|---|---|---|
-| gate / transition functions | the ten concrete gates `docs/authorization-slice.md` lists, over `crates/rsk-fido/src/state.rs` | 724 lines in `state.rs` alone | **No.** Half are generic over two traits (`<S: Storage, R: Rng>`); the other half take a Rust struct by reference, whose layout Rust owns |
-| zeroization routines | 16 `scrub` / `wipe_*` sites across `crates/` and `firmware/` | 16 sites, 68 files using `zeroize` | **No.** Each is a method on a Rust type, and the drop glue that makes it sound is the compiler's |
-| the RSA C/asm wrapper and fault check | `crates/rsk-rsa/src/lib.rs` over `crates/rsk-rsa/csrc/` | 760 Rust, 397 C, 1082 asm | **Already C — and that is the finding.** The assembly is 73% of the foreign half by line and no verified compiler compiles assembly |
-| ML-DSA reductions | `crates/rsk-mldsa/src/reduce.rs`, `ntt.rs`, `round.rs` | 249 lines | **Yes, in principle.** Branch-free integer arithmetic, no generic function in any of the three |
+| gate / transition functions | the ten concrete gates `docs/authorization-slice.md` lists, over `crates/rsk-fido/src/state.rs` | 853 lines in `state.rs` alone | **No.** Half are generic over two traits (`<S: Storage, R: Rng>`); the other half take a Rust struct by reference, whose layout Rust owns |
+| zeroization routines | 16 `scrub` / `wipe_*` sites across `crates/` and `firmware/`, and `rsk_secret`'s drops | 16 sites, 49 files using `zeroize` | **No.** Each is a method on a Rust type, and the drop glue that makes it sound is the compiler's |
+| the RSA C/asm wrapper and fault check | `crates/rsk-rsa/src/lib.rs` over `crates/rsk-rsa/csrc/` | 799 Rust, 397 C, 1082 asm | **Already C — and that is the finding.** The assembly is 73% of the foreign half by line and no verified compiler compiles assembly |
+| ML-DSA reductions | `crates/rsk-mldsa/src/reduce.rs`, `ntt.rs`, `round.rs` | 256 lines | **Yes, in principle.** Branch-free integer arithmetic, no generic function in any of the three |
 | linker-generated boundaries | five of the ten `[[boundary]]` rows in `assurance/toolchain.toml` | 5 symbols | **Not code.** The datum is a symbol's address; a compiler has nothing to say about it |
 
 The genericity is the load-bearing number. Across the production modules of
-`crates/rsk-fido/src/`, 214 of 395 functions are generic and 168 of those carry
+`crates/rsk-fido/src/`, 242 of 469 functions are generic and 176 of those carry
 `<S: Storage`. C has no traits and no monomorphisation, so "port the gate" means
 "hand-instantiate and rewrite it", and the rewrite is the risk the verification
 was meant to remove.
@@ -57,10 +57,10 @@ This tree already pays for one foreign-language boundary, so "a second one
 costs at least as much again" is a measurement rather than a guess. What the
 first one costs today:
 
-- **three `unsafe` call sites** — `docs/unsafe.md` sites 17–19, at
-  `crates/rsk-rsa/src/lib.rs:387`, `crates/rsk-rsa/src/lib.rs:480` and
-  `crates/rsk-rsa/src/lib.rs:573`, behind the `unsafe extern "C"` block at
-  `crates/rsk-rsa/src/lib.rs:291` — plus a fourth, build-time, in
+- **three `unsafe` call sites** — `docs/unsafe.md` sites 25–27, at
+  `crates/rsk-rsa/src/lib.rs:411`, `crates/rsk-rsa/src/lib.rs:502` and
+  `crates/rsk-rsa/src/lib.rs:594`, behind the `unsafe extern "C"` block at
+  `crates/rsk-rsa/src/lib.rs:312` — plus a fourth, build-time, in
   `crates/rsk-rsa/build.rs`;
 - **five registry rows** in `assurance/toolchain.toml`: three `import:` and two
   `unit:`, each owing a `provider` that is a pinned tool;
@@ -87,7 +87,7 @@ producer, one more unreadable contract, and one more containment argument.
 
 ## The TCB delta
 
-`scripts/check.sh:"toolchain TCB registry"` prints the live roster, and
+`scripts/check-assurance.sh:"toolchain TCB registry"` prints the live roster, and
 `assurance/toolchain.toml` is what it prints from: 13 registered tools
 carrying 7 distinct roles, of which 12 name a file that pins them and 1 is
 unpinned against an open obligation. The FFI boundaries are the ten above. Of
@@ -140,21 +140,21 @@ rebuild bit-for-bit; a non-redistributable compiler in the build closure means
 only someone who has separately licensed it can do that.
 
 **The release pipeline has no place for a second language.** From
-`scripts/check.sh:"release manifest"`: 15 steps over 6 subjects. Three of the
+`scripts/check-assurance.sh:"release manifest"`: 15 steps over 6 subjects. Three of the
 fifteen are touched, and the third is the one that fails quietly.
 
 | Step | Subject | What a second language does to it |
 |---|---|---|
 | build the firmware | `none` | the derivation must carry a second toolchain |
 | reproducibility gate | `bit-for-bit` | the second compiler must be deterministic, and reproducible by whoever holds its licence |
-| CycloneDX SBOM | `inventory` | `cargo cyclonedx` (`.github/workflows/release-build.yml:164`) enumerates cargo packages; a non-Rust kernel is simply absent from the published inventory, with no error |
+| CycloneDX SBOM | `inventory` | `cargo cyclonedx` (`.github/workflows/release-build.yml:171`) enumerates cargo packages; a non-Rust kernel is simply absent from the published inventory, with no error |
 
 The remaining twelve — checkout, the installers, the caches, tag admission,
 checksums, provenance, signing, notes, publication — are language-agnostic.
 
 ## What it costs the gate
 
-`scripts/check.sh` runs 127 rows: 58 invoke `cargo`, 48 are Python, 21 are
+`scripts/check.sh` runs 101 rows: 63 invoke `cargo`, 18 are Python, 20 are
 neither. A kernel outside Rust is invisible to a measured nine of them, and
 would need a twin for many more.
 
@@ -165,7 +165,7 @@ would need a twin for many more.
 workspace manifests, `scripts/kani_gate.py` from files with an `.rs` suffix —
 so a C or extracted-C kernel is not a thing they can fail about.
 
-**Would need a twin:** 20 clippy rows, 9 rustdoc rows, 4 fmt rows and 14
+**Would need a twin:** 22 clippy rows, 9 rustdoc rows, 4 fmt rows and 17
 `cargo test` rows. A second language does not inherit `-D warnings`, a
 formatter the gate can run, a doc build, or a test harness whose empty
 selection is already caught.
@@ -185,7 +185,7 @@ A decision with no falsifier is a preference. Any one of these overturns it:
   under terms that let an AGPL project publish a reproducible build anyone can
   reproduce.
 - **The ML-DSA reduction kernel gets a pilot that pays.** It is the one
-  candidate that ports: 249 lines, no generic function, branch-free integer
+  candidate that ports: 256 lines, no generic function, branch-free integer
   arithmetic. A measured pilot showing the extracted C is byte-comparable in
   speed and that the proof obligations it discharges are ones Kani does not
   already reach on the Rust would reopen the question for that kernel alone —
@@ -195,7 +195,7 @@ A decision with no falsifier is a preference. Any one of these overturns it:
   generation, verifying that C would cover the whole kernel instead of a
   quarter of it.
 - **The gate stops being Rust-shaped.** If the tree acquires a second language
-  for an unrelated reason and pays the 20-clippy-row-shaped cost anyway, the
+  for an unrelated reason and pays the 22-clippy-row-shaped cost anyway, the
   marginal cost of this decision falls to the toolchain delta alone.
 
 None of the five is close. The first two are outside this project's control.

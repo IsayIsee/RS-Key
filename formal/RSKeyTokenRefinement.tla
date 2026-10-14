@@ -72,7 +72,7 @@ R1oStep ==
     /\ (\A ch \in Channels : CmNext(ch) => GammaNext("UseCm", "Authorized"))
     /\ (\A r \in RPs : DeleteCredStart(r) => GammaNext("UseCm", "Authorized"))
     /\ (ResetRefused => GammaNext("Noop", "Rejected"))
-    /\ (ResetFinish => GammaNext("Noop", "Authorized"))
+    /\ (ResetFinish => GammaNext("ProvisionGrant", "Authorized"))
     /\ (ResetAborts => GammaNext("Noop", "Rejected"))
     /\ (PressDown => GammaNext("UseAcfg",
           IF BugDeadTokenAuthorized /\ ~tok.live THEN "Authorized" ELSE "Rejected"))

@@ -3,6 +3,78 @@
 
 use super::*;
 
+#[test]
+fn a_handler_without_a_pinpad_rejects_secure_without_writing_a_reply() {
+    struct NoPinpad;
+    impl ApduHandler for NoPinpad {
+        async fn handle_apdu(&mut self, _: &[u8], _: &mut [u8]) -> usize {
+            0
+        }
+    }
+    let mut handler = NoPinpad;
+    let mut out = [0xA5; 16];
+    let result = embassy_futures::block_on(handler.handle_secure(&[], &mut out));
+    assert_eq!(
+        (result.len, result.status, result.error),
+        (0, SECURE_STATUS_FAILED, 0)
+    );
+    assert_eq!(out, [0xA5; 16]);
+    embassy_futures::block_on(handler.reset_card());
+}
+
+#[test]
+fn a_reply_buffer_shorter_than_the_header_changes_neither_bytes_nor_slot_status() {
+    for len in 0..HEADER {
+        let mut out = [0xA5; HEADER];
+        let mut status = STATUS_INACTIVE;
+        assert_eq!(
+            process_message(
+                &msg(CCID_POWER_ON, 1, &[]),
+                ATR_RSKEY,
+                &mut status,
+                &mut out[..len]
+            ),
+            0
+        );
+        assert_eq!(status, STATUS_INACTIVE);
+        assert_eq!(out, [0xA5; HEADER]);
+    }
+}
+
+#[test]
+fn header_encoding_is_atomic_for_short_buffers_and_preserves_the_body() {
+    for len in 0..=HEADER + 4 {
+        let mut out = [0xA5; HEADER + 4];
+        put_header(
+            &mut out[..len],
+            CCID_DATA_BLOCK_RET,
+            0x0123_4567,
+            0x9B,
+            STATUS_FAILED,
+        );
+        if len < HEADER {
+            assert_eq!(out, [0xA5; HEADER + 4]);
+        } else {
+            assert_eq!(
+                &out[..HEADER],
+                &[
+                    CCID_DATA_BLOCK_RET,
+                    0x67,
+                    0x45,
+                    0x23,
+                    1,
+                    0,
+                    0x9B,
+                    STATUS_FAILED,
+                    0,
+                    0
+                ]
+            );
+            assert_eq!(&out[HEADER..], &[0xA5; 4]);
+        }
+    }
+}
+
 fn msg(msg_type: u8, seq: u8, payload: &[u8]) -> Vec<u8> {
     let mut v = Vec::new();
     v.push(msg_type);
@@ -31,6 +103,59 @@ fn atr_identities_are_well_formed() {
     assert!(ATR_RSKEY.windows(6).any(|w| w == b"RS-Key"));
     assert!(ATR_RSKEY.windows(7).all(|w| w != b"YubiKey"));
     assert!(ATR_YUBIKEY.windows(7).any(|w| w == b"YubiKey"));
+}
+
+/// An XfrBlock too short for an APDU header, answered as a YubiKey 5.8.0 answered
+/// ones of 1 and 3 bytes: a failed SlotStatus whose `bError` names `dwLength`, with
+/// the slot's ICC status kept. Four bytes is a case-1 APDU and goes through.
+#[test]
+fn a_short_xfr_block_is_refused_by_the_reader() {
+    for len in 0..=3 {
+        for status in [STATUS_ACTIVE, STATUS_INACTIVE] {
+            let m = msg(CCID_XFR_BLOCK, 9, &[0x40, 0xA4, 0x04][..len]);
+            let mut out = [0u8; 64];
+            let n = refuse_short_xfr(&m, status, &mut out).expect("refused");
+            assert_eq!(
+                out[..n],
+                [
+                    CCID_SLOT_STATUS_RET,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    9,
+                    0x40 | status,
+                    0x01,
+                    0
+                ],
+                "{len} byte(s), status {status}"
+            );
+        }
+    }
+    let case1 = msg(CCID_XFR_BLOCK, 9, &[0x00, 0xA4, 0x04, 0x00]);
+    assert_eq!(
+        refuse_short_xfr(&case1, STATUS_ACTIVE, &mut [0u8; 64]),
+        None
+    );
+    // `dwLength` decides, not what else arrived behind it: bError names that field.
+    let mut trailing = msg(CCID_XFR_BLOCK, 9, &[0x40]);
+    trailing.extend_from_slice(&[0xA4, 0x04, 0x00, 0x00]);
+    assert_eq!(
+        refuse_short_xfr(&trailing, STATUS_ACTIVE, &mut [0u8; 64]),
+        Some(HEADER)
+    );
+    // A reply buffer too short for the header is no refusal to send.
+    let short = msg(CCID_XFR_BLOCK, 9, &[0x40]);
+    assert_eq!(
+        refuse_short_xfr(&short, STATUS_ACTIVE, &mut [0u8; HEADER - 1]),
+        None
+    );
+    let status = msg(CCID_SLOT_STATUS, 9, &[]);
+    assert_eq!(
+        refuse_short_xfr(&status, STATUS_ACTIVE, &mut [0u8; 64]),
+        None
+    );
 }
 
 #[test]

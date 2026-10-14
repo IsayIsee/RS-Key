@@ -30,17 +30,29 @@ use rsk_openpgp::consts::{PW1_DEFAULT, PW1_MODE81, PW1_MODE82, PW3_DEFAULT, PW3_
 use rsk_openpgp::keys::curve_from_attr;
 use rsk_openpgp::pso::parse_ecdh_point;
 use rsk_openpgp::{OpenpgpApplet, scan_files};
-use rsk_otp::hid::{FrameRx, FrameTx, REPORT_SIZE, RxOutcome};
 use rsk_phy::{PHY_MAX_SIZE, PhyData};
-use rsk_rsa::MAX_RSA_DIGESTINFO;
-use rsk_rsa::pkcs1v15::rsa_sign_em;
 use rsk_sdk::apdu::Apdu;
+use rsk_sdk::applet::RESP_BUILD;
 use rsk_sdk::tlv::{Tlv, find_tag};
 use rsk_sdk::{Applet, ResBuf, Sw};
-use rsk_usb::ccid::process_message;
 use rsk_usb::ctaphid::{CTAP_MAX_MESSAGE, HID_RPT_SIZE, Outcome, Reassembler, TxFrames};
 
 use core::cell::RefCell;
+
+#[path = "../fuzz_targets/ccid_frame.rs"]
+mod ccid_frame;
+
+#[path = "../fuzz_targets/otp_hid_oracle.rs"]
+mod otp_hid_oracle;
+
+#[path = "../fuzz_targets/fido_session.rs"]
+mod fido_session;
+
+#[path = "../fuzz_targets/power_cut.rs"]
+mod power_cut;
+
+#[path = "fixtures/fido_session.rs"]
+mod fido_session_seeds;
 
 // -------------------------------------------------------------------------
 // Shared RNG and helpers
@@ -70,6 +82,7 @@ fn dev() -> Device<'static> {
         serial_hash: &[0xAB; 32],
         serial_id: &[1, 2, 3, 4, 5, 6, 7, 8],
         otp_key: None,
+        latched: false,
     }
 }
 
@@ -370,9 +383,7 @@ fn miri_fido_vendor() {
             let _ = fs.delete(rsk_fido::consts::EF_KEY_DEV.get());
         }
         let mut state = FidoState::new();
-        state.mse_active = true;
-        state.mse_key = [0x5A; 32];
-        state.mse_pub = [0x04; 65];
+        state.establish_mse_for_test([0x5A; 32], [0x04; 65]);
         let mut out = [0u8; 2048];
         let mut presence = rsk_fido::AlwaysConfirm;
         let mut ctx = Ctx {
@@ -507,13 +518,19 @@ fn miri_fido_credmgmt() {
                 },
             };
             let mut cred_box = [0u8; 512];
-            if let Ok(len) =
-                credential_create(&seed, &d, &input, &rp_hash, &[0x11; 12], &mut cred_box)
-            {
+            if let Ok(len) = credential_create(
+                seed.expose(),
+                &d,
+                &input,
+                &rp_hash,
+                &[0x11; 12],
+                &mut cred_box,
+            ) {
                 let _ = credential_store(
-                    &seed,
+                    seed.expose(),
                     &d,
                     &mut fs,
+                    &mut SeqRng(3),
                     &cred_box[..len],
                     &rp_hash,
                     "a.co",
@@ -680,7 +697,7 @@ fn miri_openpgp_apdu() {
 
     fn run(app: &mut OpenpgpApplet, fs: &mut Fs<RamStorage>, raw: &[u8]) {
         if let Ok(apdu) = Apdu::parse(raw) {
-            let mut buf = [0u8; 2048];
+            let mut buf = [0u8; RESP_BUILD];
             let mut res = ResBuf::new(&mut buf);
             let _ = app.process(&apdu, fs, &mut res);
         }
@@ -690,6 +707,7 @@ fn miri_openpgp_apdu() {
         serial_hash: &SERIAL_HASH,
         serial_id: &SERIAL_ID,
         otp_key: None,
+        latched: false,
     };
     let mut fs = Fs::new(RamStorage::new());
     fs.scan();
@@ -805,31 +823,11 @@ fn miri_openpgp_ec_key() {
 }
 
 // =========================================================================
-// openpgp_rsa_sign
-// =========================================================================
-
-#[test]
-fn miri_openpgp_rsa_sign() {
-    for data in [
-        &b""[..],
-        b"\x00",
-        b"\x30\x21\x30\x09\x06\x05\x2b\x0e\x03\x02\x1a\x05\x00\x04\x14\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
-        b"\x00\x00\x00\x00\x00\x00",
-    ] {
-        let mut em = [0u8; MAX_RSA_DIGESTINFO];
-        if let Some(n) = rsa_sign_em(data, &mut em) {
-            assert!(n <= MAX_RSA_DIGESTINFO);
-        }
-    }
-}
-
-// =========================================================================
 // ccid
 // =========================================================================
 
 #[test]
 fn miri_ccid() {
-    const ATR: &[u8] = &[0x3b, 0xda, 0x18, 0xff, 0x81, 0xb1, 0xfe, 0x75, 0x1f, 0x03];
     for data in [
         &b""[..],
         b"\x62\x00\x00\x00\x00\x00\x00\x00\x00\x00",
@@ -840,9 +838,9 @@ fn miri_ccid() {
             0x00,
         ],
     ] {
-        let mut status = 0u8;
-        let mut out = [0u8; 2048];
-        let _ = process_message(data, ATR, &mut status, &mut out);
+        let mut record = vec![u8::try_from(data.len()).unwrap()];
+        record.extend_from_slice(data);
+        ccid_frame::replay(&record);
     }
 }
 
@@ -1083,6 +1081,46 @@ fn miri_oath_apdu() {
     }
 }
 
+#[path = "../fuzz_targets/oath_apdu/flows.rs"]
+mod oath_flows;
+
+#[test]
+fn miri_oath_mark_positions_cover_each_slot_without_changing_the_fault_mode() {
+    for position in 0..3 {
+        assert_eq!(
+            oath_flows::mark_position(8, position),
+            (3, u16::from(position))
+        );
+    }
+    let mut reached = std::collections::BTreeSet::new();
+    for selector in 0..=u8::MAX {
+        for position in 0..3 {
+            let ordinary = oath_flows::mark_position(selector, position);
+            assert_eq!(
+                oath_flows::mark_position(selector | 0x40, position),
+                ordinary
+            );
+            reached.insert(ordinary);
+        }
+    }
+    assert_eq!(
+        reached,
+        [(1, 0), (2, 0), (2, 1), (3, 0), (3, 1), (3, 2)].into()
+    );
+}
+
+#[test]
+fn miri_oath_mark_read_faults_and_recovery() {
+    for selector in [0, 5, 10, 15] {
+        let (count, _) = oath_flows::mark_position(selector, 0);
+        for position in 0..count {
+            let position = u8::try_from(position).unwrap();
+            oath_flows::check(&[selector, position, 1]);
+            oath_flows::check(&[selector | 0x40, position, 1]);
+        }
+    }
+}
+
 // =========================================================================
 // otp_apdu
 // =========================================================================
@@ -1152,24 +1190,7 @@ fn miri_otp_hid() {
         &[0x12; 64],
         &[0xFF; 16],
     ] {
-        let mut rx = FrameRx::new();
-        let mut tx = FrameTx::new();
-        for chunk in data.chunks(REPORT_SIZE) {
-            let mut report = [0u8; REPORT_SIZE];
-            report[..chunk.len()].copy_from_slice(chunk);
-            match rx.feed(&report) {
-                RxOutcome::Frame { slot: _, payload } => {
-                    tx.load(&payload);
-                    let mut out = [0u8; REPORT_SIZE];
-                    let mut guard = 0;
-                    while tx.next(&mut out) {
-                        guard += 1;
-                        assert!(guard < 64, "FrameTx must terminate");
-                    }
-                }
-                RxOutcome::None | RxOutcome::Reset | RxOutcome::BadCrc => {}
-            }
-        }
+        otp_hid_oracle::replay(data);
     }
 }
 
@@ -1293,6 +1314,9 @@ fn miri_rescue_apdu() {
         fn read_page58_lock_raw(&self) -> Option<u32> {
             Some(0)
         }
+        fn pre_otp_left(&self) -> Option<u16> {
+            Some(0)
+        }
         fn lock_page58(&mut self) -> bool {
             true
         }
@@ -1382,6 +1406,7 @@ fn miri_seed_blob() {
         serial_hash: &[0xAB; 32],
         serial_id: &[1, 2, 3, 4, 5, 6, 7, 8],
         otp_key: None,
+        latched: false,
     };
     let dev_new = Device {
         otp_key: Some(&OTP),
@@ -1404,19 +1429,22 @@ fn miri_seed_blob() {
             continue;
         }
         if matches!(data[0], 0x03 | 0x11 | 0x13) {
-            assert_eq!(load_keydev(&dev_old, &mut fs), None);
+            assert!(load_keydev(&dev_old, &mut fs).is_none());
         }
         if data[0] == 0x13 {
-            assert_eq!(load_keydev(&dev_new, &mut fs), None);
+            assert!(load_keydev(&dev_new, &mut fs).is_none());
         }
         let _ = load_keydev(&dev_old, &mut fs);
         let _ = load_keydev(&dev_new, &mut fs);
         let _ = migrate_keydev_pin(&dev_old, &mut fs, &[0x42; 16]);
         let _ = migrate_keydev_pin(&dev_new, &mut fs, &[0x42; 16]);
         let _ = migrate_keydev_boot(&dev_new, &mut fs);
-        let after_one = load_keydev(&dev_new, &mut fs);
+        let after_one = load_keydev(&dev_new, &mut fs).map(|s| *s.expose());
         let _ = migrate_keydev_boot(&dev_new, &mut fs);
-        assert_eq!(after_one, load_keydev(&dev_new, &mut fs));
+        assert_eq!(
+            after_one,
+            load_keydev(&dev_new, &mut fs).map(|s| *s.expose())
+        );
     }
 }
 
@@ -1426,91 +1454,14 @@ fn miri_seed_blob() {
 
 #[test]
 fn miri_fido_session() {
-    use rsk_fido::consts::{
-        CTAP_CLIENT_PIN, CTAP_CREDENTIAL_MGMT, CTAP_GET_INFO, CTAP_LARGE_BLOBS, CTAP_RESET,
-        CTAP_SELECTION,
-    };
-    use rsk_fido::credential::credential_store;
-    use rsk_fido::state::{PERM_ACFG, PERM_CM, PERM_GA, PERM_LBW, PERM_MC, PERM_PCMR};
-
-    let d = Device {
-        serial_hash: &[0xAB; 32],
-        serial_id: &[1, 2, 3, 4, 5, 6, 7, 8],
-        otp_key: None,
-    };
-    let mut fs = Fs::new(RamStorage::new());
-    let mut rng = SeqRng(1);
-    let _ = ensure_seed(&d, &mut fs, &mut rng);
-    let rp_hash = sha256(b"a.co");
-    if let Some(seed) = load_keydev(&d, &mut fs) {
-        let input = CredInput {
-            rp_id: "a.co",
-            user_id: &[1, 2],
-            user_name: "u",
-            user_display_name: "",
-            use_sign_count: true,
-            rk: true,
-            created_ms: 1,
-            alg: -7,
-            curve: 1,
-            ext: CredExt {
-                cred_protect: 0,
-                cred_blob: &[],
-                hmac_secret: false,
-                large_blob_key: false,
-                third_party_payment: false,
-            },
-        };
-        let mut cred_box = [0u8; 512];
-        if let Ok(len) = credential_create(&seed, &d, &input, &rp_hash, &[0x11; 12], &mut cred_box)
-        {
-            let _ = credential_store(
-                &seed,
-                &d,
-                &mut fs,
-                &cred_box[..len],
-                &rp_hash,
-                "a.co",
-                &[1, 2],
-                &[],
-            );
-        }
-    }
-
-    let mut state = FidoState::new();
-    state.paut.token = [0x99; 32];
-    state.paut.permissions = PERM_MC | PERM_GA | PERM_CM | PERM_LBW | PERM_ACFG | PERM_PCMR;
-    state.begin_using_token(false, 0);
-
-    // One session: token-armed queries, a reset mid-way, then getInfo must
-    // still succeed against the wiped store.
-    let msgs: [&[u8]; 7] = [
-        &[CTAP_GET_INFO],
-        &[CTAP_SELECTION],
-        &[CTAP_CLIENT_PIN, 0xa1, 0x02, 0x01],
-        &[CTAP_CREDENTIAL_MGMT, 0xa1, 0x01, 0x01],
-        &[CTAP_LARGE_BLOBS, 0xa1, 0x01, 0x00],
-        &[CTAP_RESET],
-        &[CTAP_GET_INFO],
+    // Retain reset/query coverage, then run the fuzz target's actual state oracles.
+    let queries: &[u8] = &[
+        0, 0, 1, 4, 0, 1, 11, 0, 4, 6, 0xA1, 2, 1, 0, 4, 10, 0xA1, 1, 1, 0, 4, 12, 0xA1, 1, 0, 0,
+        1, 7, 0, 1, 4,
     ];
-    let mut presence = rsk_fido::AlwaysConfirm;
-    let mut out = [0u8; 2048];
-    let mut now_ms: u64 = 2;
-    for msg in msgs {
-        let mut ctx = Ctx {
-            presence: &mut presence,
-            dev: d,
-            fs: &mut fs,
-            rng: &mut rng,
-            state: &mut state,
-            now_ms,
-        };
-        let w = rsk_fido::process_cbor(&mut ctx, msg, &mut out);
-        assert!(w >= 1 && w <= out.len());
-        if msg.first() == Some(&CTAP_GET_INFO) {
-            assert_eq!(out[0], rsk_fido::CTAP2_OK);
-        }
-        now_ms += 997;
+    fido_session::exercise(queries);
+    for index in 0..7 {
+        fido_session::exercise(&fido_session_seeds::assertion_capacity(index));
     }
 }
 
@@ -1572,194 +1523,174 @@ fn miri_fs_ops() {
 
 // =========================================================================
 // power_cut
+
+fn openpgp_cut(data: &[u8]) -> power_cut::openpgp::Outcome {
+    match power_cut::run(data) {
+        power_cut::Outcome::OpenPgp(out) => out,
+        _ => panic!("OpenPGP input route"),
+    }
+}
+
+fn journal_cut(data: &[u8]) -> power_cut::journal::Outcome {
+    match power_cut::run(data) {
+        power_cut::Outcome::Journal(out) => out,
+        _ => panic!("journal input route"),
+    }
+}
+
+fn backup_cut(data: &[u8]) -> power_cut::backup::Outcome {
+    match power_cut::run(data) {
+        power_cut::Outcome::Backup(out) => out,
+        _ => panic!("backup input route"),
+    }
+}
+
+#[cfg(not(miri))]
+#[path = "miri/piv_attestation_cut_tests.rs"]
+mod piv_attestation_cuts;
 // =========================================================================
 
 #[test]
 fn miri_power_cut() {
-    use std::cell::Cell;
-    use std::rc::Rc;
-
-    use embassy_futures::block_on;
-    use embedded_storage_async::nor_flash::{
-        ErrorType, MultiwriteNorFlash, NorFlash, ReadNorFlash,
+    let mut put_cut_reboot = vec![0, 24];
+    put_cut_reboot.extend_from_slice(&[0xA5; 24]);
+    put_cut_reboot.extend_from_slice(&[0x28, 4, 1, 2, 3, 4, 0x40, 0, 10, 24]);
+    put_cut_reboot.extend_from_slice(&[0x5A; 24]);
+    put_cut_reboot.extend_from_slice(&[6, 1, 64, 0x29, 4]);
+    for data in [&[][..], &[0, 1, 0x5A, 6, 1, 64], &put_cut_reboot] {
+        let _ = power_cut::run(data);
+    }
+    let scrub = journal_cut(&[0xD1, 0, 0, 17, 0, 17]);
+    assert!(scrub.interrupted && scrub.recovery_interrupted && !scrub.appended);
+    let append = journal_cut(&[0xD0, 0, 255, 255, 255, 255]);
+    assert!(!append.interrupted && !append.recovery_interrupted && append.appended);
+    let torn = openpgp_cut(&[0xC0, 0, 0, 17, 0, 17, 0]);
+    assert!(torn.interrupted && torn.recovery_interrupted);
+    let healthy = openpgp_cut(&[0xC3, 4, 255, 255, 255, 255, 0]);
+    assert!(!healthy.interrupted && !healthy.recovery_interrupted);
+    assert!(healthy.operation_stats.bytes_written > 0);
+    assert!(healthy.recovery_stats.bytes_written > 0);
+    let revoke = openpgp_cut(&[0xC0, 5, 0, 17, 0, 17, 0]);
+    assert!(revoke.interrupted && revoke.recovery_interrupted);
+    let power_cut::Outcome::Piv(torn) = power_cut::run(&[0xB1, 7, 0, 17, 0, 17, 0]) else {
+        panic!("PIV input route");
     };
-    use rsk_fs::Storage;
-    use sequential_storage::cache::Cache;
-    use sequential_storage::cache::key_pointers::ArrayKeyPointers;
-    use sequential_storage::cache::page_pointers::ArrayPagePointers;
-    use sequential_storage::cache::page_states::ArrayPageStates;
-    use sequential_storage::map::{MapConfig, MapStorage};
-    use sequential_storage::mock_flash::{
-        MockFlashBase, MockFlashError, Operation, WriteCountCheck,
+    assert!(torn.interrupted && torn.recovery_interrupted);
+    let power_cut::Outcome::Piv(healthy) = power_cut::run(&[0xB2, 7, 255, 255, 255, 255, 0]) else {
+        panic!("PIV input route");
     };
+    assert!(!healthy.interrupted && !healthy.recovery_interrupted);
+    assert!(healthy.operation_stats.bytes_written > 0);
+}
 
-    type Mock = MockFlashBase<6, 4, 1024>;
-    const MAIN: core::ops::Range<u32> = 0..(4 * 4096);
-    const CNT: core::ops::Range<u32> = (4 * 4096)..(6 * 4096);
-
-    type MainCache = Cache<ArrayPageStates<4>, ArrayPagePointers<4>, ArrayKeyPointers<u16, 8>, u16>;
-    type CntCache = Cache<ArrayPageStates<2>, ArrayPagePointers<2>, ArrayKeyPointers<u16, 4>, u16>;
-
-    #[derive(Clone)]
-    struct SharedMock {
-        flash: Rc<RefCell<Mock>>,
-        dead: Rc<Cell<bool>>,
-    }
-    impl ErrorType for SharedMock {
-        type Error = MockFlashError;
-    }
-    impl ReadNorFlash for SharedMock {
-        const READ_SIZE: usize = <Mock as ReadNorFlash>::READ_SIZE;
-        async fn read(
-            &mut self,
-            offset: u32,
-            bytes: &mut [u8],
-        ) -> core::result::Result<(), Self::Error> {
-            block_on(self.flash.borrow_mut().read(offset, bytes))
-        }
-        fn capacity(&self) -> usize {
-            self.flash.borrow().capacity()
-        }
-    }
-    impl NorFlash for SharedMock {
-        const WRITE_SIZE: usize = <Mock as NorFlash>::WRITE_SIZE;
-        const ERASE_SIZE: usize = <Mock as NorFlash>::ERASE_SIZE;
-        async fn erase(&mut self, from: u32, to: u32) -> core::result::Result<(), Self::Error> {
-            if self.dead.get() {
-                return Err(MockFlashError::EarlyShutoff(from, Operation::Erase));
-            }
-            let r = block_on(self.flash.borrow_mut().erase(from, to));
-            if matches!(r, Err(MockFlashError::EarlyShutoff(..))) {
-                self.dead.set(true);
-            }
-            r
-        }
-        async fn write(
-            &mut self,
-            offset: u32,
-            bytes: &[u8],
-        ) -> core::result::Result<(), Self::Error> {
-            if self.dead.get() {
-                return Err(MockFlashError::EarlyShutoff(offset, Operation::Write));
-            }
-            let r = block_on(self.flash.borrow_mut().write(offset, bytes));
-            if matches!(r, Err(MockFlashError::EarlyShutoff(..))) {
-                self.dead.set(true);
-            }
-            r
-        }
-    }
-    impl MultiwriteNorFlash for SharedMock {}
-
-    struct TortureStorage {
-        main: MapStorage<u16, SharedMock, MainCache>,
-        counter: MapStorage<u16, SharedMock, CntCache>,
-        buf: [u8; 2048],
-    }
-    impl TortureStorage {
-        fn new(flash: SharedMock) -> Self {
-            Self {
-                main: MapStorage::new(
-                    flash.clone(),
-                    MapConfig::new(MAIN),
-                    MainCache::new(
-                        ArrayPageStates::new(),
-                        ArrayPagePointers::new(),
-                        ArrayKeyPointers::new(),
-                    ),
-                ),
-                counter: MapStorage::new(
-                    flash,
-                    MapConfig::new(CNT),
-                    CntCache::new(
-                        ArrayPageStates::new(),
-                        ArrayPagePointers::new(),
-                        ArrayKeyPointers::new(),
-                    ),
-                ),
-                buf: [0; 2048],
+#[test]
+#[cfg(not(miri))]
+fn openpgp_commands_and_recovery_have_independent_byte_cut_selectors() {
+    let mut reached = [false; 4];
+    for mode in [0xC0, 0xC1, 0xC2, 0xC3] {
+        for command in 0..6 {
+            for churn in [0, 17] {
+                for cut in [0u16, 17, 256, u16::MAX] {
+                    for recovery in [0u16, 17, u16::MAX] {
+                        let mut data = [mode, command, 0, 0, 0, 0, churn];
+                        data[2..4].copy_from_slice(&cut.to_be_bytes());
+                        data[4..6].copy_from_slice(&recovery.to_be_bytes());
+                        let out = openpgp_cut(&data);
+                        reached[0] |= out.interrupted;
+                        reached[1] |= !out.interrupted;
+                        reached[2] |= out.recovery_interrupted;
+                        reached[3] |= !out.recovery_interrupted;
+                    }
+                }
             }
         }
     }
-    impl Storage for TortureStorage {
-        fn read(&mut self, fid: u16, buf: &mut [u8]) -> Option<usize> {
-            let value = if fid == 0xC000 {
-                block_on(self.counter.fetch_item::<&[u8]>(&mut self.buf, &fid)).ok()??
-            } else {
-                block_on(self.main.fetch_item::<&[u8]>(&mut self.buf, &fid)).ok()??
-            };
-            let n = value.len().min(buf.len());
-            buf[..n].copy_from_slice(&value[..n]);
-            Some(value.len())
-        }
-        fn write(&mut self, fid: u16, data: &[u8]) -> rsk_sdk::error::Result<()> {
-            if fid == 0xC000 {
-                block_on(self.counter.store_item::<&[u8]>(&mut self.buf, &fid, &data))
-            } else {
-                block_on(self.main.store_item::<&[u8]>(&mut self.buf, &fid, &data))
+    assert_eq!(reached, [true; 4]);
+}
+
+#[test]
+#[cfg(not(miri))]
+fn openpgp_command_and_recovery_byte_boundaries_are_exhaustive_for_clean_traces() {
+    for mode in [0xC0, 0xC3] {
+        for command in 0..6 {
+            let mut reached = [false; 4];
+            let mut data = [mode, command, 255, 255, 255, 255, 0];
+            let healthy = power_cut::openpgp::run(&data);
+            assert!(!healthy.interrupted && !healthy.recovery_interrupted);
+            let end = u16::try_from(
+                healthy.operation_stats.bytes_written
+                    + healthy.operation_stats.erases * power_cut::backup::ERASE_BYTES as u64,
+            )
+            .unwrap();
+            assert!(end > 0, "each command must program the store");
+            for cut in 0..=end {
+                data[2..4].copy_from_slice(&cut.to_be_bytes());
+                let out = power_cut::openpgp::run(&data);
+                reached[0] |= out.interrupted;
+                reached[1] |= !out.interrupted;
             }
-            .map_err(|_| rsk_sdk::error::Error::MemoryFatal)
-        }
-        fn remove(&mut self, fid: u16) -> rsk_sdk::error::Result<()> {
-            if fid == 0xC000 {
-                block_on(self.counter.remove_item(&mut self.buf, &fid))
-            } else {
-                block_on(self.main.remove_item(&mut self.buf, &fid))
+            for first in [0, end / 2, end.saturating_sub(1)] {
+                data[2..4].copy_from_slice(&first.to_be_bytes());
+                data[4..6].copy_from_slice(&u16::MAX.to_be_bytes());
+                let clean = power_cut::openpgp::run(&data);
+                let recovery_end = u16::try_from(
+                    clean.recovery_stats.bytes_written
+                        + clean.recovery_stats.erases * power_cut::backup::ERASE_BYTES as u64,
+                )
+                .unwrap();
+                assert!(
+                    recovery_end > 0,
+                    "each recovery trace must program the store"
+                );
+                for cut in 0..=recovery_end {
+                    data[4..6].copy_from_slice(&cut.to_be_bytes());
+                    let out = power_cut::openpgp::run(&data);
+                    reached[2] |= out.recovery_interrupted;
+                    reached[3] |= !out.recovery_interrupted;
+                }
             }
-            .map_err(|_| rsk_sdk::error::Error::MemoryFatal)
-        }
-        fn size(&mut self, fid: u16) -> Option<usize> {
-            let value = if fid == 0xC000 {
-                block_on(self.counter.fetch_item::<&[u8]>(&mut self.buf, &fid)).ok()??
-            } else {
-                block_on(self.main.fetch_item::<&[u8]>(&mut self.buf, &fid)).ok()??
-            };
-            Some(value.len())
-        }
-        // Non-enumerating stub: report "incomplete" so `scan` keeps confirm-on-miss.
-        fn for_each_key(&mut self, _f: &mut dyn FnMut(u16)) -> bool {
-            false
+            assert_eq!(reached, [true; 4], "mode {mode:02X}, command {command}");
         }
     }
+}
 
-    let flash = Rc::new(RefCell::new(Mock::new(
-        WriteCountCheck::Disabled,
-        None,
-        true,
-    )));
-    let dead = Rc::new(Cell::new(false));
-    let shared = SharedMock {
-        flash: flash.clone(),
-        dead: dead.clone(),
-    };
-
-    // Commit two files (one per partition) under stable power.
-    let mut fs = Fs::new(TortureStorage::new(shared.clone()));
-    fs.scan();
-    let old = [0xA5u8; 24];
-    fs.put(0xB000, &old).unwrap();
-    fs.put(0xC000, &[1, 2, 3, 4]).unwrap();
-
-    // Cut the power somewhere inside the next put, then reboot (fresh caches
-    // over the same bytes) until the mount survives. The interrupted file
-    // must read back as exactly old or new; the committed one must be intact.
-    flash.borrow_mut().bytes_until_shutoff = Some(10);
-    let new = [0x5Au8; 24];
-    let r = fs.put(0xB000, &new);
-    assert!(r.is_err() || !dead.get());
-    loop {
-        dead.set(false);
-        fs = Fs::new(TortureStorage::new(shared.clone()));
-        fs.scan();
-        if !dead.get() {
-            break;
+#[test]
+#[cfg(not(miri))]
+fn audit_journal_operation_and_recovery_byte_cuts() {
+    let mut reached = [false; 4];
+    for (mode, settings) in [(0xD0, 0), (0xD0, 1), (0xD1, 0), (0xD1, 1)] {
+        let mut data = [mode, settings, 255, 255, 255, 255];
+        let healthy = power_cut::journal::run(&data);
+        assert!(!healthy.interrupted && !healthy.recovery_interrupted);
+        let end = u16::try_from(
+            healthy.operation_stats.bytes_written
+                + healthy.operation_stats.erases * power_cut::backup::ERASE_BYTES as u64,
+        )
+        .unwrap();
+        for cut in 0..=end {
+            data[2..4].copy_from_slice(&cut.to_be_bytes());
+            let out = power_cut::journal::run(&data);
+            reached[0] |= out.interrupted;
+            reached[1] |= !out.interrupted;
+        }
+        data[2..4].copy_from_slice(&0u16.to_be_bytes());
+        let recovery = power_cut::journal::run(&data);
+        let recovery_end = u16::try_from(
+            recovery.recovery_stats.bytes_written
+                + recovery.recovery_stats.erases * power_cut::backup::ERASE_BYTES as u64,
+        )
+        .unwrap();
+        for cut in 0..=recovery_end {
+            data[4..6].copy_from_slice(&cut.to_be_bytes());
+            let out = power_cut::journal::run(&data);
+            reached[2] |= out.recovery_interrupted;
+            reached[3] |= !out.recovery_interrupted;
         }
     }
-    let mut buf = [0u8; 64];
-    let n = fs.read(0xB000, &mut buf).expect("file lost after cut");
-    assert!(buf[..n] == old || buf[..n] == new, "torn put: garbage");
-    assert_eq!(fs.read(0xC000, &mut buf), Some(4));
-    assert_eq!(&buf[..4], &[1, 2, 3, 4]);
+    assert_eq!(
+        reached, [true; 4],
+        "a journal cut/recovery arm was not exercised"
+    );
 }
 
 // =========================================================================
@@ -1929,5 +1860,78 @@ fn miri_display_label() {
         let prompt = ConfirmPrompt::new("Approve?", primary, secondary);
         let mut sink = Sink;
         let _ = rsk_ui::render::render(&mut sink, &Screen::Confirm(prompt));
+    }
+}
+
+#[test]
+fn miri_seed_load_and_recovery() {
+    let torn = backup_cut(&[0xE0, 0, 0, 64, 0, 17, 0x33]);
+    assert!(torn.interrupted && torn.recovery_interrupted);
+    let settled = backup_cut(&[0xE0, 0, 255, 255, 2, 188, 0x33]);
+    assert!(!settled.interrupted && !settled.recovery_interrupted && settled.replaced);
+
+    let out = backup_cut(&[0xE0, 24, 1, 0, 0, 17, 0x33]);
+    assert!(out.interrupted);
+    assert_eq!(out.load_stats.erases, 1);
+    assert!(out.load_stats.bytes_written < 256);
+}
+
+#[test]
+#[cfg(not(miri))]
+fn seed_load_and_recovery_byte_cuts() {
+    let mut reached = [false; 4];
+    for churn in [0, 31, 63] {
+        for cut in 0u16..=700 {
+            let mut data = [0xE0, churn, 0, 0, 0, 0, 0x33];
+            data[2..4].copy_from_slice(&cut.to_be_bytes());
+            let out = power_cut::backup::run(&data);
+            reached[0] |= out.interrupted;
+            reached[1] |= out.recovery_interrupted;
+            reached[2] |= out.replaced;
+            reached[3] |= !out.interrupted;
+        }
+    }
+    for load_cut in [64u16, 256] {
+        for recovery_cut in 0u16..=700 {
+            let mut data = [0xE0, 0, 0, 0, 0, 0, 0x33];
+            data[2..4].copy_from_slice(&load_cut.to_be_bytes());
+            data[4..6].copy_from_slice(&recovery_cut.to_be_bytes());
+            power_cut::backup::run(&data);
+        }
+    }
+    assert_eq!(
+        reached, [true; 4],
+        "a byte-cut/recovery arm was not exercised"
+    );
+}
+
+#[test]
+#[cfg(not(miri))]
+fn seed_load_during_erase_byte_cuts() {
+    let page_bytes = u64::try_from(power_cut::backup::ERASE_BYTES).unwrap();
+    for churn in [24, 45] {
+        let mut data = [0xE0, churn, 255, 255, 255, 255, 0x33];
+        let healthy = power_cut::backup::run(&data);
+        assert!(healthy.replaced && !healthy.interrupted);
+        assert_eq!(healthy.load_stats.erases, 1, "LOAD never reached erase");
+        let end = u16::try_from(healthy.load_stats.bytes_written + page_bytes).unwrap();
+        let mut partial_erases = 0;
+        for cut in 0..=end {
+            data[2..4].copy_from_slice(&cut.to_be_bytes());
+            let out = power_cut::backup::run(&data);
+            if out.interrupted && out.load_stats.erases == 1 {
+                let erased = u64::from(cut)
+                    .checked_sub(out.load_stats.bytes_written)
+                    .unwrap();
+                if erased > 0 && erased < page_bytes {
+                    partial_erases += 1;
+                }
+            }
+        }
+        assert_eq!(
+            partial_erases,
+            page_bytes - 1,
+            "a partial erase cut was missed"
+        );
     }
 }

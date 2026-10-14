@@ -3,6 +3,12 @@
 
 use super::*;
 
+#[test]
+fn backup_action_geometry_has_an_explicit_outside_region() {
+    assert_eq!(hit_backup(Point::new(0, 0)), None);
+    assert_eq!(std::hint::black_box(rsk_slip39_max)(), 16);
+}
+
 /// The printed digit order. Every case here is about geometry or dispatch, not about
 /// the scrambled layout, so they all read the pad the way a default device draws it.
 const ID: PinLayout = PinLayout::identity();
@@ -751,5 +757,33 @@ fn shuffling_moves_the_digits() {
     assert!(
         moved >= 60,
         "only {moved} of 64 layouts differed from the printed order"
+    );
+}
+
+/// A tap routes to the tab drawn under it and to nothing where no tab is drawn:
+/// past the panel's right or bottom edge, a touch controller's stray reading.
+#[test]
+fn a_tap_off_the_panel_selects_no_nav_tab() {
+    let y = NAV_TOP + NAV_H / 2;
+    for (x, want) in [
+        (0, Some(NavTab::Home)),
+        (NAV_CELL_W - 1, Some(NavTab::Home)),
+        (NAV_CELL_W, Some(NavTab::Passkeys)),
+        (PANEL_W - 1, Some(NavTab::Settings)),
+        (PANEL_W, None),
+        (PANEL_W + 60, None),
+        (u16::MAX, None),
+    ] {
+        assert_eq!(hit_nav(Point::new(x, y)), want, "x = {x}");
+    }
+    assert_eq!(
+        hit_nav(Point::new(PANEL_W - 1, PANEL_H)),
+        None,
+        "below the panel"
+    );
+    assert_eq!(
+        hit_nav(Point::new(PANEL_W - 1, NAV_TOP - 1)),
+        None,
+        "above the bar"
     );
 }

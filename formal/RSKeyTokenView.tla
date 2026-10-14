@@ -15,6 +15,8 @@ TokenGamma(pin, gate, tok, noRp) ==
       permissionAcfg  |-> "acfg" \in tok.perms,
       rpBound         |-> tok.rp # noRp,
       pinSet          |-> pin.set,
-      persistentGrant |-> gate.ppuat ]
+      \* The record, not its issuance: that is what C's alpha reads
+      \* (`fs.has_key(EF_PAUTHTOKEN)` in rsk-device's `ctap.rs`).
+      persistentGrant |-> gate.ppuatRec ]
 
 =============================================================================

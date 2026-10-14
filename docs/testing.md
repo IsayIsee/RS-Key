@@ -5,9 +5,13 @@ hardware-agnostic on purpose (only `firmware` touches the HAL), so everything
 except board bring-up is tested and fuzzed on the host. The device is reserved
 for end-to-end integration.
 
+The [testing roadmap](testing-roadmap.md) describes the planned expansion of
+these checks using SQLite's methods, with separate completion criteria for
+coverage, failures, semantic oracles, configurations and the delivered image.
+
 | Layer | What it checks | Where |
 |---|---|---|
-| Host unit tests | parsers, state machines, applets, crypto, the display flow (~1500 tests) | `#[cfg(test)]` in each crate |
+| Host unit tests | parsers, state machines, applets, crypto, USB transports, the display flow | `#[cfg(test)]` in each crate |
 | Fuzzing | the same logic under adversarial bytes | `fuzz/` |
 | Miri | the fuzz targets' logic under the UB checker | `fuzz/tests/miri.rs` |
 | Kani proofs | bounded model checking — every input, not a sample | `#[cfg(kani)]` in the crates |
@@ -21,13 +25,14 @@ flowchart TD
 
 Top to bottom: fast and host-only, tapering to slow and needs-a-board.
 
-## The one command
+## The two commands
 
 ```sh
-nix develop -c ./scripts/check.sh
+nix develop -c ./scripts/check.sh            # every commit
+nix develop -c ./scripts/check-assurance.sh  # once, before opening a pull request
 ```
 
-runs fmt, clippy (embedded **and** host targets, `-D warnings`), rustdoc over
+The first runs fmt, clippy (embedded **and** host targets, `-D warnings`), rustdoc over
 every workspace (also `-D warnings`, so a broken intra-doc link fails the gate,
 private items included — but only links in `///` and `//!`: a name in a plain
 `//` comment is not parsed, and rots unseen), all host tests, the firmware
@@ -36,7 +41,17 @@ form), the rsk-wipe build, a firmware flash-size ratchet
 (the shipping image must stay under a ceiling that hugs its current size, well
 below the 2560K code region), `cargo-audit`, `cargo-deny`, `cargo-vet` and
 `gitleaks`.
-Green check.sh is the bar for every commit.
+Green check.sh is the bar for every commit; green check-assurance.sh is the bar
+for a pull request.
+
+The second is the gate's other layer: the TLA+ plumbing (generated
+configurations, citations, scopes, verdicts, the trace and token refinements)
+and the registries held against the prose (assurance, build matrix, threat
+model, platform assumptions, evidence, bounds, published counts and claims, the
+release manifest), with their own tables. It goes red only when a model, a
+registry, a generated page, or code they cite or count moves, so it runs once
+before a pull request rather than on every commit. CI runs the two as separate
+jobs on every pull request, and the second weekly as well.
 
 Two of those rows hold the crate tiers of
 [architecture.md](architecture.md#crates) rather than a dependency's licence or
@@ -70,12 +85,376 @@ are.) Crypto tests pin NIST/RFC vectors; applet tests drive full protocol flows
 (register → assert, PIN lockout ladders, OpenPGP import → sign → verify, PIV
 generate → attest → parse with `x509-parser`).
 
+The USB tests also execute `Ccid::run` and `CtapHid::run` over scripted
+endpoints, with the real host time driver. They check fragmented requests,
+power-transition resets, receive and transmit timeouts, CCID time extensions,
+CTAPHID keepalives and CANCEL ownership, pipelined requests, and buffer wiping.
+The fixtures live in `crates/rsk-usb/src/ccid_transport_tests.rs` and
+`crates/rsk-usb/src/ctaphid_transport_tests.rs`; they do not test a physical USB
+controller or host enumeration.
+
+A default-profile measurement on 2026-10-04 raised line coverage over the four
+production USB modules from 311/740 (42.03%) to 698/740 (94.32%). The standard
+CI workspace selection rose from 35237/39585 (89.02%) to 35627/39591 (89.99%);
+its line-coverage floor remains 80%. Test helpers and the verification-only
+`transport_assurance.rs` are absent from the USB subtotal. These are line
+measurements, not branch coverage.
+
+A later default-profile run on the same date reached 38379/39591 lines
+(96.94%) and 3244/3272 functions (99.14%), with the same workspace selection
+and exclusions: 3064 unique tests passed, plus one isolated-process repeat,
+with five existing ignored cases. The added cases exercise backup and recovery
+exits, local PIN/PUK flows, passkey pagination and deletion, applet browsing and keygen, rendering errors, corrupt
+records, storage failures and protocol output limits. AES, the SHA-512 core,
+RSA sieve module, PIV public-info and X.509 modules, FIDO largeBlob-extension
+module and SDK TLV module each reached 100% lines in that report.
+
+The workspace is still below 100%; genuine untested paths remain alongside
+defensive exits and verification helpers. Some returns cannot be reached while
+their constructor invariants hold: `TxFrames` bounds both copies by the message
+remainder, and Scene's encoder never writes the unknown opcodes its decoder
+rejects with `unreachable!()`. LLVM's standard summaries also retain uncovered
+instances of some generic code whose merged source-line counters are positive.
+No exclusions or floors were changed to remove these rows.
+
+### Branch and condition measurements
+
+The pinned nightly can also measure branches. A default host baseline on
+2026-10-04 recorded 6509/7646 outcomes (85.13%) before the new LargeBlobs and
+broadcast-continuation cases. It retained the same 38379/39591 source lines
+and 3244/3272 functions as the earlier line report. These raw workspace totals
+include verification helpers; they are not a production-only core subtotal.
+
+Rustc `1.98.0-nightly` (`61d7280f3`, LLVM 22.1.6) rejects native MC/DC
+instrumentation. `cargo-llvm-cov` 0.8.5 still lists `--mcdc`, but its presence
+does not make the compiler accept it. The compiler's `condition` option
+records additional Boolean operands that `--branch` misses outside branch
+conditions. It does not establish an MC/DC percentage. The calibration and
+remaining scope are recorded in the [testing roadmap](testing-roadmap.md#phase-1-establish-trustworthy-coverage-measurements).
+
+The [journal slice](testing-roadmap.md#2026-10-06-journal-decisions-and-compound-byte-cuts)
+adds refused fold commits, sparse wrapping windows, checkpoint output limits and
+combined byte-cut/recovery histories over `SeqStorage`. Its raw default Mac report
+records 38511/39623 lines and 6934/7975 condition outcomes. Source-bound raw maps
+and the full residual index remain local; no core-wide MC/DC claim follows.
+
+A second probe executed all arms of a three-way `match`, both exits of `?`,
+and empty/nonempty `for` loops. It reached 16/16 lines and 20/20 regions, but
+recorded zero branch outcomes, even in condition mode. Thus the branch totals
+describe instrumented outcomes, not every control-flow edge. A 0/0 subtotal
+does not prove that a module contains no decisions, and 100% instrumented
+branches does not establish exhaustive coverage of its propagated errors.
+
+Use the existing nightly shell and an isolated build directory for each mode:
+
+```sh
+nix develop .#fuzz
+HOST_TARGET=$(rustc -vV | sed -n 's/^host: //p')
+OUT=target/coverage-decisions
+mkdir -p "$OUT"
+
+CARGO_TARGET_DIR="$OUT/branch-build" cargo llvm-cov --branch \
+    --target "$HOST_TARGET" --workspace --exclude firmware --exclude rsk-wipe \
+    --json --output-path "$OUT/branch.json" -- --test-threads=1
+
+export CARGO_TARGET_DIR="$OUT/condition-build"
+export RUSTFLAGS='-Z coverage-options=condition'
+cargo llvm-cov --target "$HOST_TARGET" \
+    --workspace --exclude firmware --exclude rsk-wipe \
+    --json --output-path "$OUT/condition.json" -- --test-threads=1
+cargo llvm-cov report --branch --target "$HOST_TARGET" \
+    --html --output-dir "$OUT/condition-html"
+cargo llvm-cov report --target "$HOST_TARGET" \
+    --lcov --output-path "$OUT/condition.lcov"
+```
+
+The condition run intentionally omits `--branch`, which would select the
+weaker compiler mode. On `report`, `--branch` displays the already recorded
+outcomes without rebuilding. Retain rustc/LLVM versions, source revision and
+working diff, feature closure, raw counters and warnings alongside the reports.
+Compare configurations separately; generic instances and merged source
+locations answer different questions. Neither this report nor the stable
+CI line floor measures the embedded binary or native MC/DC.
+
+The reports and calibration controls for the first slice are local ignored
+artifacts in `target/coverage-decisions-20261004/`. The condition run passed
+3068 unique tests plus the isolated-process repeat, with five ignored cases:
+38384/39591 lines (96.95%) and 6790/7975 condition outcomes (85.14%). LargeBlobs
+reached 48/48 instrumented outcomes (100%), and CTAPHID reached 89/94 (94.68%). The remaining
+five CTAPHID outcomes are failures of checked copies bounded by the report,
+message or nonce length; they remain in the raw denominator.
+
+The ClientPIN/store slice in `target/coverage-clientpin-store-20261004/`
+initially passed 3075 unique tests plus the isolated-process repeat. An eighth
+regression reproduced a forced-PIN-change bypass on a verifier read fault and
+passed after the fix (`bcdDevice` `0x0A8C`). Its final report is retained in
+`target/coverage-clientpin-store-fix-20261004/`: 3076 unique tests plus the
+repeat, five ignored cases, 38398/39598 lines (96.97%) and 6797/7975 outcomes
+(85.23%). The condition-outcome denominator remains comparable to the first
+condition run; the fix adds seven executable lines. ClientPIN reached 215/234 outcomes (91.88%),
+and `rsk-store/src/lib.rs` reached 14/14 outcomes and 88/88 lines. These are
+instrumented file subtotals; they do not establish exhaustive control-flow
+coverage or coverage of the vendored storage backend. Three semantic controls
+survived the old package suites and failed the new refusal/state assertions.
+The [testing roadmap](testing-roadmap.md#clientpin-and-store-slice) records the
+fault scope and limitations. Fuzz coverage is unchanged by this host-test slice.
+
+The next eight cases recorded 38399/39598 lines (96.97%) and 6805/7975 condition
+outcomes (85.33%), with 3084 unique tests plus the child-process repeat and the
+same five ignored cases. ClientPIN reached 222/234 outcomes and CCID 32/34.
+The [next slice](testing-roadmap.md#further-clientpin-and-recovery-decisions)
+records runtime policy, migration and repeated recovery faults, its two semantic
+controls and the bounded CCID header proof. Fs retains its raw 82/88 outcomes;
+merging generic branch coordinates does not replace that summary. The local
+reports are in `target/coverage-decisions-next-20261004/`.
+
+Eleven credential-codec and management cases passed 3095 unique tests plus the
+child-process repeat, with five ignored cases. A fresh condition build recorded
+38411/39598 lines (97.00%) and 6819/7975 outcomes (85.50%). Credential codecs
+reached 150/180 outcomes and credential management 126/147. The
+[credential slice](testing-roadmap.md#credential-codec-and-combined-recovery-slice)
+records authenticated malformed bodies, unchanged records across interrupted
+recovery, two semantic controls and a bounded request-ordering proof. Its raw
+reports are in `target/coverage-credentials-20261004/`; fuzz coverage is unchanged.
+
+Eleven OATH and OpenPGP PIN cases passed 3106 unique tests plus the child repeat,
+with five ignored cases. A fresh condition directory recorded 38419/39598 lines
+(97.02%) and 6830/7975 outcomes (85.64%). OATH reached 436/488 outcomes and
+OpenPGP PIN 173/202. The [PIN persistence slice](testing-roadmap.md#oath-and-openpgp-pin-persistence-decisions)
+records retry write/read-back faults, malformed stored records, preserved DEK
+copies and two compiled controls that fail on unintended authorization. Its
+bounded Kani header proof reached all four cover scenarios and failed the owner
+assertion when that guard was removed. Raw reports are in
+`target/coverage-pins-20261004/`; fuzz coverage is unchanged.
+
+Four PIV reference cases passed 3110 unique tests plus the child repeat, with
+five ignored cases. The fresh condition report recorded 38420/39598 lines
+(97.03%), 6831/7975 outcomes (85.66%) and unchanged function coverage. The
+[PIV slice](testing-roadmap.md#piv-reference-persistence-and-state-proof-covers)
+checks short retry read-back, refused retry restoration and verifier writes,
+and malformed verifier lengths through all four reference APDU paths. A
+compiled control that treats an empty read-back as complete survived the prior
+default suite and failed the new refusal assertion. The Kani state runner proved
+32 harnesses and reached 39 source covers with its existing ceilings. Reports
+are in `target/coverage-piv-state-20261005/`; fuzz coverage is unchanged.
+
+Twelve PIV private-operation and handshake cases passed 3122 unique tests plus
+the child repeat, with five ignored cases. A fresh condition build recorded
+38429/39598 lines (97.05%), 6842/7975 outcomes (85.79%) and unchanged function
+coverage. GENERAL AUTHENTICATE reached 86/90 outcomes (95.56%). The
+[authentication slice](testing-roadmap.md#piv-private-operations-and-handshake-decisions)
+checks PIN and touch policies, sealed-curve binding, short responses and
+single/mutual challenge separation through APDUs. Three compiled controls
+survived the prior default PIV suite and failed the new assertions. Reports are
+in `target/coverage-piv-auth-20261005/`; fuzz coverage and the proof roster are
+unchanged.
+
+Ten OTP command-decision cases passed 3132 unique tests plus the child repeat,
+with five ignored cases. The fresh default-host build recorded 38430/39598
+lines (97.05%), 6856/7975 condition outcomes (85.97%) and unchanged 3244/3272
+function coverage (99.14%). OTP's root reached 233/270 outcomes (86.30%),
+up from 219/270. The [OTP slice](testing-roadmap.md#otp-command-decisions)
+checks mode/status bodies, touch results, both SWAP bounds and storage refusal
+ordering. Four compiled controls survived the previous default OTP suite and
+failed the new cases. Reports are in `target/coverage-otp-decisions-20261005/`;
+fuzz coverage and the proof roster are unchanged.
+
+Ten OTP recovery cases passed 3142 unique tests plus the child repeat, with
+five ignored cases. A fresh condition build recorded 38444/39598 lines (97.09%),
+6870/7975 outcomes (86.14%) and unchanged function coverage. OTP's root reached
+246/270 outcomes (91.11%) and 603/616 lines; its record codec gained one outcome
+and one line. The [recovery slice](testing-roadmap.md#otp-recovery-and-counter-boundaries)
+checks repeated boot faults, fused-key loss between operations, the counter
+ceiling and defensive public-APDU lengths. Three compiled controls survived
+the prior OTP suite and failed the new assertions. Both existing counter Kani
+harnesses verified, reaching four source covers. Reports are in
+`target/coverage-otp-recovery-20261005/`; fuzz coverage is unchanged.
+
+Five OTP transport and plaintext-record cases passed 3147 unique tests plus
+the child repeat, with five ignored cases. A fresh condition build recorded
+38445/39598 lines (97.09%), 6873/7975 outcomes (86.18%) and unchanged function
+coverage. HID reached 34/38 outcomes and the record codec 19/20. The
+[HID and record slice](testing-roadmap.md#otp-hid-transmission-and-plaintext-record-bounds)
+checks every response length, replacement boundaries, malformed records,
+scratch wiping and recovery. Four compiled controls survived the prior OTP
+suite and failed the new tests. Reports are in
+`target/coverage-otp-hid-record-20261005/`; fuzz coverage is unchanged and no new
+Kani solve is claimed.
+
+JSON/LCOV export succeeded. Both HTML exports warned about 27 mismatched
+records, including the fresh condition directory. Reusing the previous build
+directory for the credential slice reported 113 mismatches; rebuilding in an
+empty directory restored 27 and reproduced the same coverage totals. LLVM's `-dump` diagnostic
+identified four SDK functions at hash zero: `Sw::sw1`, `Sw::to_bytes`,
+`Apdu::is_basic_class` and `Apdu::is_served_over_ccid`. Their matching named
+records also have positive execution counts in JSON. This identifies the
+affected owners. On 2026-10-05 an isolated full-workspace comparison reproduced
+all 27 warnings and removed them by withholding `inline` on those four methods
+only under `cfg(coverage)`. Every raw total and SDK file summary stayed identical;
+the ordinary partitioned firmware's loadable bytes also stayed identical.
+The original reports retain their warnings. New coverage builds use the
+workaround, without excluding any source or changing the compiler pin.
+Reports and the byte comparison are in `target/testing-completion-20261005/`.
+This resolves the observed macOS warning, not the unsupported MC/DC or
+unmeasured-profile limitations. Seventeen ARM Linux profile exports retain six
+additional hash-zero mappings for `Apdu::is_secure_messaging`. A separate ARM
+Linux full-workspace `fido-conformance` comparison removed all six by applying
+the same attribute to that method, with identical raw totals and SDK summaries.
+New coverage builds include the fifth method; the older reports remain intact.
+None of these local reports is release evidence.
+
+The existing metrics runner now reproduces these measurements by firmware
+feature closure. Run it in the pinned nightly shell; the output directory must
+be new so that a failed run cannot inherit an older report:
+
+```sh
+COVERAGE_PROFILE=display,strong-pin COVERAGE_OUT=target/coverage-display-strong \
+  nix develop .#fuzz -c ./scripts/metrics.sh --coverage
+```
+
+With no profile it measures the default workspace. It retains the diff from
+`HEAD` including staged changes, hashes the declared build inputs and saves
+new untracked inputs under `untracked/`. The report stays incomplete if its
+input hashes differ at the end.
+Its manifest also records the applied Rust flags. Older measurements retain
+their original provenance limits.
+
+It derives the host feature arguments from `firmware/Cargo.toml`, records the
+compiler, target, revision, source diff, metadata and command exits, and retains
+raw JSON, LCOV and HTML.
+Condition counters remain distinct from MC/DC. Zero executed tests, an empty
+report or a failed command cannot produce a completed manifest. Tests of the
+actual shell entry exercise those exits and metadata diagnostics on stderr.
+The scheduled coverage job retains its existing default 80% line floor and
+adds these reports: default daily, individual profiles on Sunday or manual runs.
+The workflow changes are local and have not been executed on GitHub.
+
+The [2026-10-07 continuation](testing-roadmap.md#2026-10-07-pin-boundaries-boot-decisions-and-ordinary-release-images)
+passes 3253 unique default host cases plus the child repeat and records
+38530/39623 lines, 6971/7975 condition outcomes and 3248/3275 functions.
+It retains all 1004 raw missing outcomes, extends six OpenPGP command/recovery
+byte-cut histories and checks thirteen ordinary release-flavour images.
+Separate image controls exercise strict-up presence and strict-config refusal;
+the display image has build evidence only. The roadmap retains source-bound
+reports, unsupported MC/DC and timing-calibration limits.
+
+The later [PIV cache and boot-repair continuation](testing-roadmap.md#2026-10-07-piv-cache-identity-and-boot-repair-failures)
+passes 3268 unique cases plus the child repeat and records 6980/7975 condition
+outcomes, retaining 995 raw residuals. It reproduces and fixes stale public-key
+metadata after PIV key replacement, exercises ten semantic controls through the
+host-test gate row and passes both full gates. The roadmap distinguishes LLVM's
+38541/39627 function-group line summary from LCOV's 38327/39047 file-line union,
+with a local calibration for overlapping closures and generic instantiations.
+
+The separate nightly corpus replay completed all 52 fuzz targets. Unioning
+their LCOV line records for repository sources reached 20568/32545 lines
+(63.20%), up from 16828/32545 (51.71%). This scope includes vendored sources
+and omits fuzz harnesses, external dependencies and standard-library sources;
+it is neither the host-unit scope nor an average of per-target percentages.
+The timed campaigns executed 99077751 inputs without a crash. The expanded
+display-label target renders 32 view variants, checks pixel bounds and panel
+error propagation, and compares retained replay and DMA bytes with direct
+rendering. The rescue target also replays fused and faulted boots, including
+failed fuse read-back and denied presence. OATH compares full and truncated
+HMAC responses for SHA-1/256/512, advances HOTP, round-trips password-safe
+fields through RENAME, and checks both wrong and correct access-code proofs.
+Six compiled mutations were caught:
+removing RSA sieve cleanup left candidate bytes, and either weakening of the
+largeBlob write preconditions admitted an unauthorised overwrite. Dropping
+Scene replay failed the pixel comparison, and the real `fuzz-all.sh` CI runner
+exited 1 on its display shard; the restored baseline passed. Omitting the
+rescue LOCK58 read-back check reported success over an unchanged fake fuse
+row: the rescue CI shard exited 1, and the restored baseline exited 0. Allowing
+a wrong OATH access-code proof failed the new VALIDATE oracle through its CI
+shard; the original source was restored byte-for-byte and the baseline passed.
+
+| Mutation | Observed failure |
+|---|---|
+| Remove RSA sieve scrubbing | Candidate bytes remain after cleanup |
+| Weaken either largeBlob write conjunction | A write without every required permission overwrites the buffer |
+| Omit retained Scene replay | Direct and retained pixels differ; the CI fuzz row reports `display_label` as crashing |
+| Omit rescue fuse read-back | LOCK58 reports success without the complete latch; the CI fuzz row reports `rescue_apdu` as crashing |
+| Permit a wrong access-code proof | VALIDATE accepts an invalid proof; the CI fuzz row reports `oath_apdu` as crashing |
+
+Each mutation below compiled and failed its transport test on 2026-10-04.
+The unmodified USB suite passed all 88 tests.
+
+| Mutation | Observed failure |
+|---|---|
+| Remove CCID `reset_card` | Power transitions call no reset; two are expected |
+| Remove the CCID request wipe | APDU bytes remain in `rx` after the reply |
+| Remove the CCID response wipe | Response bytes remain in `tx` after sending |
+| Remove CTAPHID `reset_app_selection` | Three INIT requests call no reset |
+| Bypass the channel lock | A stranger receives PING instead of CHANNEL_BUSY |
+| Ignore the CANCEL channel | A stranger aborts the active touch wait |
+| Read during a processing wait | The pipelined second CBOR request disappears |
+| Preserve TYPE_INIT in the vendor callback | The handler receives `0xC0` instead of `0x40` |
+
+A command that writes can be put through a **cut sweep**: run it once per cut point
+— the flash refuses everything past the k-th mutation — reboot on the same medium,
+and read what survived. `rsk_fs::cut::sweep` holds the loop, k grows
+until the command completes, and the oracle is the command's own, since only it knows
+what it owns: setPIN leaves no PIN or a whole one with the old grant revoked, a
+two-fragment large-blob write leaves an array that still hashes to its own trailer,
+setMinPINLength leaves the old floor or the new one and never a forced PIN change
+over a live grant, the vendor ATT_CLEAR never leaves the attestation key without
+its chain (a key with no chain is what made every later U2F REGISTER answer
+`6F00`), and credMgmt's updateUserInformation never changes a credential behind
+an unmoved store-state tag. The loop asserts that some
+budget tore the command and some let it finish, so one that stopped reaching the
+command reads as vacuous rather than as a pass. The `power_cut` fuzz target below
+does this to the storage stack; these do it to a command, where the ordering between
+two records lives.
+
 RSA has no second implementation in the tree to check itself against — the `rsa`
 crate that used to serve as one left with RUSTSEC-2023-0071 — so its ground
 truth is frozen instead: `crates/rsk-rsa/src/vectors.rs` holds OpenSSL
 signatures and ciphertexts under three fixed keys, and every signature the card
 produces is compared to them byte for byte. `scripts/rsa_vectors.py` regenerates
 that file from python-cryptography; run it inside `nix develop`.
+
+ML-DSA's ground truth is NIST's own. `third_party/acvp/` holds every ACVP-Server
+case `rsk-mldsa` can express — the external interface, pure, μ computed inside:
+75 keyGen, 90 sigGen (deterministic and hedged) and 45 sigVer across ML-DSA-44,
+-65 and -87, one line of hex each. The host tests read them with `include_str!`,
+so a missing file fails the build instead of running zero cases, and each test
+asserts its count. keyGen is checked on `sk` as well as `pk`, because sigGen
+signs from the vector's own `sk` and nothing else sees the `K` the seed
+expansion derives. `scripts/acvp_vectors.py` rewrites the files from the pinned
+ACVP-Server commit, byte for byte.
+
+RSA's second opinion is Wycheproof's, whose cases are written to break an
+implementation. `third_party/wycheproof/` holds its PKCS#1 v1.5 decryption cases
+for RSA-2048, -3072 and -4096 — bad padding in every position, `c` at 0, n − 1
+and n, cryptograms short, long and prepended — and its signing cases from
+RSA-1024 to -4096. All 201 decryption cases run through both PSO:DECIPHER arms
+behind the padding indicator a host sends: a valid one must give its message
+back, an invalid one must be answered `6581`, which is what a YubiKey 5.8.0
+answers every such shape. All 152 signing cases the card can hold (e = 65537)
+run through both private operations, byte for byte: the asm CRT signer OpenPGP
+signs with, fed the DigestInfo a host sends, and the software one a legacy key's
+PSO:DECIPHER takes, fed the same PKCS#1 v1.5 block.
+
+The `rsk-crypto` tests also replay 496 Wycheproof cases: AES-256-GCM at the
+card's fixed key/nonce/tag widths, full-width HMAC-SHA1/SHA256/SHA512 tags and
+HKDF-SHA256/SHA512. Valid vectors must match the output bytes; forged GCM and
+HMAC tags must fail authentication, and HKDF lengths above 255 hash blocks
+must return `BadLength`. The generator records every excluded group.
+
+Key agreement gets the same treatment. Wycheproof's ECDH cases for P-256, P-384,
+P-521, secp256k1 and brainpoolP256r1/P384r1 (points off the curve, compressed,
+empty and of the wrong width, shared secrets that start with zero bytes) and its
+X25519 cases (low-order and non-canonical peers included) run through
+`PrivKey::ecdh`, 4058 in all. Wycheproof has no bare-point file for secp256k1 or
+brainpool, so the script takes the point out of each case's SubjectPublicKeyInfo
+and drops the cases whose SPKI is itself the fault (its ASN.1, curve parameters
+spelled out or swapped), which a card never parses. A valid case must give its
+shared secret at the field's width. A refusal must be the one a YubiKey 5.8.0's
+OpenPGP makes: `6A80` (`BadPoint`) for anything but `04 ‖ x ‖ y` at the field's
+width, compressed points included, and `6581` (`RejectedPoint`) for such a point
+off the curve or an X25519 peer that agrees to all zeros. The other X25519 cases
+agree as RFC 7748 computes them.
+`scripts/wycheproof_vectors.py` rewrites the files from the pinned commit.
 
 Fixed vectors cannot say which imported `(p, q, e)` a key assembly *refuses*, so
 that half is settled by a differential against `rsa` 0.9.10 in a throwaway crate
@@ -115,6 +494,22 @@ break) / ML-KEM decoding, the FIDO post-quantum credential path (the
 trusted-display `Label` sanitizer (attacker rpId / account text must stay
 printable ASCII, no bidi / homoglyph escape, and the confirm screen must
 render without panic), and the seed-blob format/migration state machine.
+
+The CCID target varies response capacity, including buffers shorter than the
+header, and exercises XfrBlock refusals and both APDU range parsers. Its
+framing oracle checks response length, slot status, sequence echo and untouched
+buffer tails. `fuzz/fuzz_targets/ccid_frame.rs` is shared by libFuzzer and Miri;
+the three sibling tests raise the Miri roster floor from 48 to 51.
+
+OTP HID also shares its RX/TX oracle with Miri. Independent response histories
+exercise load, poll and replacement without needing a valid RX CRC first.
+Assertions check CRC bytes, sequence, padding, the pending end marker and
+unchanged output after exhaustion. Four sibling tests raise the roster to 55.
+
+| Mutation, checked on 2026-10-04 | Shared-oracle failure |
+|---|---|
+| Remove the short-output guard | The reported response length exceeds capacity |
+| Replace the echoed sequence with zero | The response loses the request's `bSeq` |
 
 Most targets drive one applet from a fresh state. Four are **stateful**. They
 replay an attacker-chosen *sequence* against persistent state, hunting the
@@ -177,6 +572,21 @@ the `MIRIFLAGS` policy is set by the `.#fuzz` shell):
 nix develop .#fuzz -c cargo miri test --manifest-path fuzz/Cargo.toml
 ```
 
+Both build the **default** image, where the shipped flavours — `strict-config`,
+`fips-profile`, `strong-pin`, `strict-up`, `always-uv`, `advertise-pqc` — are
+compile-time off, so nothing behind one of the 67 `feature = "…"` sites they guard
+in the crates this workspace builds is fuzzed at all. `FUZZ_CONFIG=flavours` builds
+the `flavours` union in `fuzz/Cargo.toml` instead, and CI runs each row once per
+config. The knob belongs to the two runners — a bare `cargo miri test` takes
+`--features flavours` itself. The union forwards as the firmware's manifest does,
+with one difference it cannot dodge: this workspace always enables
+`rsk-device/display`, so two sites written `any(not(strict-config), display)` stay
+compiled here where a display-less `strict-config` image drops them.
+
+```sh
+FUZZ_CONFIG=flavours nix develop .#fuzz -c ./scripts/fuzz-all.sh
+```
+
 Neither suite gates a commit. CI runs both daily in the `deep-checks`
 workflow: the Miri suite, plus a timed libFuzzer pass over every target with
 the corpus carried between runs, crash artifacts uploaded. A separate
@@ -197,8 +607,8 @@ a corpus with `RSK_POWER_CUT_STATS=1` and prints one log-bucket row per axis.
 nix develop .#fuzz -c ./scripts/fuzz-dimensions.py fuzz/corpus/power_cut
 ```
 
-It gates nothing and is not in CI — there is no coverage floor anywhere in this
-tree, and a reporter that looks like a gate is worse than none.
+It gates nothing and is not in CI — there is no fuzz-coverage floor, and a
+reporter that looks like a gate is worse than none.
 
 ## Kani proofs
 
@@ -218,7 +628,8 @@ crypto-critical helpers, where a proof genuinely beats a sample:
   findings each needed two commands to express. It pins that the applet is
   never handed a body from a command it did not itself terminate, that a
   dropped chain leaves no bytes behind, that a secure-messaging class reaches
-  no applet, and that a SELECT for a registered AID always arrives. Its bound is
+  no applet as a command and selects only as a SELECT under `04` or `84`, and
+  that a SELECT for a registered AID in any other class always arrives. Its bound is
   a `cfg(kani)` shrink of production source — the table below is the whole set —
   and it states what it stops proving where it is written, this one in
   `applet_kani.rs`.
@@ -274,19 +685,26 @@ crypto-critical helpers, where a proof genuinely beats a sample:
 ### What a proof no longer sees
 
 Some of that production source means something different under Kani than in the
-shipped build: an array cut to 16 so CBMC does not bit-blast 2 KiB, a file id
+shipped build: an array cut to 16 so CBMC does not bit-blast 3 KiB, a file id
 aliased into a 24-bit map. Each such shrink narrows every proof over it, so each
-one says beside itself what it stops proving — and three `cfg(not(kani))`
+one says beside itself what it stops proving — and eight `cfg(not(kani))`
 compile-time assertions carry the part of that shape a shrunk proof no longer
 can, about the width that ships.
 
 | Crate | Source | Kani-only item |
 |---|---|---|
+| `rsk-device` | `ccid.rs` | `const _` |
+| `rsk-device` | `ccid.rs` | `const _` |
+| `rsk-device` | `ccid.rs` | `const _` |
+| `rsk-device` | `ccid.rs` | `const _` |
 | `rsk-device` | `ctap.rs` | `const _` |
 | `rsk-fs` | `fs.rs` | `FID_PRESENT_BYTES` |
 | `rsk-fs` | `fs.rs` | `const _` |
 | `rsk-fs` | `lib.rs` | `EF_META` |
+| `rsk-openpgp` | `lib.rs` | `const _` |
 | `rsk-sdk` | `applet.rs` | `CHAIN_BUF_SIZE` |
+| `rsk-sdk` | `applet.rs` | `FRAME_BODY` |
+| `rsk-sdk` | `applet.rs` | `RESP_BUILD` |
 | `rsk-sdk` | `applet.rs` | `RESP_CHAIN_CAP` |
 | `rsk-usb` | `ctaphid.rs` | `CTAP_MAX_MESSAGE` |
 | `rsk-usb` | `ctaphid.rs` | `const _` |
@@ -365,13 +783,19 @@ command with it. "Peak" is the tier's `maximum resident set size` under
 
 | Tier | Crates | Harnesses | Covers | Solve | Wall | Peak | Slowest harness |
 |---|---|---|---|---|---|---|---|
-| `pr` | 13 | 65 | 41 | 229 s | 251 s | 2.8 GiB | `rsk-usb::no_buffer_overrun_after_any_single_frame`, 39 s |
-| `state` | 2 | 29 | 35 | 1341 s | 1365 s | 15.3 GiB | `rsk-fido::…_at_call_site`, 6 m 06 s |
-| `all` | 17 | 94 | 66 | 3735 s | 3770 s | 19.0 GiB | `rsk-phy::serialize_parse_roundtrip`, 19 m 07 s |
-| `light1` | 4 | 32 | 34 | 528 s | 538 s | 9.3 GiB | `rsk-fido::…_at_call_site`, 5 m 35 s |
+| `pr` | 13 | 70 | 58 | 229 s | 251 s | 2.8 GiB | `rsk-usb::no_buffer_overrun_after_any_single_frame`, 39 s |
+| `state` | 2 | 32 | 39 | 1341 s | 1365 s | 15.3 GiB | `rsk-fido::…_at_call_site`, 6 m 06 s |
+| `all` | 17 | 102 | 87 | 3735 s | 3770 s | 19.0 GiB | `rsk-phy::serialize_parse_roundtrip`, 19 m 07 s |
+| `light1` | 4 | 35 | 38 | 528 s | 538 s | 9.3 GiB | `rsk-fido::…_at_call_site`, 5 m 35 s |
 | `light2` | 5 | 29 | 12 | 1289 s | 1300 s | 8.9 GiB | `rsk-rsa::sieve_step_keeps_residues`, 17 m 38 s |
-| `light3` | 7 | 28 | 19 | 162 s | 176 s | 2.4 GiB | `rsk-usb::no_buffer_overrun_after_any_single_frame`, 36 s |
+| `light3` | 7 | 33 | 36 | 162 s | 176 s | 2.4 GiB | `rsk-usb::no_buffer_overrun_after_any_single_frame`, 36 s |
 | `heavy` | 1 | 5 | 1 | 1785 s | 1788 s | 19.9 GiB | `rsk-phy::serialize_parse_roundtrip`, 18 m 35 s |
+
+On 2026-10-05 the `pr` runner verified its current 70 harnesses and reached all
+58 source covers, with 418 seconds of solving. Three OTP additions cover TX
+load/replacement bounds, one RX report and plaintext record reads. Their CRC
+and slot-domain abstractions are stated in the [testing roadmap](testing-roadmap.md#otp-hid-fuzz-oracle-and-copy-proofs).
+The table's wall, peak and weekly timings remain the older readings below.
 
 > **`state` is the one row re-measured after the authorization slice, and it
 > more than doubled.** Three new `credmgmt_kani.rs` harnesses drive a real
@@ -400,12 +824,12 @@ shards ran separately in the same session and checked the same harness names as
 `all` did, compared name by name out of the four logs against `all`'s own
 listing, for 3763 s of solving against `all`'s 3735 s. That count was the `all`
 roster **of the 2026-08-26 tree: 89 names**. The same tier is **today's
-`FLOOR_all` of 94** — the `all` row above, five harnesses later — and the four
+`FLOOR_all` of 102** — the `all` row above, thirteen harnesses later — and the four
 weekly floors still sum to it, because the shards partition the crates and
 `kani.sh` refuses to run when they stop. The count adds up; the *solving* does
 not, which is what 3763 s against 3735 s says. So `FLOOR_all` and `COVERS_all`
 are numbers a run has reached, and the reading they have reached is the 89 —
-moving it onto the 94 takes a fresh run of the four shards.
+moving it onto the 102 takes a fresh run of the four shards.
 
 Two figures this page carried are refuted by that run rather than confirmed.
 `rsk-phy`'s tier peaks at **19.9 GiB** against the 11.1 GB recorded for the
@@ -424,14 +848,14 @@ and not as a side effect of measuring.
 20 m 33 s, `light2` 54 m 52 s, `light3` 4 m 59 s and `heavy` 1 h 33 m 41 s on
 hosted `ubuntu-latest` runners, all four inside the 6 h job cap — and only one of
 the four is a reading of the roster above. That run was `main` at `06813cc1`,
-where `FLOOR_all` was 66 against today's `FLOOR_all` of 94, `light1` carried 17
-harnesses against today's `FLOOR_light1` of 32 and `light2` 21 against today's
+where `FLOOR_all` was 66 against today's `FLOOR_all` of 102, `light1` carried 17
+harnesses against today's `FLOOR_light1` of 35 and `light2` 21 against today's
 `FLOOR_light2` of 29. A run that proved 17 of `light1` is not evidence for a
-`light1` floor of 32.
+`light1` floor of 35.
 
 By *cost* it reads better than by count, and the two answers should not be
 conflated. Every harness the three shards have gained since is in one crate each
-— `rsk-fido` 3 → 13 in `light1`, `rsk-fs` 5 → 13 in `light2`, `rsk-usb` 3 → 8 in
+— `rsk-fido` 3 → 14 in `light1`, `rsk-fs` 5 → 13 in `light2`, `rsk-usb` 3 → 9 in
 `light3` — and the single harness that dominates any of them,
 `rsk-rsa::sieve_step_keeps_residues` at 82% of `light2`, was in that run already.
 So the times are better evidence than the floors are. `heavy` needs no such
@@ -454,7 +878,7 @@ by the instruction "raise it in the commit that adds one", and `FLOOR_all` drift
 to 64 against a tree of 65: one harness could have gone missing under a floor that
 still passed.
 
-`pr` passes `--harness-timeout 5m`, seven times its slowest harness. That cap is
+`pr` passes `--harness-timeout 5m`. That cap is
 the tripwire on the tier assignment: a fast-tier harness that grows past it
 fails the pull request instead of quietly making every one of them wait, and the
 answer is to move its crate to the slow list, never to raise the cap.
@@ -571,8 +995,8 @@ cd formal && ./gen-configs.sh && ./run-tlc.sh safety   # the tier CI runs
 
 <!-- run-count-tlc-roster:start -->
 <!-- Generated by scripts/run_count_gate.py --write; do not edit. -->
-`safety` is the nine shipped models, the 90 mutation switches that have a
-configuration family of their own (92 `Bug*` switches exist;
+`safety` is the nine shipped models, the 108 mutation switches that have a
+configuration family of their own (110 `Bug*` switches exist;
 `BugDeadTokenAuthorized`, `BugRecordWriteBeforeRearm` have none), floors and
 the vacuity check.
 <!-- run-count-tlc-roster:end -->
@@ -583,10 +1007,10 @@ needs a 12g heap. `all` is both. Tier membership lives in `formal/run-tlc.sh`.
 
 <!-- run-count-tlc-measured:start -->
 <!-- Generated by scripts/run_count_gate.py --write; do not edit. -->
-Both tiers are measured runs, not sums. On 2026-09-08, on the Apple M5 Pro (18
+Both tiers are measured runs, not sums. On 2026-10-01, on the Apple M5 Pro (18
 cores) of the Kani table above at the default `WORKERS=2`, `safety` came back
-over **224 configurations in 5994 s — 25 GREEN, 199 RED, and not one row that
-missed what `floors.txt` asks of it**; `liveness` took **2116 s** for its 4, at
+over **262 configurations in 8774 s — 26 GREEN, 236 RED, and not one row that
+missed what `floors.txt` asks of it**; `liveness` took **2809 s** for its 4, at
 the heap that file gives each of them.
 <!-- run-count-tlc-measured:end -->
 
@@ -637,13 +1061,13 @@ same semantic defects.
 
 <!-- run-count-comutate-roster:start -->
 <!-- Generated by scripts/run_count_gate.py --write; do not edit. -->
-The original phase-2 baseline is fixed at 31 rows, and the full 85-entry live
+The original phase-2 baseline is fixed at 31 rows, and the full 103-entry live
 roster runs weekly.
 <!-- run-count-comutate-roster:end -->
 
 Which of those rows a code-level harness kills, and which are unreachable by
 construction, is the generated table in `formal/README.md` and is not restated
-here; ordinary `check.sh` rejects a stale copy of it.
+here; `check-assurance.sh` rejects a stale copy of it.
 
 ```sh
 python scripts/comutate.py --lint
@@ -674,7 +1098,7 @@ is measured; nothing in it is an aspiration.
 > **TLA+ model** of the authenticator's security state.
 > <!-- run-count-shipped-row:start -->
 > <!-- Generated by scripts/run_count_gate.py --write; do not edit. -->
-> TLC checks 11 named invariants exhaustively over 77 563 872 distinct states at
+> TLC checks 11 named invariants exhaustively over 108 618 956 distinct states at
 > the firmware's own PIN-retry constants.
 > <!-- run-count-shipped-row:end -->
 > **That is a result about the model, not about the
@@ -775,21 +1199,42 @@ nix develop -c python tests/75_seed_backup.py --pin <your PIN>
 
 ## The vendored upstream suites
 
-Two other ecosystems' own conformance suites live in
+The parser robustness corpus in `third_party/corpus/` adds Google CTAP2,
+OpenSK and CanoKey inputs to the existing fuzz targets. The `fuzz targets alive`
+row replays it without mutations; the fuzz and coverage runners also seed their
+corpus directories from it. Each adaptation and source revision is recorded in
+`third_party/corpus/README.md`. These inputs carry no expected response codes.
+
+Three other ecosystems' own conformance suites live in
 [third_party/](https://github.com/TheMaxMur/RS-Key/tree/main/third_party) —
-pico-fido's and pico-openpgp/Gnuk's — and `tests/third_party.py` runs them against
-RS-Key:
+pico-fido's, pico-openpgp/Gnuk's and Yubico's `ykman` and `python-fido2` device tests — and
+`tests/third_party.py` runs them against RS-Key:
 
 ```sh
 nix develop -c python tests/third_party.py openpgp   # over the emulator's card socket
+nix develop -c python tests/third_party.py ykman     # the same, emulator started --yubico
 nix develop -c python tests/third_party.py fido      # needs a board, or --usbip
+nix develop -c python tests/third_party.py python-fido2 # isolated USB/IP guest
 ```
+
+ykman's suite covers PIV, OATH, OpenPGP, OTP and the management applet over CCID,
+through ykman's own library and CLI. Over the socket it sees no HID, so its OTP-HID
+and interface tests are deselected, as are the applications RS-Key has none of
+(YubiHSM Auth, SCP03/SCP11). Its first run found the defects fixed in 0x09EA
+(OpenPGP RSA attributes) and 0x09EB (OTP INS 03).
+
+The selected python-fido2 modules exercise PRF (including `evalByCredential`
+and registration-time evaluation), largeBlob checksums and capacity, credBlob,
+credential management, algorithm negotiation, allow/exclude lists and getInfo.
+The upstream fixtures run both PIN protocols. `scripts/usbip-guest.sh` runs
+this suite with the real HID backend; the external plugin supplies selection,
+an initial reset and the emulator's power-cycle stand-in.
 
 No assertion in those directories is edited. The run is steered from outside by a
 pytest plugin that supplies the power cycle the CTAP 2.1 §6.6 reset window needs,
-names every deliberate divergence as a strict `xfail`, and deselects the modules
-that exercise a vendor extension RS-Key does not implement. Both lists carry a
-spec citation per entry, and `strict` means a divergence that gets fixed *fails*
+names every divergence as a strict `xfail`, and deselects what RS-Key does not
+implement or the runner cannot serve. Every entry carries its reason, a spec
+clause or a measurement, and `strict` means a divergence that gets fixed *fails*
 the run instead of staying listed for ever — which is how the last refresh caught
 one that upstream had corrected.
 
@@ -841,6 +1286,18 @@ nightly. It is the answer to the oldest gap in this table: `tests/*.py` were
 hand-run against a flashed key, so nothing caught a *test* that had rotted — and
 several had.
 
+Its last session diffs a fresh emulator against a YubiKey 5.8.0 frozen in
+`tests/interop/baseline/`: getInfo, the ATR and the management DeviceInfo. A
+change to what the device advertises fails the run unless a rule in
+`tests/interop/divergences.py` allows it. That directory's README names the
+rules that allow any value — written for a key whose state can differ.
+
+It builds the emulator with `debug_assert!` and overflow checks on, and so does
+`scripts/usbip-suites.sh` below. A plain `--release` build turns both off, and a
+false assertion or a wrapped counter in an applet then answers on as if nothing
+happened. Nothing in the tree branches on `cfg(debug_assertions)`, so the suites
+drive the same command surface either way.
+
 `--usbip` goes further: it serves the USB/IP protocol, so a Linux host's
 `vhci_hcd` attaches the emulator as a genuine USB device — `/dev/hidraw*`, a
 PC/SC reader, something a browser can talk to. What enumerates there is the
@@ -849,7 +1306,11 @@ transports, over a driver written against URBs), so the descriptors and the
 interface order are the real ones. The suites this shim refuses for wanting raw
 USB — `02_usb_interfaces`, `61`/`65` (python-fido2's own transport),
 `73_otp_keyboard`, `77_otp_touch_wait` — run there instead, as ordinary hardware
-suites with nothing faked, and so does the pico-fido conformance suite. Needs
+suites with nothing faked, and so does the pico-fido conformance suite. So does
+OpenSC's own PKCS#11 suite, p11test (`tests/p11test/run.sh`): it reads PIV and
+OpenPGP through `opensc-pkcs11.so`, as ssh and a browser do, and diffs each result
+against the reference beside it. A YubiKey 5.8.0 provisioned the same way answers PIV
+identically; its OpenPGP differs only where RS-Key keeps RSA-1024 and MSE. Needs
 Linux and root; the emulator itself can stay on a Mac, because USB/IP is
 network-transparent. See `tools/emu/README.md`.
 
@@ -880,6 +1341,107 @@ what is still written twice is the worker's sequencing and the board's own
 `firmware/src/{main,worker,presence,led}.rs`
 ([tools/emu/README.md](https://github.com/TheMaxMur/RS-Key/tree/main/tools/emu)
 lists the gaps). A green emulator run is a protocol result, not a device result.
+
+### The image itself — `--image`
+
+The picoem pin includes an ARM Linux build fix: affinity helpers are compiled
+only on the x86_64 hosts supported by its threaded runtime. ARM hosts use the
+serial emulator. The local `9513634a` commit has passed picoem-common and
+rp2350-emu tests and Clippy on macOS arm64 and ARM Linux. It is not yet published;
+local consumers need that commit in their Cargo Git cache.
+
+`--image <elf>` closes most of that gap: the same ports serve the firmware ELF,
+cold-booted through the real bootrom on an emulated RP2350
+([picoem](https://github.com/TheMaxMur/picoem), pinned in `tools/emu/Cargo.toml`),
+with the USB controller, OTP, the QMI and its NOR flash, the SHA-256 block and the
+TRNG modelled in `tools/emu/src/image/`. A host controller inside the emulator
+enumerates the image and carries the sockets over its endpoints, so what answers
+is the board's `main.rs`, worker, USB stack and flash driver, not a second copy:
+
+```sh
+nix develop -c cargo build --release -p firmware --features no-touch
+nix develop -c cargo run --release --manifest-path tools/emu/Cargo.toml \
+  --target "$HOST" -- --image target/thumbv8m.main-none-eabihf/release/firmware \
+  --store ./image.store
+```
+
+Over the `tests/emu.py` sessions of `scripts/emu-suites.sh` it passes the same 54
+suites the applet backend passes and refuses the same 11 (bcdDevice 0x0A88), in
+about three times its wall time. Time is held to the wall clock, so the §6.6
+window and the keepalives keep their meaning; one busy core runs at about the
+board's speed, two slower (an RSA-2048 keygen: 13.6 s, the board's ~4.3 s). Presence and identity are the image's own: a no-touch build, and a
+`VIDPID=Yubikey5` build for the Yubico session. `--store` is the whole flash, with
+the OTP beside it. What it still is not is silicon: every model goes as deep as
+the bootrom and the image reach, no deeper. `tools/emu/README.md` has the rest.
+
+The picoem pin's empty-`PULL` batching was compared on 2026-10-02 using two
+independent release builds, `d83e668` and `4b1953f`, and the same partitioned
+`bcdDevice 0x0A8B` no-touch ELF. Three 10-second idle samples per build reduced
+median CPU use from 68.7% to 22.4% of one macOS arm64 host core. Every sample
+ended with a successful GetInfo, with unchanged capabilities; the updated
+build answered in 15–17 ms. This is an idle-cost measurement, not a speedup of
+the firmware's commands. PIO differential tests compare the bulk advance with
+individual system clocks, including divider rewrites, FIFO wake-up, side-set,
+counter wrapping and the fallback for other stalls and active machines.
+
+`tools/emu/image_assurance.py` drives image-only checks through an opt-in
+`--inspect-port` on loopback: per-command SP high-water, whole-SRAM searches for
+known OATH, FIDO, PIV, OpenPGP and OTP secret material,
+release-to-current persistent-flash upgrades and cuts
+at selected cycles or program bytes. Each cut leaves a snapshot before recovery;
+the runner opens it in a new process and checks the credential again. Native and
+image backends also run the same deterministic OATH/OpenPGP transcript. Planted
+SRAM leaks and incompatible-image fixtures falsify the actual assertions.
+The operations matrix checks PIN-token lifetime, imported EC/Ed25519/RSA keys,
+RSA-2048/3072/4096 generation in PIV and OpenPGP with a participating core1 and
+128/192/256-byte factor scans after wind-down,
+HMAC pads and AES keys. It verifies signatures and decipher/ECDH results with
+host implementations; ML-DSA uses dilithium-py. Live session secrets are checked
+at their revocation point, rather than required to disappear after every reply.
+Seed-backup commands additionally check encrypted export, replacement and
+restore, certificate binding and signatures after reboot, rejection of the old
+resident credential and a damaged load tag, and persistent sealing of export.
+Known seed and MSE-key patterns must be absent after completed and refused
+commands; a planted seed residue falsifies the same scan.
+Core1's tail remains inside the stack measurement; its timeout follows emulated
+time, with a separate host progress bound. Every RSA size has a planted-factor
+control and independent verification of a signature from the generated key.
+The [image laboratory instructions](../tools/emu/README.md#image-laboratory)
+describe the commands and limits, including why stack paint alone lies when
+the firmware sweeps its dead stack. `scripts/image-suites.sh` builds a partitioned
+no-touch image and runs the basic, stack, operations and power-cut scenarios;
+the emulator workflow's `image` job runs it on pull requests and nightly.
+Release upgrades still need an explicit old-image fixture. These checks are
+evidence about the emulator's fault model, not analog flash cells.
+
+`tools/emu/image_picoboot.py` adds a privileged, isolated Linux run with real
+`picotool` over USB/IP into the A4 ROM loader. It verifies SRAM/flash transfers,
+full firmware reload and reboot, preserved OATH state, refreshed USB/IP
+descriptors, the KV partition's write refusal, and raw/ECC OTP persistence and
+refused bit clearing. It selects only its owned `vhci_hcd` device and unbinds
+that device's mass-storage driver during the session. Host regressions hold
+control and data completions until the final ACK, preserve BOOTSEL during
+transport handover, and exercise metadata refresh after each boot mode.
+See [the PICOBOOT runner](../tools/emu/README.md#picoboot-through-usbip) for
+setup and retained evidence. The emulator workflow's `usb` job runs PICOBOOT
+and MSC in its isolated NixOS guest, with a host-built partitioned no-touch
+image and picoem's hash-checked A4 ROM. `scripts/usbip-suites.sh` runs the same
+path locally on Linux and keeps
+reports and logs on success or failure; CI uploads that evidence without
+virtual flash or OTP contents. These runs are separate from the `image` job
+and do not validate physical OTP fuses.
+`tools/emu/image_msc.py` leaves the owned kernel mass-storage driver active,
+reads the ROM's FAT16 directory and files, checks coexistence with `picotool`,
+refuses a damaged UF2 sector and reloads the complete UF2 through the virtual
+block device. Every payload and unchanged bytes outside the image are checked;
+OATH must survive reboot and a cold boot. This covers SCSI block I/O without
+mounting FAT. Shared-bus timing and fairness regressions prevent concurrent
+endpoint pipes from sending overlapping packets or starving each other;
+double-buffer status keeps both completions until the CPU acknowledges them.
+Twenty alternating `picotool info` and MSC reads invalidate the owned block
+device's cache each time. The picoem pin isolates Non-secure RCP accesses from
+Secure state, preventing interrupted BootROM memory routines from corrupting
+Secure buffer-validation counters.
 
 ## Latency harness
 
@@ -915,14 +1477,93 @@ as a real change.
 
 ## FIDO conformance
 
-RS-Key is run against the **FIDO Alliance Conformance Tools** (v1.8.5.1), the
-same protocol test suites the FIDO certification programs are built on, and
-passes them clean:
+The latest complete run against the **FIDO Alliance Conformance Tools**
+(v1.8.5.1) was on **2026-10-04**, with firmware `bcdDevice 0x0A8B`,
+`ea-conformance-rpid` and physical presence enabled, the full feature enterprise
+profile and all categories selected: **250 passed / 4 failed / 70 pending**,
+in **685.92 seconds**. The official enterprise test certificate was installed.
+The earlier no-touch run on 2026-10-02 reached **245 passed / 9 failed /
+70 pending**, in **736.90 seconds**.
+The installed tool and its assertions were unchanged. The earlier run on
+2026-06-20, with `bcdDevice 0x0776`, reported:
 
 | Suite | Result |
 |---|---|
 | CTAP2.3 (`profile_featureful` — the strictest profile) | **235 / 0** |
 | U2F 1.1 / 1.2 | **55 / 0** |
+
+The CTAP2.3 tool has 324 cases, with 89 pending in the June run. Optional
+capabilities, transport and profile settings decide which cases execute, so
+compare the case IDs, failures and pending reasons as well as the pass count.
+The native Rust conformance tests, the pico-fido pytest corpus and the Go
+CTAP2.3 runner are separate suites; their totals cannot update this table.
+
+The Go catalog's `uvm P-1`, `pin-complexity-policy P-1/P-2` and
+`authenticator-config P-6` were marked not applicable in the 2026-09-29
+coverage map. They now have independent dispatcher tests in
+`crates/rsk-fido/src/conformance/policy.rs`: no makeCredential options,
+RP-scoped true and false policy outputs, enabling complexity and reset.
+Additional cases check signed extension bytes, internal and external PIN
+methods, getNextAssertion, wrong input types and preservation of RP hashes.
+The tests exercise the public protocol; the private Go runner is not vendored.
+
+The private Go runner was replayed over TCP on 2026-10-02 with all 295 cases
+selected, the featureful enterprise profile and no exclusions. Its catalog
+identifies the official source as v1.9.1; this is a separate execution from
+the installed official v1.8.5.1 application:
+
+| Emulator setup | Passed | Failed | Skipped |
+|---|---:|---:|---:|
+| Native, original runner, no enterprise test certificate | 218 | 7 | 70 |
+| Native, fixed runner, no enterprise test certificate | 221 | 4 | 70 |
+| Native, fixed runner, official enterprise test certificate and test RP ID | 223 | 2 | 70 |
+| Firmware image, fixed runner, official enterprise test certificate and test RP ID | 223 | 2 | 70 |
+
+The firmware-image replay used the partitioned `bcdDevice 0x0A8B` touch ELF
+and picoem `4b1953f9`, with virtual BOOTSEL presses over loopback. All 295
+case verdicts match the native replay. Before the emulator entropy fix,
+Reset P-1 failed because each boot replayed the same TRNG stream: two resets
+from a PIN-wrapped store could recreate the deleted credential seed. Each
+cold or warm boot now advances that stream, while `--seed` reproduces the
+whole boot sequence. `tests/22_config_reset.py` checks that a non-resident
+credential works before reset and returns `NO_CREDENTIALS` afterward; the
+old image emulator fails that assertion and the fixed image and native
+backends pass. These runs use local emulated flash and do not update the
+official hardware result above.
+
+Three failures came from the runner: Generic P-1 compared randomized encrypted
+GetInfo fields with metadata placeholders, and Resident Key P-2/P-3 reused an
+RP across cases whose credentials accumulate. The fixes retain the encrypted
+fields' length and presence checks and give each resident-key case a fresh RP
+without resetting the group between cases. Enterprise Attestation P-2/P-3
+pass with the official suite's test key and certificate provisioned on the
+emulator. The two remaining failures are MakeCred-Resp P-04 and Metadata P-27,
+the accepted empty-root differences described below. Unit tests, `go vet`
+and race tests passed for the runner changes; its dependency now matches the
+TCP transport API. The private suite and its assertions remain outside this
+repository.
+
+A separate `largeblob-ext` emulator replay on the same date also reached
+**223 passed / 2 failed / 70 skipped**, with all 295 cases selected. Its
+metadata declares `largeBlob` instead of `largeBlobKey` and omits the classic
+large-blob array API. The matching profile has `featureful = false` and
+`largeBlobEnabledByDefault = true`, with delayed presence enabled. Eleven
+`largeBlob` cases pass, while six `largeBlobKey` cases, four classic array
+cases and ClientPIN2 F-3 become inapplicable. This extends the cases exercised
+across builds; it does not increase a single run's pass count or establish
+featureful-profile parity.
+
+Current metadata declares `basic_full` with a per-device self-signed `x5c`
+leaf and an empty `attestationRootCertificates` list. The official tool's
+MakeCred-Resp P-04 and Metadata P-27 require an anchor; Metadata P-36 also
+requires the exact MDS legal boilerplate when `legalHeader` is present. The
+October 4 run still used RS-Key's custom header; all three metadata files now
+use the expected standard text. The metadata suite checks it as P-36, including
+a changed-header control. A subsequent official Metadata-group rerun reached
+**25 passed / 1 failed / 11 pending** in **0.07 seconds**: P-36 passed, and P-27
+remained the only failure. This separate run does not change the recorded 250/4
+complete result. See [AAGUID & metadata](guides/aaguid-metadata.md)
+for the attestation design and [the roadmap](roadmap.md) for the parity target.
 
 A green run exercises the full CTAP2/U2F wire surface: makeCredential /
 getAssertion validation and `up`/`uv` privacy, clientPIN protocols 1 and 2
@@ -942,7 +1583,48 @@ Two honest caveats:
 - **The full enterprise-attestation suite needs a conformance-only build.** It
   asserts against the suite's own test RP ID, which a build flag
   (`ea-conformance-rpid`) whitelists; the shipping build does **not** bake it in
-  ([build options](build.md)). Everything else runs on the normal firmware.
+  ([build options](build.md)). Its certificate-comparison cases also need the
+  official suite's enterprise test key and certificate installed on the test
+  device. Everything else runs on the normal firmware.
+
+The nine failures in the October hardware run were:
+
+| Cases | Observed failure | Cause / next verification |
+|---|---|---|
+| HID-1 P-9/P-10 | `Sequence out of order` | Passed in the subsequent official HID-group run with touch enabled. |
+| HID-1 P-15 | Expected KEEPALIVE; got `undefined (0x00)` | Passed with touch enabled; the no-touch image completes Selection immediately. |
+| Enterprise Attestation P-2/P-3 | `x5c` does not contain `EPBatchCertificate` | Passed in the complete October 4 touch run after importing the official test certificate. |
+| MakeCred-Resp P-04; Metadata P-27 | Empty `attestationRootCertificates` | Accepted per-device attestation difference. |
+| Metadata P-36 | Custom `legalHeader` | Passed in the subsequent official Metadata-group run with the standard text restored. |
+| GetAssertion-Resp P-3 | Expected `0 < 0` | Non-resident credentials intentionally report `signCount = 0`. |
+
+The old tool requires a rising counter in GetAssertion-Resp P-3. RS-Key's
+non-resident credentials keep no counter state; a constant zero is allowed by
+[WebAuthn §6.1.1](https://www.w3.org/TR/webauthn-3/#sctn-sign-counter).
+Resident credentials and legacy U2F counters retain their separate contracts
+([signature counters](guides/fido2.md#signature-counters)). The Go runner
+accepts either three zeroes or a strictly increasing sequence, so its green
+P-3 does not predict this official-tool result.
+
+The same board was subsequently flashed with `ea-conformance-rpid` and touch
+enabled, with no firmware source changes. Two Selection probes on the no-touch
+image had completed successfully in 2 ms without keepalive. On the touch image,
+two Selection and two MakeCredential probes each returned
+`KEEPALIVE(UPNEEDED)` followed by `KEEPALIVE_CANCEL` when cancelled. These are
+independent hardware probes; they do not replace an official HID-group rerun
+or establish an increased official pass count. The subsequent official
+transport-group run completed in 309.62 seconds with **16 passed / 0 failed**:
+HID-1 P-9, P-10 and P-15 all passed, and P-11, P-13 and P-14 were pending.
+The NFC and BLE cases were also pending. This separate run closes the three
+HID failures. The subsequent complete October 4 touch run also passed those
+cases and both enterprise certificate comparisons; its four remaining failures
+were MakeCred-Resp P-04, GetAssertion-Resp P-3, Metadata P-27 and P-36.
+
+On a headless hardware build, `no-touch` confirms presence but keeps the
+10-second cold-power-up window for CTAP Reset. A software reboot preserves
+the PIN soft lock and cannot reopen that window. An operator or a rig that
+actually switches USB power must supply each requested cold power cycle.
+Keep touch enabled for the official HID keepalive/cancel tests.
 
 As with any corpus, this shows conformance on the cases the tools cover. It is
 not a security audit.
@@ -955,46 +1637,51 @@ drives the *real* consumer software (`gpg`, `ssh`, libfido2, `ykman`,
 OpenSC, browsers) and records whether the device works end to end. The
 `ykman` and Yubico Authenticator cells gate on the "Yubico YubiKey" reader
 name, so they run against the opt-in `VIDPID=Yubikey5` interop flavor (never
-distributed); the default RS-Key build (0x1209:0x0001) does not expose itself
+distributed); the default RS-Key build (0x1209:0xF1D2) does not expose itself
 to them. The sweep `tests/interop/run.py` automates the read-only CLI cells;
 the full matrix (including the GUI/ceremony cells) lives in
 [interop.md](interop.md). It is how the `ykman openpgp info` GET DATA `6E`
 wrapper bug was caught: every protocol test passed, only the real ykman
 parser rejected the reply.
 
-For the same reason, the matrix carries an untested row for
-[Telesma](https://github.com/go-ctap/app) and its `go-ctap/ctap` client stack:
-every FIDO cell above reads the device through libfido2 or python-fido2, so a
-divergence both of them tolerate is invisible here. It is the cheapest available
-third reader of our CTAP replies, and the only one that claims 2.3.
+The private Go runner above also exercises the `go-ctap/ctap` client stack
+over TCP. The matrix still carries an untested row for the actual
+[Telesma](https://github.com/go-ctap/app) application: a protocol run does not
+exercise its user flows.
 
 ## CI parity
 
-`check.sh` is plain bash over the Nix dev shell. A CI job is
-`nix develop -c ./scripts/check.sh` plus the `proofs` job — `scripts/kani.sh`,
-which cannot join `check.sh` because Kani is not in the dev shell — plus, on a
-runner with the board attached, the `tests/` scripts. The scheduled
+`check.sh` and `check-assurance.sh` are plain bash over the Nix dev shell.
+CI runs each as its own job on every pull request (`check` and `assurance`),
+plus the `proofs` job — `scripts/kani.sh`, which cannot join `check.sh` because
+Kani is not in the dev shell — plus the advisory `mutants-diff` job, cargo-mutants
+over the lines the pull request touches (`scripts/mutants-all.sh --in-diff`, the
+same command the fix loop runs locally) — plus, on a runner with the board
+attached, the `tests/` scripts. The scheduled
 `deep-checks` workflow runs on two cadences. Daily: the Miri and fuzz commands
 from this page, both sharded across runners, a `repro` job that builds the
 hermetic firmware twice and requires bit-identical outputs
 ([build.md](build.md#nix-build-hermetic-no-dev-shell)), and an `llvm-cov` job
-that floors host-crate line coverage. Weekly, on Sunday: the full Kani roster,
-one runner per tier, an advisory `cargo-mutants` sweep, the semantic
-co-refutation roster and TLC's formal safety tier. No hidden state.
+that floors host-crate line coverage. Weekly, on Sunday: individual firmware
+feature-closure coverage reports, the full Kani roster with one runner per tier,
+the `cargo-mutants` sweep held against the accepted
+survivors in `scripts/mutants-accepted.txt`, the semantic
+co-refutation roster, TLC's formal safety tier and `check-assurance.sh` again
+over `main`. No hidden state.
 
 ```mermaid
 flowchart TB
-    a["Merge gate — every commit / PR<br/>check.sh: fmt · clippy · host tests · firmware builds · size ratchet · audit · deny · vet · gitleaks<br/>proofs: Kani pr tier (+ state tier when the diff reaches it)"]
+    a["Merge gate — every commit / PR<br/>check.sh: fmt · clippy · host tests · firmware builds · size ratchet · audit · deny · vet · gitleaks<br/>check-assurance.sh (every PR; locally once before it): TLA+ plumbing · registries against prose<br/>proofs: Kani pr tier (+ state tier when the diff reaches it)<br/>mutants-diff (advisory): cargo-mutants over the PR's lines"]
     b["Daily — deep-checks<br/>Miri (3 shards) · timed libFuzzer (4 shards) · repro (bit-identical build) · llvm-cov (coverage floor)"]
-    c["Weekly — deep-checks<br/>Kani all roster · cargo-mutants (advisory)<br/>semantic co-refutation · TLC safety tier"]
+    c["Weekly — deep-checks<br/>Kani all roster · cargo-mutants (against the accepted survivors)<br/>semantic co-refutation · TLC safety tier · check-assurance.sh"]
     a ~~~ b ~~~ c
 ```
 
 One more workflow reports on a pull request and is deliberately absent from
 that diagram. `codeql.yml` runs GitHub's CodeQL over the Rust and Python
 sources — buildless (`build-mode: none`), since `firmware/` does not build on a
-host runner at all. It is advisory, not a gate: `check.sh` is still the whole
-bar. It runs on pull requests and on demand only, so there is no default-branch
+host runner at all. It is advisory, not a gate: `check.sh` and
+`check-assurance.sh` are still the whole bar. It runs on pull requests and on demand only, so there is no default-branch
 baseline and findings surface on the PR itself.
 
 Not over *all* of them: `.github/codeql/codeql-config.yml` keeps the test
@@ -1029,3 +1716,92 @@ cognitive-complexity ceiling (`COGNITIVE_CEILING`), catching a new hotspot the
 day it lands. Lower the ceiling as the peak falls; raise it only for a justified
 growth, in the same commit. `firmware/` is out of scope: it is embedded glue plus
 the trusted-display UI state machines, whose complexity is a separate concern.
+
+### Condition-outcome review, 2026-10-08
+
+The reviewed default-host baseline contained 6997/7993 condition outcomes and
+3251/3278 function groups: 996 missing outcomes and 27 unexecuted groups. These
+are coverage observations. The baseline's measured Rust sources were reconstructed
+from its saved commit, patch and untracked inputs and verified against all 521
+recorded SHA-256 digests before comparing source coordinates.
+
+LLVM merges each function group's maximum covered and total counts across its
+instantiations. Joining witnesses at source coordinates answers a different
+question. The baseline has 773 missing source outcomes; the raw 996 also includes
+234 witnesses distributed across copies, offset by 19 folded outcomes and eight
+duplicate exported spans: `773 + 234 - (19 - 8) = 996`. JSON does not export the
+folded flags. Keep that adjustment explicit rather than attributing it to a
+particular unexecuted guard, or replacing the raw percentage with the source
+union. No exclusions or coverage floors were changed in this review.
+
+The added tests exercise malformed and restored records, changing storage reads,
+protocol refusals, nested display navigation and real inactivity deadlines.
+Geometry and RSA results have independent oracles. The bounded ML-DSA norm
+witness uses a corrupt internal precomputation; it does not establish that a
+normal seed-generated key reaches that refusal. Its isolated mutation must fail
+because it accepts the norm-violating candidate. Similarly, the recovery sweep
+control must fail because it returns after a final read cut without the second
+boot, not because its test cannot build.
+
+The working-tree mutation sweep retains these four semantic survivors. They are
+local review findings, not additions to the weekly accepted-survivor roster:
+
+| Changed guard | Why the surviving mutation does not defeat the tested contract |
+|---|---|
+| `DoWriter::extend`, `failed \|= n < s.len()`, `\|=` → `&=` | For its current fixed/ROM and constructed callers, the oversized required length also refuses the response. The separate non-capacity failure for a mandatory signature counter remains necessary. |
+| `DoWriter::extend`, `n < s.len()` → `n > s.len()` | The same required-length refusal covers capacity exhaustion in those callers. This does not excuse `read_flash`: the growing-record test observes its failure flag when a size probe and read disagree. |
+| `DoWriter::close`, `lp < written` → `lp <= written` | The other conjunct requires `lp + n + body <= capacity`, with `n >= 1`; `pos = lp + 1 + body` then gives `written >= lp + 1`. Equality cannot enter the copy. |
+| `fixed_round_supported`, `diameter > mask_side` → `>=` | The maximum cached diameter takes the independently checked geometry fallback and produces the same pixels. Rendering cost and primitive call counts are not claimed identical. |
+
+The unviable mutations are recorded separately: invalid `||` let chains,
+`Vec`/`vec!` in the `no_alloc` writer, and `Default` for `Sw`, which has no such
+implementation. Their compiler failures are not behavioural kills.
+
+The raw manifests, source-bound outcome reviews, complete baseline mapping,
+27 function-group reviews, independent witnesses and mutation diagnostics are
+retained in `target/sqlite-coverage-closure-20261007/`. The final closure report
+separates executed outcomes, source invariants, replaced defective conditions and
+semantic witnesses whose LLVM counter remains zero. Unused host helpers and
+pinned-fixture error callbacks remain in the raw function totals; absence from
+firmware alone is not a proof about an arbitrary test API.
+
+The final pre-commit host snapshot recorded 7488/8003 condition outcomes
+(93.56%) and 38998/39805 lines (97.97%). Its 515 raw missing outcomes include
+235 source-bound reviews, one tested recovery path with a zero counter, and
+279 net outcomes from aggregation and folded-span accounting. These reviews
+classify the measured profile and current callers; they do not claim complete
+execution of host/test-util APIs. At that snapshot, `Undead` and `FaultBackend`
+methods and direct undersized private-helper calls still lacked dedicated tests.
+That snapshot used bcdDevice `0x0A91`; splitting the timing refactor into its own
+commit moves only the firmware build counter to `0x0A92`.
+
+The 2026-10-08 follow-up adds 54 host tests across storage, device configuration,
+FIDO, OpenPGP, PIV, OATH, RSA, ML-DSA, UI and display. They exercise fault-medium
+forwarding and diagnostics, short helper buffers, inconsistent direct APDUs,
+unknown algorithm and DEK targets, blocked retry resets, dimension assertions,
+unsorted glyph tables, wide strip borders and encoder run limits. Conformance
+oracles now also see multiple extensions, missing mandatory fields, reversed
+CBOR keys and incomplete vector rows. Six duplicate test callbacks were
+consolidated into shared helpers. Negative controls exercise their missing-field
+failure and the malformed request made by an empty extension writer.
+
+The frozen snapshot at `91835e3683b2` records 7546/8005 raw condition outcomes
+(94.27%), 39233/39950 lines (98.21%) and 3313/3314 function groups. Every
+repository function group executes. The sole zero group is the standard
+library's TLS initializer alternative selected only when `needs_drop::<T>()` is
+true; all five recorded TLS types contain only Copy data, so that alternative
+cannot be installed for these keys. This is a type invariant, not an exclusion
+based on the absence of a firmware caller.
+
+Of the previously reviewed baseline outcome sides, 59 now execute. The remaining
+source-coordinate union has 177 missing sides: 176 source invariants or fixed
+profile conditions and the existing recovery witness whose merged counter stays
+zero. No remaining reason relies solely on the current caller's narrower
+arguments. The raw 459 missing sides reconcile as `177 + 293 - 19 + 8`: the 293
+come from LLVM's maximum over function instantiations rather than a union of
+executed source coordinates; 19 folded-span adjustments and eight repeated
+coordinates reconcile the exported denominators. No percentage exclusions were
+applied. Reports, source hashes, all 27 original function-group dispositions and
+the updated 773-side baseline map are retained in
+`target/callgraph-coverage-20261008/`, including `coverage-direct-final/`,
+`audit-coverage-direct-final.json` and `baseline-through-direct-final.json`.

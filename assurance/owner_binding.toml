@@ -8,7 +8,7 @@
 #
 # ---- What is DERIVED, and therefore NOT here ---------------------------------
 #
-# The roster. All 48 rows of assurance/token_refinement.toml, over 45 distinct
+# The roster. All 50 rows of assurance/token_refinement.toml, over 47 distinct
 # (file, function) sites, are read from that file — six axes, no second copy.
 # Which of them is TEST-ONLY is derived too, by the module-graph walk
 # token_refinement_gate.test_only_sources() already runs (the neighbouring row

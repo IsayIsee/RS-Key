@@ -40,11 +40,14 @@ previous run. 361 orphaned bases, 8.9 GB, inside one day.
 import ast
 import importlib
 import inspect
+import os
 import pathlib
 import re
 import shutil
 import subprocess
 import sys
+import textwrap
+import time
 import types
 
 import pytest
@@ -74,15 +77,16 @@ NAMED = {
     "../formal/gen-configs.sh": ("test_config_gen_gate.py", "config_gen_gate.py"),
     "impact.py": ("test_impact.py", "hooks/pre-commit"),
     "kani.sh": ("test_kani_sh.py", "../.github/workflows/ci.yml"),
-    "comutate.py": ("test_comutate.py", "check.sh"),
+    "comutate.py": ("test_comutate.py", "check-assurance.sh"),
     "crate_graph.py": ("test_crate_graph.py", "check.sh"),
     # The font generator, the second of that shape: `check.sh` runs its `--check`
     # as a row, the name does not end in `_gate.py`, and it landed with no table.
     "generate_ui_fonts.py": ("test_generate_ui_fonts.py", "check.sh"),
-    # The two `formal/` mappers: both are `check.sh` rows, neither ends in
-    # `_gate.py`, so their tables could have been deleted with this file green.
-    "security_trace.py": ("test_security_trace.py", "check.sh"),
-    "trace_map.py": ("test_trace_map.py", "check.sh"),
+    "external_corpus.py": ("test_external_corpus.py", "check.sh"),
+    # The two `formal/` mappers: both are `check-assurance.sh` rows, neither ends
+    # in `_gate.py`, so their tables could have been deleted with this file green.
+    "security_trace.py": ("test_security_trace.py", "check-assurance.sh"),
+    "trace_map.py": ("test_trace_map.py", "check-assurance.sh"),
     # The four that sat in `UNROSTERED` below under the plainest reason there is
     # — "a `run` row with no mutation table" — until each got one. Two of them
     # are `.sh`, which the `_gate.py` glob cannot see even when the name ends in
@@ -90,11 +94,14 @@ NAMED = {
     "docs_constants.py": ("test_docs_constants.py", "check.sh"),
     "gate_union.py": ("test_gate_union.py", "check.sh"),
     "complexity_gate.sh": ("test_complexity_gate.py", "check.sh"),
-    "token_refinement.sh": ("test_token_refinement.py", "check.sh"),
+    "token_refinement.sh": ("test_token_refinement.py", "check-assurance.sh"),
     # The reproduction runner: a `--self-test` row like the two in
     # `UNROSTERED`, and the one of that shape with a table of its own, so it
     # belongs here rather than in the carve-out that forbids one.
     "reproduce.sh": ("test_reproduce.py", "check.sh"),
+    # The accepted-survivors baseline made the weekly mutants row a guard. It is
+    # no gate row, so its runner is the workflow, like `run-tlc.sh`'s.
+    "mutants-all.sh": ("test_mutants_all.py", "../.github/workflows/deep-checks.yml"),
 }
 #: The board-only scripts under `tests/` that have a host table here, as
 #: **(script, its table)**. They are not guards and no `check.sh` row runs them —
@@ -122,41 +129,22 @@ CASE = re.compile(r"^def test_", re.M)
 #: only whether the file exists.
 TABLE_FLOOR = 5
 
-#: Every `def test_` under `scripts/`, and it is an EQUALITY rather than a floor.
-#:
-#: What it closes is the hole `TABLE_FLOOR` names and cannot reach: a single case
-#: deleted from a 176-case table. Driven WITHOUT this rule —
-#: `test_a_label_a_sentence_merely_WRITES_is_not_an_arm` deleted outright left
-#: this file at exit 0, `test_platform_gate.py` at exit 0 with one fewer case
-#: collected, and `scripts/platform_gate.py` at exit 0. Every case in this tree
-#: could be deleted the same way, and `platform_gate.py`'s hollow-arm floor and
-#: its misplaced-label diagnostic trip on no record in the checkout, so pytest is
-#: the whole of their protection. With this rule the same deletion is exit 1 here
-#: and still exit 0 in the file it was deleted from, which is the point: the
-#: roster is what notices, not the table that lost the case.
-#:
-#: A FLOOR cannot do this and that is why this is not one: set at today's count it
-#: decays to blind on the first case anyone adds, because 2500 - 1 still clears
-#: 2499. The price of the equality is that ADDING a case is also a red, with one
-#: number to move — the same shape as `platform_gate.py --write`, and the message
-#: below prints the value to write. One number and not fifty-seven per-table ones:
-#: this tree has a commit of its own removing three hard-coded twins of a count
-#: that moved, and a twin per table is that defect fifty-seven times over.
-#:
-#: What it still does not cover: a case gutted rather than deleted. `assert True`
-#: counts here exactly as the case it replaced did, and nothing in this file reads
-#: a case's body.
-SUITE_CASES = 2627
+#: The gate's two runners: `check.sh` on every commit, `check-assurance.sh` once
+#: before a pull request. A guard is a row of either, and both source `gate-lib.sh`.
+RUNNERS = ("check.sh", "check-assurance.sh")
 
 
 def check_sh():
     return (ROOT / "scripts/check.sh").read_text()
 
 
-def suite_cases():
-    """`def test_` over every table under `scripts/`, this file included."""
-    return sum(len(CASE.findall(p.read_text()))
-               for p in sorted(HERE.glob("test_*.py")))
+def runner_sh(name):
+    return (HERE / name).read_text()
+
+
+def lib_sh():
+    """What both runners source: the pytest base is assigned there, not in either."""
+    return (ROOT / "scripts/gate-lib.sh").read_text()
 
 
 def test_there_are_gates_to_check():
@@ -164,17 +152,19 @@ def test_there_are_gates_to_check():
     assert len(GATES) >= 4, GATES
 
 
-def test_every_gate_is_run_by_check_sh():
+def test_every_gate_is_run_by_a_runner():
     """The row's CODE, because a `#` in front of it is not a row.
 
     This compared the file's raw text and `code()` — written in this file for
     exactly that, citing the `kani_gate.py` precedent — was applied only to
     `NAMED`. Measured: all eleven `*_gate.py` rows commented out at once left
     `pytest scripts -q` identical to its baseline, while deleting one line
-    outright was caught.
+    outright was caught. Either runner answers: which layer a guard sits in is
+    its own table's to pin.
     """
-    missing = [g for g in GATES if not gate_lines.runs(check_sh(), f"scripts/{g}")]
-    assert not missing, f"check.sh runs none of {missing}"
+    missing = [g for g in GATES
+               if not any(gate_lines.runs(runner_sh(r), f"scripts/{g}") for r in RUNNERS)]
+    assert not missing, f"neither {RUNNERS} runs {missing}"
 
 
 def tables():
@@ -209,28 +199,13 @@ def test_the_board_scripts_with_a_table_still_exist():
 
 
 def test_no_board_table_is_owed_a_check_sh_row():
-    """The reason they are a separate roster: `check.sh` must NOT run them.
+    """The reason they are a separate roster: neither runner may run them.
 
     They need a board and a real supply cut. A row appearing for one is a
     different mistake from a table going missing, and this says which."""
-    row = check_sh()
-    running = [g for g in BOARD_TABLES if gate_lines.runs(row, pathlib.PurePath(g).name)]
-    assert not running, f"check.sh runs {running}, which need hardware"
-
-
-def test_no_case_has_been_deleted_from_the_suite():
-    """One case out of a 176-case table was a green tree. See [`SUITE_CASES`].
-
-    The count is over `def test_` and not over what pytest collects, for the same
-    reason [`CASE`] is: re-entering pytest to find out costs more than the rule is
-    worth, and a parametrized case counts as one either way — which is enough,
-    because a DELETED case takes its `def` with it.
-    """
-    now = suite_cases()
-    assert now == SUITE_CASES, (
-        f"scripts/ holds {now} `def test_` and SUITE_CASES says {SUITE_CASES}."
-        f" If you added cases, write {now}. If you did not, one has been deleted"
-    )
+    running = [(g, r) for g in BOARD_TABLES for r in RUNNERS
+               if gate_lines.runs(runner_sh(r), pathlib.PurePath(g).name)]
+    assert not running, f"runners run {running}, which need hardware"
 
 
 def test_the_named_guards_still_exist():
@@ -239,14 +214,18 @@ def test_the_named_guards_still_exist():
     assert not missing, f"{missing} are named here but not in scripts/"
 
 
-def wired_in(guard, runner_text):
+def wired_in(guard, runner_text, workflow=False):
     """Whether the runner's code — not its prose — names `guard`.
 
     `gate_lines.runs` rather than a comment-cut written here: this file had one,
     and having it in the file that needed it did not stop the rule above from
     comparing raw text instead. The eight guards that assert their own row in
-    their own table read it from there too now.
+    their own table read it from there too now. A workflow's code is its `run:`
+    scalars: `deep-checks.yml` names `mutants-all.sh` in its push `paths:`, which
+    answered for the job's step with the step gone.
     """
+    if workflow:
+        runner_text = "\n".join(body for body, run in gate_lines.yaml_runs(runner_text) if run)
     return gate_lines.runs(runner_text, pathlib.PurePath(guard).name)
 
 
@@ -267,7 +246,7 @@ def test_every_named_guard_is_run_by_its_stated_runner():
         # reading it here would report the same cause a second time, as a
         # traceback rather than a sentence.
         if (HERE / runner).is_file()
-        and not wired_in(guard, (HERE / runner).read_text())
+        and not wired_in(guard, (HERE / runner).read_text(), runner.endswith(".yml"))
     ]
     assert not missing, f"named but invoked nowhere in their runner: {missing}"
 
@@ -284,19 +263,47 @@ def test_a_comment_is_not_an_invocation():
     assert not wired_in("kani.sh", "# the weekly row runs scripts/kani.sh")
     assert not wired_in("kani.sh", "true # scripts/kani.sh all")
     assert not wired_in("kani.sh", "   \n\n")
+    # …and in a workflow, a trigger's `paths:` entry is not a step that runs it.
+    assert not wired_in("x.sh", 'on:\n  push:\n    paths: ["scripts/x.sh"]\n', workflow=True)
+    assert wired_in("x.sh", "    steps:\n      - run: ./scripts/x.sh\n", workflow=True)
+
+
+#: How each runner selects out of `scripts/`: complements, so a table lands in
+#: exactly one layer, and an unmarked new one in the per-commit layer.
+SELECTS = {"check.sh": '-m "not assurance"', "check-assurance.sh": "-m assurance"}
 
 
 def test_the_mutation_tables_are_collected():
-    """`check.sh` collects the directory, so a new table is registered by name.
+    """Both runners collect the directory, so a new table is registered by name.
 
     Over each row's CODE, like every other rule here: reading the raw text left a
     `#` in front of the `pytest scripts` row switching off every mutation table in
     the tree with this suite green. That is the third place the comment-cut was
-    owed and the second time it was missed.
+    owed and the second time it was missed. The marker expressions are read as
+    well: a narrower one on either side would let a table fall between the two.
     """
-    code = [gate_lines.split_at_comment(body)[0] for _indent, body in gate_lines.logical_lines(check_sh())]
-    runs = [m.group(1) for line in code for m in COLLECTS.finditer(line)]
-    assert any("scripts" in words for words in runs), runs
+    assert sorted(SELECTS) == sorted(RUNNERS)
+    for runner, select in SELECTS.items():
+        code = [gate_lines.split_at_comment(body)[0]
+                for _indent, body in gate_lines.logical_lines(runner_sh(runner))]
+        runs = [m.group(1) for line in code for m in COLLECTS.finditer(line)]
+        assert any("scripts" in words and select in words for words in runs), (runner, runs)
+
+
+def test_ci_runs_both_runners():
+    """The rule is "every commit, and once before a pull request", and CI is what
+    holds it: both runners as steps of `ci.yml`, the second weekly as well, and the
+    advisory mutants over each pull request's lines. Read out of the `run:` scalars,
+    so a step name or a comment naming one is not a run."""
+    wanted = {"ci.yml": ("./scripts/check.sh", "./scripts/check-assurance.sh",
+                         "./scripts/mutants-all.sh --in-diff"),
+              "deep-checks.yml": ("./scripts/check-assurance.sh",)}
+    for workflow, commands in wanted.items():
+        text = (ROOT / ".github/workflows" / workflow).read_text()
+        live = [gate_lines.split_at_comment(body)[0]
+                for body, executed in gate_lines.yaml_runs(text) if executed]
+        missing = [c for c in commands if not any(c in line for line in live)]
+        assert not missing, f"{workflow} runs none of {missing}"
 
 
 def test_every_gate_reports_a_summary_when_it_is_happy():
@@ -307,7 +314,7 @@ def test_every_gate_reports_a_summary_when_it_is_happy():
         assert "def main(" in text, f"{name} has no main() check.sh can run"
 
 
-#: A `check.sh` row that runs a script under `scripts/` and is owed no mutation
+#: A runner's row that runs a script under `scripts/` and is owed no mutation
 #: table by any rule above, with the reason. Held BOTH ways, the way
 #: `release_gate.HISTORICAL` is: a name here that has since gained a table is
 #: deleted from here, so a carve-out cannot outlive its need.
@@ -316,10 +323,13 @@ def test_every_gate_reports_a_summary_when_it_is_happy():
 #: reason of all — "a `run` row with no mutation table" — and are on [`NAMED`]
 #: now. What is left is the two shapes a table here is not the answer to: a
 #: script that is not a guard, and a guard whose table is INSIDE it, driven by
-#: the row itself. Three rows, and `pt.sh` is the only one that is not a guard.
+#: the row itself. `pt.sh` and `gate-lib.sh` are the two that are not guards.
 UNROSTERED = {
     "pt.sh": "not a guard and not a `run` row: the elf and store rows invoke it"
              " to apply a partition table, and it asserts nothing",
+    "gate-lib.sh": "not a guard and not a row: both runners source it for `run`,"
+                   " the signal traps and the pytest base, which the per-checkout"
+                   " base cases below evaluate",
     "ci-scope.sh": "a `run` row, and the one shape that does not need a table"
                    " here — `check.sh` runs its `--self-test`, so the table is"
                    " inside the script and the row IS the drive",
@@ -331,7 +341,7 @@ INVOKED = re.compile(r"(?:^|\s)(?:python3?\s+)?(?P<path>(?:\./)?scripts/[\w./-]+
 
 
 def invoked_scripts():
-    """Every script under `scripts/` that a live `check.sh` row runs.
+    """Every script under `scripts/` that a live row of either runner runs.
 
     `unquoted` as well as the comment cut, for this file's own reason one rule
     over: `check.sh` names itself inside an `echo` that tells a contributor which
@@ -339,7 +349,8 @@ def invoked_scripts():
     a guard nothing tests.
     """
     code = [unquoted(gate_lines.split_at_comment(body)[0])
-            for _indent, body in gate_lines.logical_lines(check_sh())]
+            for runner in RUNNERS
+            for _indent, body in gate_lines.logical_lines(runner_sh(runner))]
     return sorted({pathlib.PurePath(found["path"]).name
                    for line in code for found in INVOKED.finditer(line)})
 
@@ -355,14 +366,14 @@ def test_every_script_check_sh_runs_is_on_a_roster():
     """
     known = set(GATES) | {pathlib.PurePath(g).name for g in NAMED} | set(UNROSTERED)
     missing = [name for name in invoked_scripts() if name not in known]
-    assert not missing, f"check.sh runs {missing}, which no roster here names"
+    assert not missing, f"the runners run {missing}, which no roster here names"
 
 
 def test_the_unrostered_carve_out_cannot_outlive_its_reason():
     """Both ways, so a script that has since gained a table leaves this list."""
     runs = set(invoked_scripts())
     stale = [name for name in UNROSTERED if name not in runs]
-    assert not stale, f"{stale} are carved out here and no check.sh row runs them"
+    assert not stale, f"{stale} are carved out here and no runner's row runs them"
     covered = [name for name in UNROSTERED if (HERE / f"test_{pathlib.PurePath(name).stem}.py").is_file()]
     assert not covered, f"{covered} now have a mutation table — move them onto a roster"
 
@@ -929,7 +940,7 @@ def test_the_skip_budget_can_go_red():
 #: directory survives with its contents. Moving TMPDIR is the mechanism that
 #: works, and it is invisible to every rule above because no `.sh` file carries it.
 DEVSHELL = pathlib.Path("nix/devshells.nix")
-#: The cache root, read out of `check.sh` rather than written here a second time:
+#: The cache root, read out of `gate-lib.sh` rather than written here a second time:
 #: the gate's pytest bases already live under it, and a pin that drifted away
 #: from them would leave two temp roots where the file claims one.
 CACHE_ROOT = re.compile(r"\$\{XDG_CACHE_HOME:-\$HOME/\.cache\}/rs-key")
@@ -947,8 +958,8 @@ def devshell_text():
 
 
 def test_the_cache_root_is_one_root():
-    """`check.sh` names it and the dev shell must name the same one."""
-    assert CACHE_ROOT.search((ROOT / "scripts/check.sh").read_text())
+    """The gate's lib names it and the dev shell must name the same one."""
+    assert CACHE_ROOT.search(lib_sh())
     assert CACHE_ROOT.search(devshell_text())
 
 
@@ -989,3 +1000,190 @@ def test_the_tmpdir_rules_can_go_red():
     assert not TMPDIR_SWEEP.search('find "$TMPDIR" -mindepth 1 -exec rm -rf {} +\n')
     zero = TMPDIR_SWEEP.search('find "$TMPDIR" -mindepth 1 -mtime +0 -exec rm -rf {} +\n')
     assert zero and int(zero["days"]) == 0
+
+
+# --- the pytest base is per checkout, not per user ------------------------------
+
+#: The pytest base's assignment in `gate-lib.sh`, and the `set` line of the
+#: runner that sources it. The cases below EVALUATE both in a stand-in checkout.
+PYTEST_BASE = re.compile(r"^GATE_PYTEST_TMP=.*$", re.M)
+SHELL_OPTIONS = re.compile(r"^set -.*$", re.M)
+
+#: A session that holds a file in its `tmp_path` until told to let go. Indented
+#: here and dedented at use, so [`CASE`] does not count its `def test_` as a case.
+HOLDER = textwrap.dedent("""\
+    import os, pathlib, time
+
+    def test_hold(tmp_path):
+        held = tmp_path / "held"
+        held.write_text("x")
+        pathlib.Path(os.environ["HOLD_READY"]).write_text(str(held))
+        go = pathlib.Path(os.environ["HOLD_GO"])
+        for _ in range(1200):
+            if go.exists():
+                break
+            time.sleep(0.05)
+        assert held.exists(), "the base was wiped under a running session"
+    """)
+#: …and one that only starts, which is when pytest wipes a pinned base.
+STARTER = "def test_start(tmp_path):\n    (tmp_path / 'x').write_text('x')\n"
+
+
+def no_git_env(**extra):
+    """The environment with git's own variables dropped, so no caller's repository leaks in."""
+    return {**{k: v for k, v in os.environ.items() if not k.startswith("GIT_")}, **extra}
+
+
+def two_checkouts(tmp_path):
+    """A repository and a worktree of it, with one basename between them: the shape
+    of the collision, which was two checkouts of ONE repository."""
+    one, two = tmp_path.resolve() / "one" / "RS-Key", tmp_path.resolve() / "two" / "RS-Key"
+    one.mkdir(parents=True)
+    two.parent.mkdir(parents=True)
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+           "-c", "core.hooksPath=/dev/null", "-C", str(one)]
+    for args in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "t"],
+                 ["worktree", "add", "-q", "--detach", str(two)]):
+        subprocess.run(git + args, check=True, env=no_git_env(), capture_output=True)
+    return one, two
+
+
+def a_bin_without_git(tmp_path):
+    """A PATH with the one tool the assignment needs besides git."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    if not (bin_dir / "cut").exists():
+        (bin_dir / "cut").symlink_to(shutil.which("cut"))
+    return str(bin_dir)
+
+
+def gate_pytest_base(checkout, cache, line=None, options=None, path=None):
+    """Evaluate the lib's assignment, under `check.sh`'s `set` line, standing in `checkout`."""
+    if line is None:
+        # Exactly one over the runners and what they source: bash keeps the LAST
+        # of two, so a stale line below the fixed one would put a gate back on a
+        # shared base with the first still read here.
+        found = PYTEST_BASE.findall(lib_sh() + "".join(runner_sh(r) for r in RUNNERS))
+        assert len(found) == 1, f"GATE_PYTEST_TMP is assigned {len(found)} times: {found}"
+        line = found[0]
+    options = SHELL_OPTIONS.search(check_sh())[0] if options is None else options
+    env = no_git_env(XDG_CACHE_HOME=str(cache), **({"PATH": path} if path else {}))
+    return subprocess.run(
+        [shutil.which("bash"), "-c", f'{options}\n{line}\nprintf %s "$GATE_PYTEST_TMP"'],
+        cwd=checkout, env=env, capture_output=True, text=True,
+    )
+
+
+def base_of(checkout, cache, line=None):
+    done = gate_pytest_base(checkout, cache, line)
+    assert done.returncode == 0, done.stderr
+    return pathlib.Path(done.stdout)
+
+
+def test_two_checkouts_get_two_pytest_bases(tmp_path):
+    """The base was `…/rs-key/pytest` for every checkout of this user, and pytest
+    removes a pinned base when a session starts. Each base must still sit under the
+    cache root, which is what keeps it out of the checkout it was moved out of."""
+    cache = tmp_path.resolve() / "cache"
+    bases = [base_of(c, cache) for c in two_checkouts(tmp_path)]
+    assert bases[0] != bases[1], bases
+    for base in bases:
+        assert base.is_relative_to(cache / "rs-key" / "pytest"), base
+
+
+def test_every_gate_pytest_row_pins_under_the_checkout_s_base():
+    """The assignment is half of it: a row that spells its own path pins wherever
+    that says, per user again, and the cases around this one never see it."""
+    for runner in RUNNERS:
+        pinned = [pinned_at(code) for rel, code in pytest_calls() if rel == f"scripts/{runner}"]
+        assert pinned, f"no pytest row in scripts/{runner}"
+        stray = [p for p in pinned if not p.startswith("$GATE_PYTEST_TMP/")]
+        assert not stray, f"{runner} pytest rows pinned outside $GATE_PYTEST_TMP: {stray}"
+
+
+def test_a_gate_in_one_checkout_does_not_wipe_another_s_pytest_base(tmp_path):
+    """On 2026-09-16 two sessions ran the full gate in two checkouts of this
+    repository at once, both gate rows pinned to `~/.cache/rs-key/pytest/gate`,
+    where the later start removes the earlier run's tree. Here each session is
+    pinned where `check.sh` pins its checkout's gate row, and the first holds a file
+    while the second starts."""
+    cache = tmp_path.resolve() / "cache"
+    first, second = (base_of(c, cache) / "gate" for c in two_checkouts(tmp_path))
+    for leaf in (first, second):
+        # A line that ignored XDG_CACHE_HOME would aim these at a live gate's base.
+        assert leaf.is_relative_to(tmp_path.resolve()), f"refusing to pin {leaf}"
+        # `check.sh`'s own `mkdir -p` after the assignment: pytest makes only the leaf.
+        leaf.parent.mkdir(parents=True, exist_ok=True)
+    probe = tmp_path / "probe"
+    probe.mkdir()
+    (probe / "pytest.ini").write_text("[pytest]\n")
+    (probe / "test_hold.py").write_text(HOLDER)
+    (probe / "test_start.py").write_text(STARTER)
+    ready, go = tmp_path / "ready", tmp_path / "go"
+    session = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+    env = no_git_env(HOLD_READY=str(ready), HOLD_GO=str(go))
+    holder = subprocess.Popen(session + [f"--basetemp={first}", "test_hold.py"],
+                              cwd=probe, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        for _ in range(1200):
+            if ready.exists() or holder.poll() is not None:
+                break
+            time.sleep(0.05)
+        assert ready.exists(), holder.communicate()[0]
+        started = subprocess.run(session + [f"--basetemp={second}", "test_start.py"],
+                                 cwd=probe, env=env, capture_output=True, text=True)
+        assert started.returncode == 0, started.stdout + started.stderr
+    finally:
+        go.write_text("go")
+        out = holder.communicate(timeout=120)[0]
+    assert holder.returncode == 0, out
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_a_base_that_cannot_be_keyed_stops_the_gate(tmp_path, runner):
+    """With no git to key it the assignment must stop the gate, not hand back
+    `…/rs-key/pytest/`, which is the shared base again, silently. `pipefail` in
+    each runner's `set` line is what makes the failing git the assignment's status."""
+    checkout = two_checkouts(tmp_path)[0]
+    options = SHELL_OPTIONS.search(runner_sh(runner))[0]
+    done = gate_pytest_base(checkout, tmp_path.resolve() / "cache", options=options,
+                            path=a_bin_without_git(tmp_path))
+    assert done.returncode != 0 and not done.stdout, (done.returncode, done.stdout)
+
+
+def test_the_per_checkout_base_can_go_red(tmp_path):
+    """The mutation table, each arm run through the same helpers the cases above
+    use. Driven through the `pytest (gate scripts)` row as well, exit code taken
+    with no pipe, for the first arm.
+
+    * per user again, the line as it stood → both behavioural cases
+    * keyed by basename → the repository and its worktree share a base
+    * keyed by the common git dir → the same, the way a per-repository fix would
+    * under the checkout's own `target/` → outside the cache root
+    * a row spelling its own per-user path → the row rule
+    * a second assignment below the first → every case that reads the line
+    * `pipefail` dropped from the `set` line → the keyless fallback, at rc 0
+    """
+    cache = tmp_path.resolve() / "cache"
+    checkouts = two_checkouts(tmp_path)
+    root = cache / "rs-key" / "pytest"
+    arms = (
+        ('GATE_PYTEST_TMP="${XDG_CACHE_HOME:-$HOME/.cache}/rs-key/pytest"', True, True),
+        ('GATE_PYTEST_TMP="${XDG_CACHE_HOME:-$HOME/.cache}/rs-key/pytest/$(basename "$PWD")"', True, True),
+        ('GATE_PYTEST_TMP="${XDG_CACHE_HOME:-$HOME/.cache}/rs-key/pytest/'
+         '$(cd "$(git rev-parse --git-common-dir)" && pwd -P | git hash-object --stdin | cut -c1-12)"', True, True),
+        ('GATE_PYTEST_TMP="$PWD/target/pytest"', False, False),
+    )
+    for line, shared, under_root in arms:
+        bases = [base_of(c, cache, line) for c in checkouts]
+        assert (bases[0] == bases[1]) is shared, (line, bases)
+        assert bases[0].is_relative_to(root) is under_root, (line, bases)
+    row = 'run "x" python -m pytest scripts -q --basetemp="${XDG_CACHE_HOME:-$HOME/.cache}/rs-key/pytest/gate"'
+    assert not pinned_at(row).startswith("$GATE_PYTEST_TMP/")
+    assert len(PYTEST_BASE.findall('GATE_PYTEST_TMP="$A/x"\nrun x\nGATE_PYTEST_TMP="$HOME/x"\n')) == 2
+    # The keyed spelling itself, not the live line: an arm about `set` must not
+    # also fall whenever the assignment is the thing a mutation changed.
+    keyed = ('GATE_PYTEST_TMP="${XDG_CACHE_HOME:-$HOME/.cache}/rs-key/pytest/'
+             '$(git rev-parse --show-toplevel | git hash-object --stdin | cut -c1-12)"')
+    keyless = gate_pytest_base(checkouts[0], cache, keyed, "set -eu", a_bin_without_git(tmp_path))
+    assert keyless.returncode == 0 and keyless.stdout.endswith("/rs-key/pytest/"), keyless

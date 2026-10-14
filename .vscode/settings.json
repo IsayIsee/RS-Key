@@ -16,5 +16,7 @@
   // this line and take the crate errors back instead.
   //
   // On Linux, change the triple to your own, e.g. "x86_64-unknown-linux-gnu".
-  "rust-analyzer.cargo.target": "aarch64-apple-darwin"
+  "rust-analyzer.cargo.target": "aarch64-apple-darwin",
+  "python-envs.defaultEnvManager": "ms-python.python:conda",
+  "python-envs.defaultPackageManager": "ms-python.python:conda"
 }

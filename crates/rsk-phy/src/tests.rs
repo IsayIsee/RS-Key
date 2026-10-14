@@ -4,6 +4,18 @@
 use super::*;
 
 #[test]
+fn invalid_utf8_is_copied_with_a_bound_and_empty_needles_do_not_match() {
+    let mut out = [0xa5; 8];
+    assert_eq!(clamp_usb_string(&[0xff], &mut out), 1);
+    assert_eq!(out, [0xff, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5]);
+    for predicate in [contains as fn(&[u8], &[u8]) -> bool, contains_ci] {
+        assert!(!predicate(b"a", b""));
+        assert!(!predicate(b"a", b"ab"));
+        assert!(predicate(b"ab", b"ab"));
+    }
+}
+
+#[test]
 fn roundtrip_all_fields() {
     let phy = PhyData {
         vid_pid: Some((0x1050, 0x0407)),
@@ -437,4 +449,13 @@ fn a_never_written_record_opens_every_interface() {
     assert!(matches!(boot, PhyBoot::NeverWritten));
     assert_eq!(boot.usb_itf(), USB_ITF_ALL);
     assert!(boot.record().is_none());
+}
+
+#[test]
+fn product_text_is_utf8_checked_without_altering_the_stored_bytes() {
+    for bytes in [b"RS-Key".as_slice(), "Key 🔑".as_bytes(), &[0xff, 0xfe]] {
+        let product = Product::new(bytes).unwrap();
+        assert_eq!(product.as_bytes(), bytes);
+        assert_eq!(product.as_str(), core::str::from_utf8(bytes).ok());
+    }
 }

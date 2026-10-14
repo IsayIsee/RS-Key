@@ -247,12 +247,8 @@ pub(crate) struct DeviceKeys {
 }
 
 impl DeviceKeys {
-    fn device<'k>(&'k self, mkek: &'k FusedRead) -> Device<'k> {
-        Device {
-            serial_hash: &self.serial_hash,
-            serial_id: &self.serial_id,
-            otp_key: mkek.as_deref(),
-        }
+    fn device<'k>(&'k self, mkek: &'k FusedRead) -> Option<Device<'k>> {
+        Device::fused(&self.serial_hash, &self.serial_id, mkek)
     }
 }
 
@@ -1518,7 +1514,9 @@ fn pk_detail_load(
 ) -> (usize, usize) {
     use rsk_fido::passkeys::{for_each_cred, for_each_rp};
     let mkek = read_fused(dev.mkek_source);
-    let d = dev.device(&mkek);
+    let Some(d) = dev.device(&mkek) else {
+        return (0, 1);
+    };
     let mut hash = None;
     let mut i = 0usize;
     for_each_rp(&d, fs, |rp| {
@@ -1623,8 +1621,11 @@ pub(crate) fn browse(
     let mut menu = Menu::new();
     {
         let mkek = read_fused(dev.mkek_source);
-        let d = dev.device(&mkek);
-        capture(&mut fs.borrow_mut(), dev, &d, &mut menu);
+        // Past the latch with no key read, every arm below the fused root is
+        // closed and there is nothing to open: the menu captures empty.
+        if let Some(d) = dev.device(&mkek) {
+            capture(&mut fs.borrow_mut(), dev, &d, &mut menu);
+        }
     }
 
     // Pages per section, and the linear total for wrap-around navigation.

@@ -47,9 +47,14 @@ RequiredGate(op, s) ==
            \* 10 s window and a touch -- neither of which A can see.
            TRUE
       [] op = "MintGrant" ->
-           \* The persistent pcmr grant is minted through the PIN door
-           \* (CTAP 2.2 6.5.5.7.2/.3), so a PIN must already stand.
+           \* Handing a platform the persistent pcmr grant goes through the
+           \* PIN door (CTAP 2.2 6.5.5.7.2/.3), so a PIN must already stand.
            s.pinSet
+      [] op = "ProvisionGrant" ->
+           \* The device writes the record itself -- at a boot, a finished reset
+           \* or a vendor backup load -- and hands it to no platform. Those
+           \* commands' own gates are B's.
+           TRUE
       [] op = "RevokeGrant" ->
            \* Dropping the grant record is not a protected operation.
            TRUE
@@ -63,6 +68,7 @@ RequiredGate(op, s) ==
       [] op = "UseCm" ->
            \* credentialManagement 6.8: a live token holding `cm`, or the
            \* persistent grant, which 6.8.2 step 4 lets authorize on its own.
+           \* A sees the record, not who holds it: that is the token's secrecy.
            (s.live /\ s.permissionCm) \/ s.persistentGrant
       [] op = "UseAcfg" ->
            \* authenticatorConfig 6.11 has no token-less arm.
@@ -84,7 +90,7 @@ AuthorizedFrom(pre, op, post) ==
 (* THE A-LEVEL STATEMENT: every event the relation admits as Authorized     *)
 (* had the gate its operation's requirement names.  Written as the SLICE at *)
 (* the current state rather than as a walk of AllowedRelation, for one      *)
-(* reason and one price.  The reason: over the whole 63 888-tuple           *)
+(* reason and one price.  The reason: over the whole 69 696-tuple           *)
 (* comprehension the predicate reads no variable, and TLC then answers      *)
 (* "the invariant is equal to FALSE" at startup -- no counterexample, and   *)
 (* a verdict column that cannot name the invariant that fell.  The price:   *)

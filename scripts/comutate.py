@@ -24,7 +24,7 @@ and how it fell is the point of writing exclusions down. The stated ground was
 that two of its three defended sites live in `firmware/`, which has no host
 tests by construction. Only one did: the scratch-word carry's model conjunct is
 `lock' = recorded`, and that assignment is `restore_pin_lock` at
-crates/rsk-fido/src/state.rs:449-452 — `firmware/src/pin_lock.rs` holds the
+crates/rsk-fido/src/state.rs:568-571 — `firmware/src/pin_lock.rs` holds the
 register encode, not the restore. The marker-after-lap order really was in
 `firmware/`, where a patch could not have scored a kill in any case since a
 build failure is classified `build-broke` below, so it was lifted into
@@ -75,9 +75,18 @@ none of which a gate row could see. [`proof_problems`] is the three rules, and
 a name search is not one of them: `--harness` must resolve to a real
 `#[kani::proof]` DECLARED BY the package `-p` names.
 
+The lint closes those three statically and the fourth cannot be closed there at
+all: a tool that does not RUN on the host reaches no verdict, and `proof-survived`
+was read off the absence of a failure, so "the harness stayed green" and "the
+harness never answered" were one word. Measured on the first CI run of this half
+— `BugCmWalkIgnoresChannel` reddens `NoAuthorizationBypass/B1` on the maintainer's
+host and came back `proof-survived` from the Linux runner. `VERIFICATION:-
+SUCCESSFUL` is the only thing that verdict is read off now; anything else is
+`proof-broke` carrying the tool's own line.
+
 Three modes:
 
-* `--lint` — the cheap closed-world half, a `check.sh` row. Every `Mut_*.cfg`
+* `--lint` — the cheap closed-world half, a gate row. Every `Mut_*.cfg`
   has exactly one entry and vice versa; every patch anchor resolves exactly
   once in the current tree (drifted code fails loudly instead of patching the
   wrong place); every patch names a slice and an expected verdict; the pending
@@ -101,6 +110,7 @@ sequence proofs' own falsifiability is measured by their own table).
 """
 
 import functools
+import hashlib
 import pathlib
 import re
 import shutil
@@ -696,7 +706,7 @@ def proof_problems(
     nothing compared what it holds to the tree: `--harness` took any string, `-p`
     took any package, and the patch could land in a crate that package never
     compiles. Every one of the three ends the same way at run time — the harness
-    is not built or not reached, `proof_verdict` reads `proof-survived`, and the
+    is not built or not reached, `proof_verdict` reads `proof-broke`, and the
     entry's `expect = "killed"` fails for a reason that is about the RECORD and
     not about the code. That verdict is a weekly row; this is the gate row.
 
@@ -714,7 +724,7 @@ def proof_problems(
         out.append(
             f"{where}: the proof runs `-p {crate}`, which is no workspace member"
             " — cargo answers a package-spec error, and a run that never built a"
-            " harness reads proof-survived"
+            " harness reaches no verdict"
         )
     if known and harness not in harnesses[crate]:
         elsewhere = sorted(c for c, names in harnesses.items() if harness in names)
@@ -839,6 +849,11 @@ def lint(root: pathlib.Path, check_generated_readme: bool = True) -> list[str]:
 #: did not converge would score a kill wearing the right colour. Refused by name,
 #: which is the same rule `floors.txt`'s invariant column applies one tier up.
 PROOF_FAILED = "VERIFICATION:- FAILED"
+#: Its other half, and the only thing `proof-survived` may be read OFF. Absence
+#: of a failure is not a green harness: a run that never produced either line --
+#: a tool that could not load, a build that did not compile, a filter that
+#: matched nothing -- left an exit code the old rule answered "stayed green".
+PROOF_SUCCEEDED = "VERIFICATION:- SUCCESSFUL"
 #: The one line Kani prints per check that ACTUALLY fell. Everything below is
 #: read out of these and nothing else: `not currently supported` also appears in
 #: a codegen WARNING and in the description of checks that are unreachable, on a
@@ -872,6 +887,38 @@ def with_target(cmd: list[str], host: str) -> list[str]:
     return cmd + ["--target", host] if cmd[:2] == ["cargo", "test"] else list(cmd)
 
 
+def slice_env(cmd: list[str], root: pathlib.Path) -> dict[str, str]:
+    """The environment one slice or proof runs in.
+
+    The dev shell is nix's and the Kani toolchain is not: `cargo kani setup`
+    downloads CBMC's own binaries, built against the runner's glibc, and
+    `LD_LIBRARY_PATH` puts nix's libraries in front of theirs. Measured on the
+    weekly row -- `goto-cc: /lib/x86_64-linux-gnu/libc.so.6: version
+    `GLIBC_ABI_DT_X86_64_PLT' not found (required by /nix/store/...-glibc-2.42-61
+    /lib/libm.so.6)`, a nix libm beside the system libc, exit 1 and no verdict.
+    Dropped for a kani command and kept for every other, because a `cargo test`
+    slice is nix-built and its libudev, libpcsclite and libSDL2 are on that path.
+    """
+    env = {
+        **__import__("os").environ,
+        # Sequential runs share the main build cache: only the patched
+        # crate recompiles, instead of a cold dependency tree per mutant.
+        "CARGO_TARGET_DIR": str(root / "target"),
+        # `scripts/kani.sh`'s reason, and it applies to any kani slice run
+        # from here: on x86_64 a harness that hashes reaches `cpufeatures`'
+        # inline-asm CPU probe, which Kani calls unsupported -- a tool limit
+        # wearing the shape of a property violation, invisible on aarch64.
+        "RUSTFLAGS": (
+            __import__("os").environ.get("RUSTFLAGS", "")
+            + ' --cfg sha2_backend="soft" --cfg poly1305_force_soft'
+            " --cfg sha1_force_soft"
+        ).strip(),
+    }
+    if cmd[:2] == ["cargo", "kani"]:
+        env.pop("LD_LIBRARY_PATH", None)
+    return env
+
+
 def run_slice(cmd: list[str], wt: pathlib.Path, root: pathlib.Path, host: str):
     """One command in the worktree, sharing the main build cache.
 
@@ -882,26 +929,39 @@ def run_slice(cmd: list[str], wt: pathlib.Path, root: pathlib.Path, host: str):
     """
     cmd = with_target(cmd, host)
     return subprocess.run(
-        cmd,
-        cwd=wt,
-        capture_output=True,
-        text=True,
-        env={
-            **__import__("os").environ,
-            # Sequential runs share the main build cache: only the patched
-            # crate recompiles, instead of a cold dependency tree per mutant.
-            "CARGO_TARGET_DIR": str(root / "target"),
-            # `scripts/kani.sh`'s reason, and it applies to any kani slice run
-            # from here: on x86_64 a harness that hashes reaches `cpufeatures`'
-            # inline-asm CPU probe, which Kani calls unsupported -- a tool limit
-            # wearing the shape of a property violation, invisible on aarch64.
-            "RUSTFLAGS": (
-                __import__("os").environ.get("RUSTFLAGS", "")
-                + ' --cfg sha2_backend="soft" --cfg poly1305_force_soft'
-                " --cfg sha1_force_soft"
-            ).strip(),
-        },
+        cmd, cwd=wt, capture_output=True, text=True, env=slice_env(cmd, root)
     )
+
+
+def tool_said(out: str, width: int = 160) -> str:
+    """The one line worth carrying out of a proof run that reached no verdict.
+
+    The FIRST line that says `error`, since cargo and rustc cascade and a driver
+    wraps its child's failure in its own -- not anchored, because the child names
+    itself first (`cbmc: error while loading shared libraries: ...`). A loader
+    message need not carry the word, so otherwise the last thing it said.
+    """
+    lines = [line.strip() for line in out.splitlines() if line.strip()]
+    said = next((l for l in lines if "error" in l.lower()), None)
+    said = said or (lines[-1] if lines else "it printed nothing at all")
+    return said[:width]
+
+
+def reached_no_verdict(out: str) -> bool:
+    """Neither of Kani's two verdict lines: the harness never answered at all."""
+    return PROOF_SUCCEEDED not in out and PROOF_FAILED not in out
+
+
+def proof_tail(out: str, keep: int = 25) -> str:
+    """The tool's own last words, for a run that answered nothing.
+
+    One line of detail named `goto-cc exited with status 1` and not why. Kani
+    suppresses a child's output unless the command says `--verbose`, which is why
+    the roster's proof does, and the worktree is gone by the next statement.
+    """
+    lines = [line.rstrip() for line in out.splitlines() if line.strip()]
+    head = "  the proof answered nothing; its last words:\n"
+    return head + "\n".join(f"  | {line[:200]}" for line in lines[-keep:])
 
 
 def proof_verdict(out: str, code: int, names: str) -> tuple[str, str] | None:
@@ -913,6 +973,8 @@ def proof_verdict(out: str, code: int, names: str) -> tuple[str, str] | None:
         for limit in PROOF_NOT_A_KILL:
             if limit in line:
                 return "proof-broke", f"a check fell on a TOOL limit: {limit}"
+    if reached_no_verdict(out):
+        return "proof-broke", f"the harness reached no verdict: {tool_said(out)}"
     if code == 0 or PROOF_FAILED not in out:
         return "proof-survived", "the harness stayed green under the patch"
     # Scoped to the failed lines for the same reason: Kani lists EVERY check with
@@ -927,19 +989,22 @@ def host_triple() -> str:
     return re.search(r"^host: (\S+)$", out.stdout, re.M).group(1)
 
 
-def worktree_path(bug: str) -> pathlib.Path:
-    """Where one comutant is measured.
+def worktree_path(root: pathlib.Path, bug: str) -> pathlib.Path:
+    """Where one comutant is measured: a directory per checkout and bug. Keyed by
+    the bug alone, two gates measuring one bug at once shared it: each removed the
+    other's live worktree or died adding its own ("already exists").
 
     A function rather than a literal because `test_comutate.py` has to arrange a
     stale registration at this exact path; a second typing of it leaves that case
     green over the defect the moment the path moves, which was measured.
     """
-    return pathlib.Path("/tmp") / f"rsk-comutant-{bug}"
+    checkout = hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:12]
+    return pathlib.Path("/tmp") / f"rsk-comutant-{checkout}-{bug}"
 
 
 def run_one(root: pathlib.Path, bug: str, entry: dict, host: str) -> tuple[str, str]:
     """(verdict, detail) for one comutant, measured in a throwaway worktree."""
-    wt = worktree_path(bug)
+    wt = worktree_path(root, bug)
     if wt.exists():
         subprocess.run(
             ["git", "worktree", "remove", "--force", str(wt)], cwd=root, check=False
@@ -1019,6 +1084,8 @@ def run_one(root: pathlib.Path, bug: str, entry: dict, host: str) -> tuple[str, 
         # whose wiring nothing exercises, one layer in.
         proof = run_slice(list(entry["proof"]), wt, root, host)
         text = proof.stdout + proof.stderr
+        if reached_no_verdict(text):
+            print(proof_tail(text), file=sys.stderr)
         refused = proof_verdict(text, proof.returncode, entry["proof_names"])
         if refused:
             return refused

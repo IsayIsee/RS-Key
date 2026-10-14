@@ -18,6 +18,7 @@
 //! board in silence.
 
 use std::convert::Infallible;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
@@ -31,6 +32,10 @@ use rsk_fido::consts::{
 
 use super::*;
 use crate::device::{Config, Job, Jobs, PanelLinks, Unplug, job_queue, serve_display};
+use crate::pin_client::{
+    CTAP2_OK, PROTO, PROTO_WIRE, Platform, bstr, get_key_agreement_req, mac_under, map,
+    parse_key_agreement, set_pin_req, u,
+};
 use crate::presence::PresenceMode;
 use crate::signals::Signals;
 use crate::taps::{Tap, TapPad};
@@ -39,17 +44,10 @@ use crate::taps::{Tap, TapPad};
 const PIN: &[u8] = b"1234";
 const WRONG_PIN: &[u8] = b"9999";
 
-/// pinUvAuthProtocol 2 — the one a current platform picks, and the one whose
-/// 16-byte IV and 32-byte MAC make every length below explicit. The wire byte is
-/// the same fact twice, so `drive` checks the two agree before using either.
-const PROTO: PinProto = PinProto::Two;
-const PROTO_WIRE: u8 = 2;
-
 /// `credentialManagement/getCredsMetadata`: the cheapest command that consumes a
 /// `pinUvAuthToken` and asks for nothing else — no touch, no user presence — so
 /// what it answers is the token's own health and nothing more.
 const CM_GET_CREDS_METADATA: u8 = 0x01;
-const CTAP2_OK: u8 = 0x00;
 
 /// A CTAPHID channel to be the host on.
 const CID: u32 = 0x0102_0304;
@@ -223,102 +221,7 @@ fn settle(taps: &SyncSender<Tap>) {
     push(taps, Tap::at(p.x, p.y));
 }
 
-// --- the platform half of the pin protocol ---------------------------------
-
-struct Platform {
-    x: [u8; 32],
-    y: [u8; 32],
-    shared: [u8; 64],
-    slen: usize,
-}
-
-impl Platform {
-    /// Agree a shared secret with the authenticator's `getKeyAgreement` key. The
-    /// platform scalar is fixed: nothing here needs a fresh key, and a
-    /// deterministic one makes a failing run reproducible.
-    fn agree(peer_x: &[u8; 32], peer_y: &[u8; 32]) -> Self {
-        let mut scalar = [0u8; 32];
-        scalar[0] = 0x13;
-        scalar[31] = 0x42;
-        let (x, y) = pinproto::public_xy(&scalar).expect("a valid P-256 scalar");
-        let mut shared = [0u8; 64];
-        let slen = pinproto::ecdh(PROTO, &scalar, peer_x, peer_y, &mut shared)
-            .expect("the authenticator's key agreement point is on the curve");
-        Self { x, y, shared, slen }
-    }
-
-    fn secret(&self) -> &[u8] {
-        &self.shared[..self.slen]
-    }
-
-    fn enc(&self, plaintext: &[u8]) -> Vec<u8> {
-        let mut out = [0u8; 128];
-        let n = pinproto::encrypt(PROTO, self.secret(), &[0x55; 16], plaintext, &mut out)
-            .expect("the buffer holds an IV and 64 padded bytes");
-        out[..n].to_vec()
-    }
-
-    fn mac(&self, data: &[u8]) -> Vec<u8> {
-        mac_under(self.secret(), data)
-    }
-
-    fn key_agreement(&self) -> Vec<u8> {
-        cose_ecdh(&self.x, &self.y)
-    }
-}
-
-fn mac_under(key: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut out = [0u8; 32];
-    let n = pinproto::authenticate(PROTO, key, data, &mut out).expect("a 32-byte MAC fits");
-    out[..n].to_vec()
-}
-
-/// `{1:2, 3:-25, -1:1, -2:x, -3:y}` — the COSE ECDH key both sides put on the
-/// wire. Written out because the emulator does not depend on a CBOR encoder.
-fn cose_ecdh(x: &[u8; 32], y: &[u8; 32]) -> Vec<u8> {
-    let mut v = vec![
-        0xA5, 0x01, 0x02, 0x03, 0x38, 0x18, 0x20, 0x01, 0x21, 0x58, 0x20,
-    ];
-    v.extend_from_slice(x);
-    v.extend_from_slice(&[0x22, 0x58, 0x20]);
-    v.extend_from_slice(y);
-    v
-}
-
-/// A CBOR byte string. Every one here is 32 bytes or more, so the one-byte-length
-/// form is also the canonical one.
-fn bstr(b: &[u8]) -> Vec<u8> {
-    assert!((24..=255).contains(&b.len()), "not the 0x58 length form");
-    let mut v = vec![0x58, b.len() as u8];
-    v.extend_from_slice(b);
-    v
-}
-
-/// A CBOR map with small unsigned keys and pre-encoded values.
-fn map(entries: &[(u8, Vec<u8>)]) -> Vec<u8> {
-    assert!(entries.len() < 24, "not the single-byte map header");
-    let mut v = vec![0xA0 | entries.len() as u8];
-    for (k, val) in entries {
-        assert!(*k < 24, "not a single-byte key");
-        v.push(*k);
-        v.extend_from_slice(val);
-    }
-    v
-}
-
-/// A CBOR unsigned small enough to be its own header.
-fn u(n: u8) -> Vec<u8> {
-    assert!(n < 24, "not a single-byte unsigned");
-    vec![n]
-}
-
 // --- the requests ----------------------------------------------------------
-
-fn get_key_agreement_req() -> Vec<u8> {
-    let mut v = vec![CTAP_CLIENT_PIN];
-    v.extend(map(&[(1, u(PROTO_WIRE)), (2, u(2))]));
-    v
-}
 
 /// The cheapest ungated command there is — no PIN, no touch, no state. It is also
 /// the one audit run-35 named: a host looping it is what [`UI_YIELD_FLOOR_MS`]
@@ -339,22 +242,6 @@ fn selection_req() -> Vec<u8> {
 fn get_pin_retries_req() -> Vec<u8> {
     let mut v = vec![CTAP_CLIENT_PIN];
     v.extend(map(&[(1, u(PROTO_WIRE)), (2, u(1))]));
-    v
-}
-
-fn set_pin_req(plat: &Platform, pin: &[u8]) -> Vec<u8> {
-    let mut padded = [0u8; 64];
-    padded[..pin.len()].copy_from_slice(pin);
-    let new_pin_enc = plat.enc(&padded);
-    let puap = plat.mac(&new_pin_enc);
-    let mut v = vec![CTAP_CLIENT_PIN];
-    v.extend(map(&[
-        (1, u(PROTO_WIRE)),
-        (2, u(3)),
-        (3, plat.key_agreement()),
-        (4, bstr(&puap)),
-        (5, bstr(&new_pin_enc)),
-    ]));
     v
 }
 
@@ -385,22 +272,6 @@ fn spend_token_req(token: &[u8; 32]) -> Vec<u8> {
 }
 
 // --- the responses ---------------------------------------------------------
-
-/// `{1: COSE key}` — the authenticator's ephemeral public point.
-fn parse_key_agreement(body: &[u8]) -> ([u8; 32], [u8; 32]) {
-    assert_eq!(body[0], CTAP2_OK, "getKeyAgreement");
-    let head: &[u8] = &[
-        0xA1, 0x01, 0xA5, 0x01, 0x02, 0x03, 0x38, 0x18, 0x20, 0x01, 0x21, 0x58, 0x20,
-    ];
-    assert_eq!(&body[1..1 + head.len()], head, "COSE ECDH key layout moved");
-    let xs = 1 + head.len();
-    let mut x = [0u8; 32];
-    x.copy_from_slice(&body[xs..xs + 32]);
-    assert_eq!(&body[xs + 32..xs + 35], &[0x22, 0x58, 0x20]);
-    let mut y = [0u8; 32];
-    y.copy_from_slice(&body[xs + 35..xs + 67]);
-    (x, y)
-}
 
 /// `{2: encrypted pinUvAuthToken}` — 16 bytes of IV plus the 32-byte token.
 fn parse_token(plat: &Platform, body: &[u8]) -> [u8; 32] {
@@ -544,7 +415,16 @@ fn drive(jobs: Jobs, taps: SyncSender<Tap>, _signals: Arc<Signals>) {
 fn panel_bench(
     host: impl FnOnce(Jobs, SyncSender<Tap>, Arc<Signals>) + Send + 'static,
 ) -> PanelLinks {
-    let store = crate::store::open(None, None).expect("a memory-backed store");
+    panel_bench_over(None, host)
+}
+
+/// …over the flash image at `image` when there is one, so the host can read back what
+/// the panel wrote to the store.
+fn panel_bench_over(
+    image: Option<PathBuf>,
+    host: impl FnOnce(Jobs, SyncSender<Tap>, Arc<Signals>) + Send + 'static,
+) -> PanelLinks {
+    let store = crate::store::open(image, None).expect("the bench's store");
     let fs: &'static RefCell<rsk_fs::Fs<crate::store::EmuStore>> =
         Box::leak(Box::new(RefCell::new(rsk_fs::Fs::new(store))));
     let rng: &'static RefCell<crate::rng::EmuRng> = Box::leak(Box::new(RefCell::new(
@@ -766,7 +646,7 @@ fn an_open_menu_does_not_hold_a_power_cycle() {
 }
 
 /// …and only an operator's. `PoweredPort::attach` queues a power cycle per USB/IP
-/// import and `usbip::listen` accepts them in an unbounded loop, so a peer that
+/// import and `usbip_server::listen` accepts them in an unbounded loop, so a peer that
 /// reconnects in a loop would otherwise close every on-panel screen on its first
 /// poll — the denial `UI_YIELD_FLOOR_MS` exists to stop (audit run-35), and worse
 /// than the one it stops, because no touch resets a floor that is not applied.
@@ -996,6 +876,152 @@ fn drive_panel_presence(jobs: Jobs, taps: SyncSender<Tap>, signals: Arc<Signals>
 #[test]
 fn the_panels_presence_flags_are_the_transports() {
     panel_bench(drive_panel_presence);
+}
+
+/// `rsk_display`'s crate-private `EF_DISPLAY`: the record declining onboarding writes, a
+/// factory wipe removes and a reboot does not put back — so its absence is the wipe.
+const EF_DISPLAY: u16 = 0xE030;
+/// Past `rsk_display`'s 800 ms `HOLD_MS` with room for a late poll, and short of that hold
+/// plus the success pop after it, so the finger is up before the panel reads its pad again.
+const WIPE_HOLD_MS: u64 = 2_000;
+/// What the hold, the wipe, its success pop and the reboot may take together.
+const WIPE_BOUND: Duration = Duration::from_secs(30);
+
+/// Whether the flash image at `image` holds `fid`, or `None` while the device is rewriting
+/// it whole. Mounts a copy: a mount that meets a torn image repairs it, and would write that
+/// repair over the device's own file.
+fn stored(image: &Path, fid: u16) -> Option<bool> {
+    let copy = image.with_extension("probe");
+    std::fs::copy(image, &copy).ok()?;
+    let store = crate::store::open(Some(copy), None).ok()?;
+    let mut fs = rsk_fs::Fs::new(store);
+    fs.scan();
+    Some(fs.has_data(fid))
+}
+
+/// How many members a getInfo answer carries. `encIdentifier` and `encCredStoreState` need
+/// the seed and the grant a boot provisions, so a store wiped with no reboot after it
+/// answers two fewer — silently, where a lookup would ask a `strict-up` build for a touch.
+fn info_members(body: &[u8]) -> u8 {
+    assert_eq!(body[0], CTAP2_OK, "getInfo");
+    match body[1] {
+        0xB8 => body[2],
+        head => head & 0x1F,
+    }
+}
+
+/// Whether the panel reads its pad within `bound`: two contacts it ignores fit in the
+/// one-slot channel only once the first was taken. Reports where [`push`] would panic.
+fn reads_its_pad(taps: &SyncSender<Tap>, bound: Duration) -> bool {
+    let p = nowhere();
+    let deadline = Instant::now() + bound;
+    let mut sent = 0;
+    while sent < 2 && Instant::now() < deadline {
+        match taps.try_send(Tap::at(p.x, p.y)) {
+            Ok(()) => sent += 1,
+            Err(TrySendError::Full(_)) => std::thread::sleep(Duration::from_millis(5)),
+            Err(TrySendError::Disconnected(_)) => return false,
+        }
+    }
+    sent == 2
+}
+
+/// The panel's factory reset wipes, then queues its reboot for the worker, which a board
+/// services on its idle tick. The emulator never read that request: the panel parked on it
+/// for good, and the host was answered from a store nothing had provisioned again.
+fn drive_panel_factory_reset(jobs: Jobs, taps: SyncSender<Tap>, image: &Path) {
+    let skip = target(|p| rsk_ui::hit_onboard(p) == Some(rsk_ui::OnboardChoice::Skip));
+    push(&taps, Tap::at(skip.x, skip.y));
+    settle(&taps);
+    assert!(
+        wait_until(TAP_TIMEOUT, || stored(image, EF_DISPLAY) == Some(true)),
+        "declining onboarding writes the record the wipe is seen by"
+    );
+    let provisioned = info_members(&ask(&jobs, get_info_req()));
+    for step in [
+        nav_tab(rsk_ui::NavTab::Settings),
+        target(|p| rsk_ui::hit_settings_root(p) == Some(rsk_ui::RootEntry::Security)),
+        target(|p| rsk_ui::hit_security(p) == Some(rsk_ui::SecurityEntry::FactoryReset)),
+    ] {
+        push(&taps, Tap::at(step.x, step.y));
+        settle(&taps);
+    }
+    let hold = target(rsk_ui::hit_del_hold);
+    push(
+        &taps,
+        Tap {
+            hold: Duration::from_millis(WIPE_HOLD_MS),
+            ..Tap::at(hold.x, hold.y)
+        },
+    );
+    // A host command queued before the wipe would end the hold instead, so wait it out.
+    assert!(
+        wait_until(WIPE_BOUND, || stored(image, EF_DISPLAY) == Some(false)),
+        "the panel never wiped the store"
+    );
+
+    // The panel reads its pad again only once the worker has taken its request; a board
+    // answers a command queued before that from the wiped store, so ask only after it.
+    let reading = reads_its_pad(&taps, WIPE_BOUND);
+    let members = info_members(&ask(&jobs, get_info_req()));
+    assert_eq!(
+        (reading, members),
+        (true, provisioned),
+        "a panel reset must bring the device back: reading its pad, provisioned for the host"
+    );
+}
+
+#[test]
+fn a_factory_reset_on_the_panel_reboots_the_device() {
+    let image =
+        std::env::temp_dir().join(format!("rsk-emu-panel-reset-{}.img", std::process::id()));
+    let _ = std::fs::remove_file(&image);
+    let driven = image.clone();
+    panel_bench_over(Some(image.clone()), move |jobs, taps, _signals| {
+        drive_panel_factory_reset(jobs, taps, &driven)
+    });
+    let _ = std::fs::remove_file(image.with_extension("probe"));
+    let _ = std::fs::remove_file(image);
+}
+
+/// A board builds every applet afresh after the panel's wipe, so PIV lays its default PIN
+/// down again on the next SELECT. The emulator kept the applet that had provisioned its
+/// files, and VERIFY with the default PIN answered `6A88` until the process restarted.
+#[test]
+fn piv_takes_its_default_pin_again_after_a_panel_reset() {
+    use rsk_piv::files::{DEFAULT_PIN, REF_PIN};
+    let image = std::env::temp_dir().join(format!(
+        "rsk-emu-panel-reset-piv-{}.img",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&image);
+    let driven = image.clone();
+    panel_bench_over(Some(image.clone()), move |jobs, taps, _signals| {
+        let sw = |jobs: &Jobs, data: Vec<u8>| {
+            let (reply, answer) = mpsc::channel();
+            jobs.send(Job::Apdu(data), reply)
+                .expect("the device thread is alive");
+            let body = answered(&answer);
+            [body[body.len() - 2], body[body.len() - 1]]
+        };
+        let aid = rsk_piv::PIV_AID;
+        let select = [&[0x00, 0xA4, 0x04, 0x00, aid.len() as u8][..], aid].concat();
+        assert_eq!(
+            sw(&jobs, select.clone()),
+            [0x90, 0x00],
+            "PIV provisions its files"
+        );
+        drive_panel_factory_reset(jobs.clone(), taps, &driven);
+        let mut verify = vec![0x00, 0x20, 0x00, REF_PIN, DEFAULT_PIN.len() as u8];
+        verify.extend_from_slice(&DEFAULT_PIN);
+        assert_eq!(
+            (sw(&jobs, select), sw(&jobs, verify)),
+            ([0x90, 0x00], [0x90, 0x00]),
+            "a factory-reset PIV must take its default PIN"
+        );
+    });
+    let _ = std::fs::remove_file(image.with_extension("probe"));
+    let _ = std::fs::remove_file(image);
 }
 
 // --- the class, not the site -----------------------------------------------

@@ -10,7 +10,7 @@ Clients are the stock Yubico tooling: `ykman oath` on the command line and the
 subcommand; OATH is driven entirely through those. Both `ykman oath` and the
 Yubico Authenticator gate on a `Yubico YubiKey` reader name, so they only see
 the device on the opt-in `VIDPID=Yubikey5` build; the default RS-Key build
-enumerates as `RS-Key Security Key` (VID:PID `0x1209:0x0001`) and stays invisible
+enumerates as `RS-Key Security Key` (VID:PID `0x1209:0xF1D2`) and stays invisible
 to them. Build that flavor when you want to drive OATH from the Yubico tools
 ([build.md](../build.md)).
 
@@ -80,6 +80,10 @@ are *not* computed there and show a placeholder instead:
 The **Yubico Authenticator** GUI shows all TOTP codes live and re-derives them
 each period. Touch and HOTP entries get a tap-to-reveal button instead.
 
+For only-increasing accounts, a bulk read persists the challenge marks before
+returning codes. A flash read failure refuses the command with `6581` and no
+codes; marks already saved for earlier accounts stay advanced.
+
 ## Touch-required accounts
 
 ```sh
@@ -124,12 +128,14 @@ ykman oath access forget            # drop the cached password
 ```
 
 How it works on-card: the password becomes an HMAC key (PBKDF2 over the
-password, salted with the device serial, done host-side by `ykman`). On every
-fresh connection the card issues a random challenge; the host must answer with
-`HMAC(key, challenge)` before any account command is allowed. The card
-answers the host's challenge with the same key (mutual proof). Selecting the
-applet again re-locks it. The compare is constant-time and full-length, so a
-truncated or guessed response can't brute-force its way in one byte at a time.
+password, salted with the device serial, done host-side by `ykman`). Selecting
+the applet issues a random challenge, and the host must answer with
+`HMAC(key, challenge)` before any account command is allowed. The card answers
+the host's challenge with the same key (mutual proof). The proof then holds, as
+on a YubiKey, until another application is selected, the card is reset, or the
+key is unplugged; a SELECT of OATH while it is already selected keeps it. The
+compare is constant-time and full-length, so a truncated or guessed response
+can't brute-force its way in one byte at a time.
 
 Footguns:
 
@@ -161,7 +167,9 @@ is always required for it** — on a fresh connection, whether or not an access
 password is also configured, and again after every re-select. `VERIFY CODE` is
 gated the same way. Set the PIN with `nitropy nk3 secrets set-pin`; the card
 demands a touch when it mints one, so a PIN cannot be planted on a key someone
-briefly picked up.
+briefly picked up. An access password set later keeps the PIN: the password
+then opens the applet and the PIN the safe, and the PIN alone opens nothing
+else.
 
 With **neither** a PIN nor an access password the store is open to anything on
 the CCID interface, exactly as the credential list is — that is the code-less

@@ -20,6 +20,8 @@ import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import claims_gate  # noqa: E402
 
+pytestmark = pytest.mark.assurance
+
 ROOT = claims_gate.ROOT
 PAGE = "README.md"
 
@@ -776,7 +778,7 @@ def test_a_claim_above_every_hard_wrap_is_the_control(tree):
     The same claim on the same page with no wrap ABOVE it keeps its line under
     the join, so its sibling going red is the wraps and not a blanket miscount.
     Measured with the join put back: this case passes while the sibling reports
-    12 lines early (`docs/protocol.md:1189` for the 1201 the file holds) — the
+    12 lines early (`docs/protocol.md:1192` for the 1201 the file holds) — the
     drift is the durable half of that, the line numbers move with the prose.
     """
     page, wraps = worst_wrapped(tree)
@@ -978,7 +980,7 @@ def test_a_shape_derived_from_the_registry_blinds_the_rule(tree):
 
 
 def test_the_row_and_not_the_helper(tree):
-    """`check.sh` runs `python scripts/claims_gate.py`. Fourteen of thirty gates
+    """The gate runs `python scripts/claims_gate.py`. Fourteen of thirty gates
     here were byte-identical to baseline when their entry function's non-zero
     return was flipped to zero — the exit PATH was unheld, this file among them.
     A shared case drives that generically now; this drives it over THIS rule's

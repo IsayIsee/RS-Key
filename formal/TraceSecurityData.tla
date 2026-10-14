@@ -6,13 +6,13 @@
 (*****************************************************************************)
 EXTENDS RSKeySecurityState, Integers
 
-TraceSteps == 74
-BoundaryPcs == {0, 1, 2, 9, 10, 11, 12, 13, 14, 15, 16, 19, 20, 27, 28, 35, 36, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 72, 74}
+TraceSteps == 75
+BoundaryPcs == {0, 1, 2, 9, 10, 11, 12, 13, 14, 15, 16, 19, 20, 27, 28, 35, 36, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 73, 75}
 BetaMutationBoundary == 19
 AlphaMutationBoundary == 20
-OutcomeBoundaryPcs == {9, 19, 20, 27, 28, 35, 36, 41, 47, 48, 53, 54, 58, 60, 72}
+OutcomeBoundaryPcs == {9, 19, 20, 27, 28, 35, 36, 41, 47, 48, 53, 54, 58, 60, 73}
 OutcomeMutationBoundary == 9
-GateBoundaryPcs == {11, 13, 43, 44, 50, 51, 74}
+GateBoundaryPcs == {11, 13, 43, 44, 50, 51, 75}
 
 TraceStutter == UNCHANGED vars
 
@@ -21,7 +21,7 @@ BoundaryRaw(i) ==
         pinRetriesRaw |-> -1,
         alwaysUvRecordLen |-> -1,
         alwaysUvRaw |-> -1,
-        persistentGrantRecord |-> FALSE,
+        persistentGrantRecord |-> TRUE,
         backupSealedRecord |-> FALSE,
         seedPlainRecord |-> TRUE,
         seedEncryptedRecord |-> FALSE,
@@ -46,7 +46,7 @@ BoundaryRaw(i) ==
         pinRetriesRaw |-> -1,
         alwaysUvRecordLen |-> -1,
         alwaysUvRaw |-> -1,
-        persistentGrantRecord |-> FALSE,
+        persistentGrantRecord |-> TRUE,
         backupSealedRecord |-> FALSE,
         seedPlainRecord |-> TRUE,
         seedEncryptedRecord |-> FALSE,
@@ -71,7 +71,7 @@ BoundaryRaw(i) ==
         pinRetriesRaw |-> -1,
         alwaysUvRecordLen |-> -1,
         alwaysUvRaw |-> -1,
-        persistentGrantRecord |-> FALSE,
+        persistentGrantRecord |-> TRUE,
         backupSealedRecord |-> FALSE,
         seedPlainRecord |-> TRUE,
         seedEncryptedRecord |-> FALSE,
@@ -96,7 +96,7 @@ BoundaryRaw(i) ==
         pinRetriesRaw |-> -1,
         alwaysUvRecordLen |-> -1,
         alwaysUvRaw |-> -1,
-        persistentGrantRecord |-> FALSE,
+        persistentGrantRecord |-> TRUE,
         backupSealedRecord |-> FALSE,
         seedPlainRecord |-> TRUE,
         seedEncryptedRecord |-> FALSE,
@@ -121,7 +121,7 @@ BoundaryRaw(i) ==
         pinRetriesRaw |-> -1,
         alwaysUvRecordLen |-> -1,
         alwaysUvRaw |-> -1,
-        persistentGrantRecord |-> FALSE,
+        persistentGrantRecord |-> TRUE,
         backupSealedRecord |-> FALSE,
         seedPlainRecord |-> TRUE,
         seedEncryptedRecord |-> FALSE,
@@ -146,7 +146,7 @@ BoundaryRaw(i) ==
         pinRetriesRaw |-> -1,
         alwaysUvRecordLen |-> -1,
         alwaysUvRaw |-> -1,
-        persistentGrantRecord |-> FALSE,
+        persistentGrantRecord |-> TRUE,
         backupSealedRecord |-> FALSE,
         seedPlainRecord |-> TRUE,
         seedEncryptedRecord |-> FALSE,
@@ -171,7 +171,7 @@ BoundaryRaw(i) ==
         pinRetriesRaw |-> -1,
         alwaysUvRecordLen |-> -1,
         alwaysUvRaw |-> -1,
-        persistentGrantRecord |-> FALSE,
+        persistentGrantRecord |-> TRUE,
         backupSealedRecord |-> FALSE,
         seedPlainRecord |-> TRUE,
         seedEncryptedRecord |-> FALSE,
@@ -196,7 +196,7 @@ BoundaryRaw(i) ==
         pinRetriesRaw |-> -1,
         alwaysUvRecordLen |-> -1,
         alwaysUvRaw |-> -1,
-        persistentGrantRecord |-> FALSE,
+        persistentGrantRecord |-> TRUE,
         backupSealedRecord |-> FALSE,
         seedPlainRecord |-> TRUE,
         seedEncryptedRecord |-> FALSE,
@@ -221,7 +221,7 @@ BoundaryRaw(i) ==
         pinRetriesRaw |-> -1,
         alwaysUvRecordLen |-> -1,
         alwaysUvRaw |-> -1,
-        persistentGrantRecord |-> FALSE,
+        persistentGrantRecord |-> TRUE,
         backupSealedRecord |-> FALSE,
         seedPlainRecord |-> TRUE,
         seedEncryptedRecord |-> FALSE,
@@ -246,7 +246,7 @@ BoundaryRaw(i) ==
         pinRetriesRaw |-> -1,
         alwaysUvRecordLen |-> -1,
         alwaysUvRaw |-> -1,
-        persistentGrantRecord |-> FALSE,
+        persistentGrantRecord |-> TRUE,
         backupSealedRecord |-> FALSE,
         seedPlainRecord |-> TRUE,
         seedEncryptedRecord |-> FALSE,
@@ -271,7 +271,7 @@ BoundaryRaw(i) ==
         pinRetriesRaw |-> -1,
         alwaysUvRecordLen |-> -1,
         alwaysUvRaw |-> -1,
-        persistentGrantRecord |-> FALSE,
+        persistentGrantRecord |-> TRUE,
         backupSealedRecord |-> FALSE,
         seedPlainRecord |-> TRUE,
         seedEncryptedRecord |-> FALSE,
@@ -971,7 +971,7 @@ BoundaryRaw(i) ==
         pinRetriesRaw |-> 7,
         alwaysUvRecordLen |-> -1,
         alwaysUvRaw |-> -1,
-        persistentGrantRecord |-> FALSE,
+        persistentGrantRecord |-> TRUE,
         backupSealedRecord |-> FALSE,
         seedPlainRecord |-> TRUE,
         seedEncryptedRecord |-> FALSE,
@@ -992,11 +992,11 @@ BoundaryRaw(i) ==
         warmBootRaw |-> FALSE,
         channelRaw |-> 0,
         keydevRamRaw |-> FALSE ]
-      [] i = 72 -> [ pinRecordLen |-> -1,
+      [] i = 73 -> [ pinRecordLen |-> -1,
         pinRetriesRaw |-> -1,
         alwaysUvRecordLen |-> -1,
         alwaysUvRaw |-> -1,
-        persistentGrantRecord |-> FALSE,
+        persistentGrantRecord |-> TRUE,
         backupSealedRecord |-> FALSE,
         seedPlainRecord |-> TRUE,
         seedEncryptedRecord |-> FALSE,
@@ -1017,11 +1017,11 @@ BoundaryRaw(i) ==
         warmBootRaw |-> FALSE,
         channelRaw |-> 16777220,
         keydevRamRaw |-> FALSE ]
-      [] i = 74 -> [ pinRecordLen |-> -1,
+      [] i = 75 -> [ pinRecordLen |-> -1,
         pinRetriesRaw |-> -1,
         alwaysUvRecordLen |-> -1,
         alwaysUvRaw |-> -1,
-        persistentGrantRecord |-> FALSE,
+        persistentGrantRecord |-> TRUE,
         backupSealedRecord |-> FALSE,
         seedPlainRecord |-> TRUE,
         seedEncryptedRecord |-> FALSE,
@@ -1052,7 +1052,7 @@ BoundaryAbstract(i) ==
         permissionAcfg |-> FALSE,
         rpBound |-> FALSE,
         pinSet |-> FALSE,
-        persistentGrant |-> FALSE ]
+        persistentGrant |-> TRUE ]
       [] i = 1 -> [ live |-> FALSE,
         permissionMc |-> FALSE,
         permissionGa |-> FALSE,
@@ -1060,7 +1060,7 @@ BoundaryAbstract(i) ==
         permissionAcfg |-> FALSE,
         rpBound |-> FALSE,
         pinSet |-> FALSE,
-        persistentGrant |-> FALSE ]
+        persistentGrant |-> TRUE ]
       [] i = 2 -> [ live |-> FALSE,
         permissionMc |-> FALSE,
         permissionGa |-> FALSE,
@@ -1068,7 +1068,7 @@ BoundaryAbstract(i) ==
         permissionAcfg |-> FALSE,
         rpBound |-> FALSE,
         pinSet |-> FALSE,
-        persistentGrant |-> FALSE ]
+        persistentGrant |-> TRUE ]
       [] i = 9 -> [ live |-> FALSE,
         permissionMc |-> FALSE,
         permissionGa |-> FALSE,
@@ -1076,7 +1076,7 @@ BoundaryAbstract(i) ==
         permissionAcfg |-> FALSE,
         rpBound |-> FALSE,
         pinSet |-> FALSE,
-        persistentGrant |-> FALSE ]
+        persistentGrant |-> TRUE ]
       [] i = 10 -> [ live |-> FALSE,
         permissionMc |-> FALSE,
         permissionGa |-> FALSE,
@@ -1084,7 +1084,7 @@ BoundaryAbstract(i) ==
         permissionAcfg |-> FALSE,
         rpBound |-> FALSE,
         pinSet |-> FALSE,
-        persistentGrant |-> FALSE ]
+        persistentGrant |-> TRUE ]
       [] i = 11 -> [ live |-> FALSE,
         permissionMc |-> FALSE,
         permissionGa |-> FALSE,
@@ -1092,7 +1092,7 @@ BoundaryAbstract(i) ==
         permissionAcfg |-> FALSE,
         rpBound |-> FALSE,
         pinSet |-> FALSE,
-        persistentGrant |-> FALSE ]
+        persistentGrant |-> TRUE ]
       [] i = 12 -> [ live |-> FALSE,
         permissionMc |-> FALSE,
         permissionGa |-> FALSE,
@@ -1100,7 +1100,7 @@ BoundaryAbstract(i) ==
         permissionAcfg |-> FALSE,
         rpBound |-> FALSE,
         pinSet |-> FALSE,
-        persistentGrant |-> FALSE ]
+        persistentGrant |-> TRUE ]
       [] i = 13 -> [ live |-> FALSE,
         permissionMc |-> FALSE,
         permissionGa |-> FALSE,
@@ -1108,7 +1108,7 @@ BoundaryAbstract(i) ==
         permissionAcfg |-> FALSE,
         rpBound |-> FALSE,
         pinSet |-> FALSE,
-        persistentGrant |-> FALSE ]
+        persistentGrant |-> TRUE ]
       [] i = 14 -> [ live |-> FALSE,
         permissionMc |-> FALSE,
         permissionGa |-> FALSE,
@@ -1116,7 +1116,7 @@ BoundaryAbstract(i) ==
         permissionAcfg |-> FALSE,
         rpBound |-> FALSE,
         pinSet |-> FALSE,
-        persistentGrant |-> FALSE ]
+        persistentGrant |-> TRUE ]
       [] i = 15 -> [ live |-> FALSE,
         permissionMc |-> FALSE,
         permissionGa |-> FALSE,
@@ -1124,7 +1124,7 @@ BoundaryAbstract(i) ==
         permissionAcfg |-> FALSE,
         rpBound |-> FALSE,
         pinSet |-> FALSE,
-        persistentGrant |-> FALSE ]
+        persistentGrant |-> TRUE ]
       [] i = 16 -> [ live |-> FALSE,
         permissionMc |-> FALSE,
         permissionGa |-> FALSE,
@@ -1132,7 +1132,7 @@ BoundaryAbstract(i) ==
         permissionAcfg |-> FALSE,
         rpBound |-> FALSE,
         pinSet |-> FALSE,
-        persistentGrant |-> FALSE ]
+        persistentGrant |-> TRUE ]
       [] i = 19 -> [ live |-> FALSE,
         permissionMc |-> FALSE,
         permissionGa |-> FALSE,
@@ -1356,23 +1356,23 @@ BoundaryAbstract(i) ==
         permissionAcfg |-> FALSE,
         rpBound |-> FALSE,
         pinSet |-> TRUE,
-        persistentGrant |-> FALSE ]
-      [] i = 72 -> [ live |-> FALSE,
+        persistentGrant |-> TRUE ]
+      [] i = 73 -> [ live |-> FALSE,
         permissionMc |-> FALSE,
         permissionGa |-> FALSE,
         permissionCm |-> FALSE,
         permissionAcfg |-> FALSE,
         rpBound |-> FALSE,
         pinSet |-> FALSE,
-        persistentGrant |-> FALSE ]
-      [] i = 74 -> [ live |-> FALSE,
+        persistentGrant |-> TRUE ]
+      [] i = 75 -> [ live |-> FALSE,
         permissionMc |-> FALSE,
         permissionGa |-> FALSE,
         permissionCm |-> FALSE,
         permissionAcfg |-> FALSE,
         rpBound |-> FALSE,
         pinSet |-> FALSE,
-        persistentGrant |-> FALSE ]
+        persistentGrant |-> TRUE ]
       [] OTHER -> CHOOSE x : FALSE
 
 BoundaryOutcomeRaw(i) ==
@@ -1390,7 +1390,7 @@ BoundaryOutcomeRaw(i) ==
       [] i = 54 -> "Authorized"
       [] i = 58 -> "Authorized"
       [] i = 60 -> "Rejected"
-      [] i = 72 -> "Authorized"
+      [] i = 73 -> "Authorized"
       [] OTHER -> CHOOSE x : FALSE
 
 BoundaryOutcomeB(i) ==
@@ -1408,7 +1408,7 @@ BoundaryOutcomeB(i) ==
       [] i = 54 -> "Authorized"
       [] i = 58 -> "Authorized"
       [] i = 60 -> "Rejected"
-      [] i = 72 -> "Authorized"
+      [] i = 73 -> "Authorized"
       [] OTHER -> CHOOSE x : FALSE
 
 GateKind(i) ==
@@ -1418,7 +1418,7 @@ GateKind(i) ==
       [] i = 44 -> "mc"
       [] i = 50 -> "mc"
       [] i = 51 -> "mc"
-      [] i = 74 -> "reset"
+      [] i = 75 -> "reset"
       [] OTHER -> CHOOSE x : FALSE
 
 GateRk(i) ==
@@ -1428,7 +1428,7 @@ GateRk(i) ==
       [] i = 44 -> FALSE
       [] i = 50 -> FALSE
       [] i = 51 -> TRUE
-      [] i = 74 -> FALSE
+      [] i = 75 -> FALSE
       [] OTHER -> CHOOSE x : FALSE
 
 GateOutcomeRaw(i) ==
@@ -1438,7 +1438,7 @@ GateOutcomeRaw(i) ==
       [] i = 44 -> "Authorized"
       [] i = 50 -> "Rejected"
       [] i = 51 -> "Rejected"
-      [] i = 74 -> "Rejected"
+      [] i = 75 -> "Rejected"
       [] OTHER -> CHOOSE x : FALSE
 
 TraceAction(i) ==
@@ -1503,19 +1503,20 @@ TraceAction(i) ==
       [] i = 58 -> TraceStutter
       [] i = 59 -> WrongPin
       [] i = 60 -> TraceStutter
-      [] i = 61 -> PowerCut
+      [] i = 61 -> /\ PowerCut /\ gate'.ppuatRec = TRUE
       [] i = 62 -> ResetStart
       [] i = 63 -> PressDown
       [] i = 64 -> /\ TouchConfirm /\ pres'.pressing = TRUE
       [] i = 65 -> ResetConfirmed
       [] i = 66 -> ResetSweepSecrets
       [] i = 67 -> ResetSweepSecrets
-      [] i = 68 -> ResetSweepGates
+      [] i = 68 -> ResetSweepSecrets
       [] i = 69 -> ResetSweepGates
-      [] i = 70 -> ResetFinish
-      [] i = 71 -> PressUp
-      [] i = 72 -> Tick
-      [] i = 73 -> TraceStutter
+      [] i = 70 -> ResetSweepGates
+      [] i = 71 -> ResetFinish
+      [] i = 72 -> PressUp
+      [] i = 73 -> Tick
+      [] i = 74 -> TraceStutter
       [] OTHER -> CHOOSE x : FALSE
 
 =============================================================================

@@ -9,7 +9,7 @@ software. It passes the FIDO Alliance Conformance Tools clean (CTAP2.3
 real client software is in the [interop matrix](../interop.md).
 
 The default build enumerates as "RS-Key", its own USB identity
-(`0x1209:0x0001`, the pid.codes FOSS VID), not a YubiKey one
+(`0x1209:0xF1D2`, the pid.codes FOSS VID), not a YubiKey one
 ([build.md](../build.md)). FIDO clients don't care: browsers, `python-fido2`,
 and libfido2 bind the FIDO HID usage page, not the VID/PID, so everything on this
 page works regardless of USB identity. The one exception is `ykman`, which gates
@@ -63,6 +63,11 @@ and has to run within ten seconds of a replug (see [Factory
 reset](#factory-reset)). `rsk fido set-pin` asks for the current PIN when changing,
 the new one twice, and prints the resulting `clientPin` state.
 
+When the policy requires a PIN change, the replacement must differ from the
+current PIN. If its verifier cannot be read, the change returns
+`CTAP2_ERR_OTHER` (`0x7F`) and remains pending; retry with a different PIN once
+storage is readable.
+
 Once a PIN is set, registering a **passkey** refuses to run without it (CTAP
 `PUAT_REQUIRED`, `0x36`). The browser collects the PIN and retries. That is
 expected, not a fault.
@@ -112,7 +117,10 @@ on the same seed reproduces the same keys.
 
 Legacy **U2F** (CTAP1, `U2F_V2`) works the same way for older 2FA setups: the
 register/authenticate pair is non-resident, with a monotonic signature counter,
-attested by the device's end-entity certificate.
+attested by the device's end-entity certificate. With `alwaysUv` on, U2F is
+switched off, since a touch verifies nobody: the device stops announcing it, as a
+YubiKey does, and refuses its commands. The display build with a PIN set is the
+exception, where each U2F operation asks for the PIN on the panel.
 
 ## Signature counters
 
@@ -121,7 +129,9 @@ for a cloned key. RS-Key keeps one **per resident credential**: a passkey starts
 0 and only its own logins advance it, so colluding sites can't read a shared global
 counter to gauge how much you use the key elsewhere (WebAuthn §6.1.1). A non-resident
 second-factor credential stores nothing on the device, so it reports 0. Legacy U2F
-keeps the single monotonic counter that protocol expects.
+keeps the single monotonic counter that protocol expects, and a U2F registration
+asserted over CTAP2 (a site's `appid` login) reports and advances that same counter,
+as a YubiKey 5.8.0 does, so the site sees one rising sequence on both paths.
 
 A counter the flash cannot serve is refused rather than reported as 0: an assertion
 the device could not count is not one it signs, so a read fault costs you the login
@@ -177,7 +187,7 @@ ML-DSA-44 (`-48`).
 
 ## Extensions supported
 
-getInfo advertises seven extensions:
+getInfo advertises nine extensions:
 
 | Extension | What it does | Limit |
 |---|---|---|
@@ -187,14 +197,81 @@ getInfo advertises seven extensions:
 | `credBlob` | small opaque blob stored with the credential | 128 bytes |
 | `largeBlobKey` + large blobs | per-credential key into a device blob store | 4 KB store |
 | `largeBlob` (CTAP 2.3) | the blob itself, per credential, inside the assertion | 4046 B/credential; **replaces** the row above, `largeblob-ext` build only |
-| `minPinLength` | the device hands its PIN-length policy to the RP | |
+| `minPinLength` | the device hands its PIN-length policy to an authorized RP | |
+| `pinComplexityPolicy` | tells an authorized RP whether trivial PINs are refused | registration only |
+| `uvm` | signed record of the presence and PIN methods used | registration and authentication |
 | `thirdPartyPayment` | the secure-payment-confirmation marker | |
+
+Read or strengthen the PIN policy with `rsk fido pin-policy`. For example:
+
+```sh
+rsk fido pin-policy
+rsk fido pin-policy --complexity --min-length 6 --rp-id login.example --force-change
+```
+
+The second command authenticates with the current FIDO PIN. It enables the
+complexity rule, raises the minimum length, authorizes that RP to read both
+policy extensions, and requires a new PIN before another token can be issued.
+Complexity and minimum length cannot be lowered without a factory reset, which
+also removes credentials. Without `--force-change`, enabling complexity applies
+to future PIN changes; it does not evaluate the existing PIN. Repeating
+`--rp-id` supplies a replacement list; omitting it preserves the current list.
+The same complexity rule applies when choosing a FIDO PIN on the key's display.
 
 `hmac-secret` has a use outside the browser: it is what lets `age` encrypt to
 this device with no smart card involved. See [age.md](age.md).
 
 Enterprise attestation is supported but off until enabled. The `ep` option flips
 to true once an org key is installed. See [attestation.md](attestation.md).
+
+## previewSign (experimental, off by default)
+
+A build option, not part of the default image:
+
+```sh
+cargo build --release -p firmware --features preview-sign
+```
+
+The default image carries none of it, and its getInfo does not list it.
+
+`previewSign` is Yubico's draft WebAuthn extension for signing a site's own data,
+not a login challenge, with a key the device holds. This build speaks draft v4,
+the shape python-fido2 2.2.1's `PreviewSignExtension` sends. At registration the
+site asks for ESP256-split-ARKG (COSE `-65539`). The device then mints an ARKG-P256
+seed for the credential and returns its public half inside a second attestation
+object. The site derives signing keys from that seed on its own, as many as it
+likes. To sign, it sends the SHA-256 digest of its data plus the derived key's
+ARKG arguments. The device derives the matching private key, and the signature
+verifies as plain ESP256 over the data.
+
+Nothing is stored. The signing key handle ties the seed to its credential with a
+MAC, so the extension changes no flash record.
+
+On a build with the trusted display, the touch that releases a signature asks
+*Sign data?*, not *Sign in?*: the digest the site asked for is what gets signed,
+and a compromised host could have put its own there.
+
+The site fixes each key's presence rule at registration (`flags`). A
+`require-up` key, the default, answers a signature request with `up: false`
+with `CTAP2_ERR_UP_REQUIRED` (`0x3B`), and a `require-uv` key wants a verified
+user as well. An `unattended` key (`0b000`) needs no touch: a request with
+`up: false` is signed with UP clear and nothing asked, as on a YubiKey 5.8.0.
+
+Deliberate deviations from the draft:
+
+- **The seed's attestation object is `none`.** The draft attests the signing
+  key in the credential's own format. A YubiKey 5.8.0 answers `fmt: "none"` with
+  an empty statement beside a packed credential, and so does this build. Only
+  under enterprise attestation, which that YubiKey was not measured with, is the
+  seed attested, by the credential's key and chain.
+- **Not with an ML-DSA credential.** Asking for previewSign on a credential whose
+  algorithm is ML-DSA is refused with `CTAP2_ERR_UNSUPPORTED_ALGORITHM` (`0x26`).
+  That response would carry two attestation objects beside a multi-kilobyte key,
+  and it would not fit one CTAPHID message.
+
+Only ESP256-split-ARKG is served. The other algorithms the drafts named (ESP256,
+ES256, ESP256-split) are refused with `0x26`, as the draft says. The COSE ids are
+the ARKG draft's placeholders, so expect a later build to change them.
 
 ## Factory reset
 

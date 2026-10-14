@@ -1,6 +1,20 @@
 [workspace]
 resolver = "2"
-members = ["firmware", "rsk-wipe", "crates/rsk-sdk", "crates/rsk-fs", "crates/rsk-usb", "crates/rsk-crypto", "crates/rsk-fido", "crates/rsk-openpgp", "crates/rsk-rsa", "crates/rsk-ec", "crates/rsk-sha512", "crates/rsk-devconf", "crates/rsk-mgmt", "crates/rsk-oath", "crates/rsk-otp", "crates/rsk-piv", "crates/rsk-rescue", "crates/rsk-vendor", "crates/rsk-device", "crates/rsk-display", "crates/rsk-store", "crates/rsk-led", "crates/rsk-phy", "crates/rsk-ui", "crates/rsk-bip39", "crates/rsk-slip39", "crates/rsk-mldsa", "crates/rsk-bench"]
+members = ["firmware", "rsk-wipe", "crates/rsk-sdk", "crates/rsk-fs", "crates/rsk-usb", "crates/rsk-crypto", "crates/rsk-fido", "crates/rsk-openpgp", "crates/rsk-rsa", "crates/rsk-ec", "crates/rsk-sha512", "crates/rsk-devconf", "crates/rsk-mgmt", "crates/rsk-oath", "crates/rsk-otp", "crates/rsk-piv", "crates/rsk-x509", "crates/rsk-rescue", "crates/rsk-vendor", "crates/rsk-device", "crates/rsk-display", "crates/rsk-store", "crates/rsk-led", "crates/rsk-phy", "crates/rsk-ui", "crates/rsk-bip39", "crates/rsk-slip39", "crates/rsk-mldsa", "crates/rsk-bench", "crates/rsk-secret"]
+
+# One lint policy for every member, each opting in with `[lints] workspace = true`.
+# Kani proofs and cargo-llvm-cov instrumentation use explicit cfg names.
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)", "cfg(coverage)"] }
+# Lifted only at the roots of `firmware`, `rsk-wipe` and `rsk-rsa` (docs/unsafe.md).
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+# The clippy.toml bans: a bare wipe or a `Zeroizing` anywhere is an error, and a
+# site that must keep one says why in an `#[expect(..., reason = ...)]`.
+disallowed_methods = "deny"
+disallowed_types = "deny"
 
 # Embassy crates are versioned together; pin them all to the same git source so
 # they stay mutually compatible. We track `branch = "main"`, not a crates.io
@@ -30,6 +44,7 @@ rsk-fido = { path = "crates/rsk-fido" }
 rsk-openpgp = { path = "crates/rsk-openpgp" }
 rsk-rsa = { path = "crates/rsk-rsa" }
 rsk-ec = { path = "crates/rsk-ec" }
+rsk-x509 = { path = "crates/rsk-x509" }
 # Fast byte-identical SHA-512/384 for the Cortex-M33 — a compact rolled
 # compression that fits the XIP cache, replacing `sha2`'s ~28 KB unrolled soft
 # backend on the FIDO key-derivation ratchet without changing any credential key.
@@ -66,6 +81,9 @@ rsk-mldsa = { path = "crates/rsk-mldsa" }
 # firmware `bench` feature (a debug/measurement build, never shipped). Host-tested
 # + Kani-proved; the device computes the summary so the reported number is gated.
 rsk-bench = { path = "crates/rsk-bench" }
+# Key-grade bytes in a type that wipes itself — the bottom of the crate graph, so
+# every crate that holds a secret, the algorithm crates included, can name it.
+rsk-secret = { path = "crates/rsk-secret" }
 # Trusted-display driver stack — compiled ONLY into the `display` firmware flavor
 # (and rsk-ui's host tests), never the standard key (all `dep:`-gated). embedded-
 # graphics: no_std 2D text/primitives + the `DrawTarget` trait the renderer is

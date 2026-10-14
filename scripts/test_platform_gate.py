@@ -85,6 +85,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import gate_lines
 import platform_gate
 
+pytestmark = pytest.mark.assurance
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 MODEL_REGISTRY = """\
@@ -658,6 +660,7 @@ def test_the_checkout_derives_what_it_is_measured_at():
         "board-only:51_secure_reboot",
         "board-only:53_ccid_pinpad",
         "board-only:54_sram_residue",
+        "board-only:55_stack_residue",
         "board-only:90_otp_mkek_migration",
     }, kinds["board-only"]
     assert set(kinds["model"]) == {
@@ -1166,9 +1169,9 @@ def test_the_floors_are_apart_not_in_total(tree):
 # --- the row that runs it ------------------------------------------------------
 
 
-def test_check_sh_runs_this_gate():
+def test_check_assurance_sh_runs_this_gate():
     """Its own row, including that a `#` in front of it is not an invocation."""
-    text = (ROOT / "scripts/check.sh").read_text()
+    text = (ROOT / "scripts/check-assurance.sh").read_text()
     assert gate_lines.runs(text, "scripts/platform_gate.py")
 
 
@@ -1332,7 +1335,7 @@ def test_a_board_result_owes_a_capture_not_just_a_file_that_exists(tree):
     assert tree.problems() == []
 
 
-# --- the raw record a hardware measurement leaves behind (stage 2 п.9) --------
+# --- the raw record a hardware measurement leaves behind (stage 2 item 9) --------
 #
 # The registry already obliged a stepping and an artifact PATH; what it could not
 # say was what has to be IN the artifact, so a discharge could cite any file that
@@ -2408,7 +2411,7 @@ def test_the_owner_is_refused_by_its_vocabulary_and_not_by_an_escape(tree):
 # claims stale" — measured at 0: `grep -c stale scripts/platform_gate.py` found
 # nothing, and the tree's only freshness machine (`evidence_gate.freshness`) reads
 # bundles, not this registry. These cases are that axis. Being stale is NOT a
-# finding, for the reason it is not one there: 11 of the 11 bundles that record a
+# finding, for the reason it is not one there: 11 of the 17 bundles that record a
 # commit are stale, so a red on staleness is a gate red at rest. The staleness
 # lands on the page, and the page's byte-diff is what makes it something a person
 # has to write down — which is what the last three cases here drive.
@@ -2493,7 +2496,7 @@ def test_the_freshness_of_a_row_is_on_the_page(tree):
 
 
 def test_what_goes_stale_with_a_row_is_derived_from_its_own_links(tree):
-    """Stage 10 п.3's `dependent claims`, from the links the registry carries."""
+    """Stage 10 item 3's `dependent claims`, from the links the registry carries."""
     registered = platform_gate.entries(tree.root, [])
     assert platform_gate.inherits("PLAT-BUILD-001", registered) == ["SEC-T-001"]
     tree.edit(
@@ -2509,7 +2512,7 @@ def test_what_goes_stale_with_a_row_is_derived_from_its_own_links(tree):
 
 # --- rule 10: an accepted risk says where it is published ----------------------
 #
-# Stage 9 п.5 and stage 10 п.5 both turn on it and both were unverifiable:
+# Stage 9 item 5 and stage 10 item 5 both turn on it and both were unverifiable:
 # measured, ZERO rows of any `assurance/*.toml` referenced `docs/limitations.md`,
 # and `scripts/test_threat_gate.py` has a case recording it as cited by nothing.
 # The obligation is DERIVED from the page — a row is owed a pin when the page

@@ -15,7 +15,7 @@ use rsk_fs::storage::faults::{RemoveStuck, Undead};
 ///
 /// `deleted` rises a whole batch at a time, so `==` lets it step PAST the budget
 /// without ever equalling it and the valve stops guarding. Five undead records
-/// instead — 5 divides none of the four applets' budgets (768 · 257 · 512 · 1039).
+/// instead — 5 divides none of the four applets' budgets (1024 · 257 · 512 · 1039).
 /// The fixture's ceiling is what makes that failure READABLE: without it the
 /// mutation hangs the suite rather than failing it.
 #[test]
@@ -75,4 +75,31 @@ fn a_refused_removal_stops_the_sweep_instead_of_spinning_into_the_valve() {
          refusal and the delete budget, not the `?`, is what stopped it",
         medium.attempts()
     );
+}
+
+#[test]
+fn a_removed_value_with_unremoved_metadata_cannot_complete_either_wipe_phase() {
+    use rsk_fs::storage::faults::MetaStuck;
+    for fid in [data_object_fid(0).unwrap(), EF_PIN] {
+        let (backend, medium) = MetaStuck::new();
+        let mut fs = Fs::new(backend);
+        fs.scan();
+        fs.put(fid, b"value").unwrap();
+        fs.meta_add(fid, b"policy").unwrap();
+        medium.stick(true);
+        assert_eq!(wipe_piv(&mut fs), Err(Sw::MEMORY_FAILURE));
+        assert!(!medium.live(fid));
+        assert!(medium.live(rsk_fs::EF_META));
+        medium.stick(false);
+        let mut retained = [0; 6];
+        assert_eq!(fs.meta_find(fid, &mut retained), Some(6));
+        assert_eq!(&retained, b"policy");
+    }
+}
+
+#[test]
+fn unknown_wire_slots_have_no_certificate_fid() {
+    for slot in [0, 0x81, 0x96, 0xff] {
+        assert_eq!(cert_fid_for_slot(slot), None);
+    }
 }

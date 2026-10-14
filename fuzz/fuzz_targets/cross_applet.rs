@@ -32,14 +32,15 @@
 //! | `0xF1` | `reset_card()` — the ICC power transition |
 //! | `0xF2` | `reset_chaining()` — what the out-of-band on-pad VERIFY does first |
 //! | `0xF3` | `refresh_enabled()` — re-read the capability mask from flash |
-//! | `0xF4` | `factory_wipe()` — the device-wide reset |
+//! | `0xF4` | `Fs::factory_wipe` as the trusted display runs it — the device-wide reset |
 //! | `0xF5` | `handle_otp_hid(slot, payload)` — the keyboard interface |
 //! | `0xF6` | WRITE CONFIG `USB_ENABLED = be16(hi, lo)` — the capability mask |
 //! | anything else | a raw APDU, framed by `apdu_frame::next_frame`: one length byte then that many bytes, or `0xFF` for the extended-Lc escape |
 //!
 //! Beyond not panicking, the oracle is the set of rules this crate owns and no
-//! applet can enforce for itself: a reply always carries its status word and fits
-//! one CCID frame; an application the capability mask has disabled answers
+//! applet can enforce for itself: a reply carries its status word and fits one
+//! CCID frame, or is empty for a class the card does not serve and for no other;
+//! an application the capability mask has disabled answers
 //! `FILE_NOT_FOUND` to SELECT and an ungated one never does; a card reset leaves
 //! nothing selected for the PIN pad to paint for; READ CONFIG never goes silent;
 //! the mask never reports a capability this build does not have; a factory wipe
@@ -55,6 +56,7 @@ use rsk_devconf::raw::TAG_USB_ENABLED;
 use rsk_device::{CcidApplets, Hooks};
 use rsk_fs::Fs;
 use rsk_fs::storage::ram::RamStorage;
+use rsk_sdk::apdu::INS_GET_RESPONSE;
 use rsk_sdk::{Apdu, Sw};
 
 mod apdu_frame;
@@ -71,6 +73,7 @@ const INS_GENERATE: u8 = 0x47;
 /// The ykman vendor commands the FIDO transport serves: READ CONFIG must always
 /// answer, and WRITE CONFIG is its ungated twin on the default build.
 const CTAP_READ_CONFIG: u8 = 0x42;
+#[cfg(not(feature = "strict-config"))]
 const CTAP_WRITE_CONFIG: u8 = 0x43;
 /// The four PIN references the trusted display's pad can be asked to collect.
 const PIN_REFS: [u8; 4] = [
@@ -168,6 +171,9 @@ impl rsk_rescue::Platform for RescueBoard {
     }
     fn request_reboot(&mut self, _bootsel: bool) {}
     fn read_page58_lock_raw(&self) -> Option<u32> {
+        Some(0)
+    }
+    fn pre_otp_left(&self) -> Option<u16> {
         Some(0)
     }
     fn lock_page58(&mut self) -> bool {
@@ -303,7 +309,17 @@ fuzz_target!(|data: &[u8]| {
                 );
             }
             OP_FACTORY_WIPE => {
-                if ccid.factory_wipe() {
+                // The trusted display's device-wide wipe, with its predicates
+                // (rsk-display's pin.rs), run while the CCID applets stay live.
+                let wiped = fs
+                    .borrow_mut()
+                    .factory_wipe(
+                        rsk_fido::survives_factory_reset,
+                        rsk_fido::is_fido_seed_fid,
+                        rsk_device::gates_wiped_last,
+                    )
+                    .is_ok();
+                if wiped {
                     // The wipe is not allowed to spare `EF_DEV_CONF`, or an owner
                     // who disabled every application has no way back.
                     assert_eq!(
@@ -335,15 +351,25 @@ fuzz_target!(|data: &[u8]| {
                 let hi = byte(data, &mut i);
                 let lo = byte(data, &mut i);
                 let blob = [0x04, TAG_USB_ENABLED, 0x02, hi, lo];
+                #[cfg(not(feature = "strict-config"))]
                 let _ = ccid.ctap_mgmt(CTAP_WRITE_CONFIG, &blob);
+                // That arm is the default build's; `strict-config` compiles none, so
+                // the record goes in through the function it calls. Without this the
+                // mask is stuck on and the SELECT gate above only ever checks one side.
+                #[cfg(feature = "strict-config")]
+                let _ = rsk_devconf::persist_touched(
+                    &rsk_sdk::serial4(SERIAL_ID),
+                    &mut fs.borrow_mut(),
+                    &blob[1..],
+                );
             }
             // A raw APDU. The length is its own byte rather than the opcode's:
             // reserving `0x00`–`0x06` would otherwise make every 4-, 5- and
             // 6-byte APDU — case 1 and case 2 — unreachable.
             _ => {
                 // `next_frame`, not `chunk`: this is the only target that reaches
-                // the dispatcher's 2038-byte chaining buffer and its GET RESPONSE
-                // tail, and neither is reachable from a one-byte length.
+                // the dispatcher's chaining buffer and its GET RESPONSE tail, and
+                // neither is reachable from a one-byte length.
                 let Some((frame, tail)) = next_frame(&data[i..]) else {
                     break;
                 };
@@ -355,7 +381,18 @@ fuzz_target!(|data: &[u8]| {
                 if matches!(Apdu::parse(raw), Ok(p) if p.ins == INS_GENERATE) {
                     continue;
                 }
-                let _ = status(ccid.handle_apdu(raw, 0));
+                let res = ccid.handle_apdu(raw, 0);
+                // An unserved class is answered with nothing, as by a YubiKey 5.8.0;
+                // a GET RESPONSE under one still collects a tail that is owed.
+                match Apdu::parse(raw) {
+                    Ok(p) if !p.is_served_over_ccid() && p.ins != INS_GET_RESPONSE => {
+                        assert!(res.is_empty(), "an unserved class got {res:02X?}");
+                    }
+                    Ok(p) if !p.is_served_over_ccid() && res.is_empty() => {}
+                    _ => {
+                        let _ = status(res);
+                    }
+                }
             }
         }
     }

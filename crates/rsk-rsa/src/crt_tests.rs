@@ -7,6 +7,22 @@ use crate::fixtures::{
 };
 use crate::vectors::SIGN_SHA256;
 
+#[test]
+fn crt_plaintext_refuses_short_output_and_degenerate_collision_without_panicking() {
+    let key = test_key();
+    let mut out = [0xa5; 640];
+    assert_eq!(
+        crt_plaintext(&key, &mut out[..639]),
+        Err(RsaError::BadWidth)
+    );
+    assert_eq!(out, [0xa5; 640]);
+    for value in [0, 1] {
+        let mut ambiguous = [0; 320];
+        ambiguous[63] = value;
+        assert_eq!(parse_rsa_blob(&ambiguous), Ok((160, false)));
+    }
+}
+
 // A 256-byte PKCS#1-shaped block guaranteed < n (leads 00 01), so the raw private
 // op is well-defined and the fault check passes.
 fn sample_block() -> [u8; 256] {
@@ -141,13 +157,13 @@ fn private_op_reproduces_an_openssl_signature() {
 
     for (i, (digest, want)) in SIGN_SHA256.iter().enumerate() {
         let hash = hex(digest);
-        let dlen = crate::pkcs1v15::DI_SHA256.len() + hash.len();
+        let dlen = crate::fixtures::DI_SHA256.len() + hash.len();
         let mlen = 256;
         let mut em = [0xffu8; MAX_RSA_BYTES];
         em[0] = 0x00;
         em[1] = 0x01;
         em[mlen - dlen - 1] = 0x00;
-        em[mlen - dlen..mlen - hash.len()].copy_from_slice(crate::pkcs1v15::DI_SHA256);
+        em[mlen - dlen..mlen - hash.len()].copy_from_slice(crate::fixtures::DI_SHA256);
         em[mlen - hash.len()..mlen].copy_from_slice(&hash);
 
         let mut sig = [0u8; MAX_RSA_BYTES];
@@ -203,4 +219,29 @@ fn crt_from_plain_rejects_non_mult32_width() {
     // The loader half of the same rule, and the one PSO:CDS reports: a legacy
     // `P‖Q` blob of a width the asm cannot take answers `WRONG_LENGTH`.
     assert_eq!(crt_from_plain(&[0u8; 200]).err(), Some(RsaError::BadWidth));
+}
+
+#[test]
+fn a_key_on_composite_factors_fails_the_pairwise_test() {
+    // A 1024-bit product of two primes as `p`, beside a real prime: the pair
+    // assembles -- `d` exists modulo lcm(p - 1, q - 1) -- and cannot sign.
+    let composite = hex(crate::vectors::N1024_HEX);
+    let key = crate::rsa_from_pqe(crate::RSA_PUB_EXP_BE, &composite, &hex(P_HEX))
+        .expect("the pair assembles, so only the trial signature can refuse it");
+    let mut rng = SeqRng(1);
+    assert_eq!(pairwise_consistent(&key, &mut rng), Err(RsaError::Failed));
+    assert_eq!(pairwise_consistent(&test_key(), &mut rng), Ok(()));
+    assert_eq!(pairwise_consistent(&test_key_1024(), &mut rng), Ok(()));
+}
+
+#[test]
+fn a_direct_crt_field_copy_refuses_a_short_destination_without_writing() {
+    let mut output = [0xa5; 4];
+    assert_eq!(
+        put_field(&mut output[..1], &[0x12, 0x34]),
+        Err(RsaError::BadWidth)
+    );
+    assert_eq!(output, [0xa5; 4]);
+    assert_eq!(put_field(&mut output, &[0x12, 0x34]), Ok(()));
+    assert_eq!(output, [0xa5, 0xa5, 0x12, 0x34]);
 }

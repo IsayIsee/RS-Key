@@ -15,7 +15,8 @@ offline. The production path closes that in two independent stages:
 1. **OTP master key (MKEK)**: fuse a random 32-byte key into RP2350 OTP
    page 58 and re-root all at-rest sealing in it, then hard-lock the page so
    neither BOOTSEL nor non-secure code can ever read it. A flash dump alone
-   is now worthless.
+   is then worthless — for every record the burn actually re-roots; a
+   PIN-derived one waits for its own reference to be presented (stage 1).
 2. **Secure boot**: fuse your public-key fingerprint and the
    `SECURE_BOOT_ENABLE` bit so the bootrom runs *only* images you signed.
    Attacker-flashed firmware (the remaining way to read the OTP key) no
@@ -84,9 +85,16 @@ Every burning command takes `--dry-run` and a typed confirmation.
 What it does: writes a random DEVK (device attestation key) and MKEK (master
 sealing key) plus anti-imaging chaff into OTP page 58, ECC-verified, then
 locks the page. On the next boot the firmware notices the provisioned key and
-**migrates everything already on the device** (FIDO seed, PIV keys, OpenPGP
-key wraps, PIN verifiers) under the new root. Your enrolled credentials
-survive. That is the point of the migration layer.
+**migrates what it can reach** (FIDO seed, attestation key, the persistent
+`pcmr` grant, PIV keys) under the new root. Anything keyed by a PIN is the
+exception — re-keying it needs the secret — so each PIN verifier and the DEK copy
+behind it moves at that reference's own next VERIFY. OpenPGP's private keys are
+sealed under that DEK and never move. **After the burn, present every PIN once,
+before `lock-page58`** (the list is below the commands). Ordinary use presents
+most of them, but PW3, the PIV PUK and an OpenPGP resetting code may never come
+up, and until one is presented it stays on the pre-burn root
+([limitations](limitations.md)). Your enrolled credentials survive. That is the
+point of the migration layer.
 
 > **At-rest hardening pass.** The migration re-seals each secret under the new
 > root. But the flash store is append-only, so the old chip-serial-sealed
@@ -108,8 +116,31 @@ rsk reboot bootsel               # picotool needs the chip in BOOTSEL
 rsk otp burn --dry-run           # preview every step
 rsk otp burn                     # typed confirmation; keys are generated and FORGOTTEN
 picotool reboot -a               # back to the app; migration runs at boot
+# present every PIN once (the list below), then unplug and replug the key
 rsk otp lock-page58              # firmware applies the page-58 hard lock (typed confirm)
 ```
+
+Presenting a PIN moves its verifier to the fused root, and OpenPGP's DEK copy
+with it. Each of these presents one and leaves its value as it was:
+
+- **FIDO PIN**: any use of it, such as `rsk fido list-passkeys`. On the display
+  build, the device PIN moves the first time it unlocks the panel.
+- **PIV PIN**: any VERIFY, such as the one before a signature. The **PUK** has no
+  VERIFY of its own: change it to itself (`ykman piv access change-puk`, or the
+  panel's Change PUK).
+- **OpenPGP**: in `gpg --card-edit`, `verify` presents PW1, and `admin` then
+  `passwd` option 3 with the same Admin PIN presents PW3. A resetting code is
+  presented only by an unblock, so if you use one, set it again with option 4.
+- **OATH OTP PIN**, if you set one: present it once through the tool that set it
+  (`nitropy`). Its move is best-effort: a flash that refuses the rewrite leaves it
+  where it was, and the answer does not say so.
+
+The replug runs the at-rest pass again, which scrubs the pre-burn copies these
+moves superseded. The lock would wait for two of these moves in any case: a FIDO
+seed that a PIN set before the burn wraps, and a legacy OATH OTP PIN. What this
+does not close is a verifier planted over BOOTSEL later. The device still takes
+the pre-burn arm, since it cannot tell a planted verifier from a PIN nobody
+presented yet ([limitations](limitations.md)).
 
 Facts to internalize first:
 
@@ -126,6 +157,19 @@ Facts to internalize first:
 - After `lock-page58`, `picotool otp get` on page 58 fails with a permission
   error forever. Only the secure-mode firmware can read the keys. That failure
   is the lock working.
+- The lock is also a latch. From the next boot on, the firmware opens no
+  device-sealed record under the pre-burn key or in the clear, so one planted
+  over BOOTSEL stays shut. A device locked by a build before 0x0A67 has the lock
+  without the latch: update it, then run `lock-page58` again, which checks the
+  same migration first.
+- `lock-page58` waits for the migration. The firmware refuses the burn (`6985`,
+  before any touch) until a boot has moved every device-sealed record to the
+  fused key, and the tool says which are left. A replug is the usual fix; a FIDO
+  seed a PIN wrapped before the burn moves at that PIN's first use, and a legacy
+  OATH OTP-PIN at its next VERIFY, each followed by a replug. A key that already
+  carries the latch needs none of that: the tool asks the firmware, says so and
+  exits 0. The one exception is a fused key the firmware cannot read (`FFFE`),
+  which still gets its remedy.
 - A seed backup (`rsk backup`) made before or after is unaffected. Backups
   carry the seed value, which gets re-sealed under whatever root the device
   has.
@@ -148,7 +192,8 @@ can always drag a correctly-signed UF2 (recovery path).
 - **Losing the signing key bricks the board for new firmware** (the current
   signed image keeps booting). Back the key up before enabling enforcement.
 - `DEBUG_DISABLE` is burned along the way. SWD is gone (flashing is BOOTSEL
-  anyway).
+  anyway), for anyone short of a lab: a laser on a decapped A4 turns it back on
+  ([threat model](threat-model.md)).
 
 ### 2a. Generate a signing key (once, off-repo)
 
