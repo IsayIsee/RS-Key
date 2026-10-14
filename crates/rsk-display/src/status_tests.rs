@@ -657,10 +657,12 @@ fn the_no_host_card_is_not_pulsed_over_by_the_spinner() {
     assert!(ui.no_host_info, "the no-host clock never ran out");
 
     // First tick paints the card; the next one must leave it alone.
-    env.local(&mut ui).ambient_repaint(1, &mut spin, &mut breathe);
+    env.local(&mut ui)
+        .ambient_repaint(1, &mut spin, &mut breathe);
     let writes = ui.panel.writes;
     let damage = ui.panel.damage_presentations;
-    env.local(&mut ui).ambient_repaint(2, &mut spin, &mut breathe);
+    env.local(&mut ui)
+        .ambient_repaint(2, &mut spin, &mut breathe);
     assert_eq!(
         ui.panel.writes, writes,
         "the spinner pulsed over the no-host card"

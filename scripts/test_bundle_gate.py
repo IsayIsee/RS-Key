@@ -985,7 +985,7 @@ def test_a_disposed_inverse_kill_is_admitted_and_counted_apart(tmp_path, disposi
      ("gate_ledger", "walk=4", "walk=5"),
      ("gate_assumption", "FALSE=91", "FALSE=90"),
      ("gate_ghost", "24 route(s)", "25 route(s)"),
-     ("gate_matrix", "1476 cells", "1477 cells")],
+     ("gate_matrix", "1599 cells", "1600 cells")],
 )
 def test_a_transcribed_gate_line_that_the_gate_does_not_derive(tmp_path, key, old, new):
     """The second half of the hole `35afe59` named and did not close: editing
@@ -1088,12 +1088,12 @@ def test_the_assumption_total_read_is_the_line_s_first():
 
 @pytest.mark.parametrize(
     "key,old,new,says",
-    [("gate_matrix", "(38 covered", "(109 covered", "109 covered"),
+    [("gate_matrix", "(38 covered", "(112 covered", "112 covered"),
      ("gate_ghost", "21 action(s)", "24 action(s)", "24 action(s) record"),
-     ("gate_matrix", "1183 gap", "109 gap", "109 gap"),
+     ("gate_matrix", "1303 gap", "112 gap", "112 gap"),
      ("gate_ghost", "11 guard(s)", "21 guard(s)", "21 guard(s)"),
      ("gate_matrix", "0 conditional", "38 conditional", "38 conditional"),
-     ("gate_matrix", "41 P0-family", "36 P0-family", "36 P0-family properties")],
+     ("gate_matrix", "41 P0-family", "39 P0-family", "39 P0-family properties")],
 )
 def test_a_transcribed_unit_count_is_the_one_that_noun_was_written_for(
     tmp_path, key, old, new, says
@@ -1103,8 +1103,8 @@ def test_a_transcribed_unit_count_is_the_one_that_noun_was_written_for(
     bare-integer rule — "do these digits stand somewhere in the derived line".
 
     Every swap here takes its digits off a SIBLING count of the very line it
-    falsifies (`109` off `109 out-of-scope`, `24` off `24 route(s)`, `21` off `21
-    action(s)`, `38` off `38 covered`, `36` off `36 build`), so the old rules are
+    falsifies (`112` off `112 out-of-scope`, `24` off `24 route(s)`, `21` off `21
+    action(s)`, `38` off `38 covered`, `39` off `39 build`), so the old rules are
     all satisfied and only [`bundle_gate.CLAIMED_UNIT`] can speak: measured, every
     one was exit 0 before it. A swap onto a number the line NO LONGER carries is
     a case the bare-integer rule answers as well, which is how `(139 covered`
@@ -1153,13 +1153,13 @@ def test_a_unit_count_the_gate_line_quotes_again_is_prose(tmp_path):
     before it and 0 written after — measured end to end, both ways. Both halves
     are here, because a carve-out with no negative arm is a rule switched off.
 
-    `109` is a number the derived line HAS — off `109 out-of-scope` — so the
+    `112` is a number the derived line HAS — off `112 out-of-scope` — so the
     bare-integer rule stays quiet and this case is about the carve-out and nothing
     else."""
     root = tree(tmp_path)
 
     def quote(doc):
-        doc["result"]["gate_matrix"] += " The tier this replaced read `109 covered`."
+        doc["result"]["gate_matrix"] += " The tier this replaced read `112 covered`."
 
     rewrite(root, quote)
     assert findings(root) == [], findings(root)
@@ -1173,20 +1173,20 @@ def test_a_unit_count_the_gate_line_restates_unquoted_is_a_transcription(tmp_pat
     root = tree(tmp_path)
 
     def restate(doc):
-        doc["result"]["gate_matrix"] += " The tier this replaced read 109 covered."
+        doc["result"]["gate_matrix"] += " The tier this replaced read 112 covered."
 
     rewrite(root, restate)
     problems = findings(root)
-    assert [p for p in problems if "says `109 covered`" in p], problems
+    assert [p for p in problems if "says `112 covered`" in p], problems
     assert len(problems) == 1, problems
 
 
 @pytest.mark.parametrize(
     "key,old,new,says",
-    [("gate_matrix", "36 build configurations", "38 build-configurations",
+    [("gate_matrix", "39 build configurations", "38 build-configurations",
       "38 build-configurations"),
-     ("gate_matrix", "1183 gap)", "109 gaps)", "109 gaps"),
-     ("gate_matrix", "1476 cells", "109 cell", "109 cell"),
+     ("gate_matrix", "1303 gap)", "112 gaps)", "112 gaps"),
+     ("gate_matrix", "1599 cells", "112 cell", "112 cell"),
      ("gate_ghost", "11 guard(s)", "24 guards", "24 guards"),
      ("gate_ghost", "21 action(s) record", "24 actions record", "24 actions")],
 )
