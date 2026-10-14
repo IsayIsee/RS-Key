@@ -33,7 +33,7 @@
 (* (crates/rsk-display/src/presence.rs:85), so no second operation can       *)
 (* repaint the glass mid-wait; card-swap is structurally absent and the one  *)
 (* bit is faithful. The touch controller reports LEVEL, not edges            *)
-(* (crates/rsk-display/src/power.rs:53-63) -- which is exactly why the       *)
+(* (crates/rsk-display/src/power.rs:63-82) -- which is exactly why the       *)
 (* stale-press question exists and is modelled. Timeouts and CTAPHID cancel  *)
 (* collapse into the one Dismiss exit: every non-Allow exit must read the    *)
 (* same, and that collapse IS the third invariant.                           *)
@@ -58,7 +58,7 @@ CONSTANTS
     \* panel reports contact LEVEL, not edges, so a finger already down when a
     \* screen paints reads as a tap ON that screen. The defence is the release
     \* edge, twice: `Ui::touch_armed` + `armed_touch`
-    \* (crates/rsk-display/src/power.rs:53-63 -- a contact predating this
+    \* (crates/rsk-display/src/power.rs:63-82 -- a contact predating this
     \* screen stays disarmed) and the
     \* ceremony's own `wait_release_ceremony` at card entry
     \* (crates/rsk-display/src/presence.rs:192 -- "a finger already down
@@ -67,7 +67,7 @@ CONSTANTS
     BugPreScreenTouchApproves,
     \* The Allow/Deny separation taken out: `hit_confirm` maps a tap to the
     \* button whose disjoint rectangle contains it, a stray touch above the
-    \* band to None (crates/rsk-ui/src/lib.rs:254-262), and every other exit --
+    \* band to None (crates/rsk-ui/src/lib.rs:257-265), and every other exit --
     \* Deny, the power button mid-ceremony, timeout, CTAPHID cancel -- ends the
     \* ceremony as Cancelled, "no signature is ever produced without the
     \* deliberate on-screen hold" (crates/rsk-display/src/presence.rs:114-118).
@@ -142,7 +142,7 @@ PadDone ==
               /\ UNCHANGED << pending, viol >>
 
 \* The finger lifts: the level-based controller sees no contact, `armed_touch`
-\* re-arms, and the next press is fresh (crates/rsk-display/src/power.rs:54-57).
+\* re-arms, and the next press is fresh (crates/rsk-display/src/power.rs:64-71).
 Lift ==
     /\ shown = Card
     /\ stale

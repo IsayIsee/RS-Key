@@ -14,7 +14,7 @@
 (*    dump until a compaction lap pushes it off the medium. `EF_HARDENED`    *)
 (*    is the marker that says the lap has run (crates/rsk-fs/src/lib.rs:29-124);*)
 (*    the boot runs the lap iff the marker is ABSENT and sets it only after  *)
-(*    `compact()` returns Ok (crates/rsk-fs/src/lib.rs:126-144) -- marker      *)
+(*    `compact()` returns Ok (crates/rsk-fs/src/lib.rs:126-148) -- marker      *)
 (*    AFTER scrub, so a torn lap re-runs. Every LAZY re-key OR DELETE after  *)
 (*    the lap must re-arm it (`request_rescrub`) -- a tombstone appends too  *)
 (*    -- or the superseded copy stays readable forever: run-35 found FOUR OF *)

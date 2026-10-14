@@ -23,7 +23,7 @@ pub(super) fn home<D: DrawTarget<Color = Rgb565>>(t: &mut D, v: &HomeView) -> Re
 }
 
 fn home_body<D: DrawTarget<Color = Rgb565>>(t: &mut D, v: &HomeView) -> Result<(), D::Error> {
-    if matches!(v.status, StatusKind::Idle) {
+    if v.shows_card() {
         // The design's left-aligned "✓ Ready" header — a calm white headline beside the
         // accent check, not a lone centred accent word.
         glyph::draw(
@@ -61,7 +61,7 @@ fn home_card<D: DrawTarget<Color = Rgb565>>(t: &mut D, v: &HomeView) -> Result<(
         t,
         crate::row_rect(HOME_CARD_TOP, 0),
         Glyph::Usb,
-        "USB connected",
+        usb_row_label(v),
         None,
         false,
         false,
@@ -94,6 +94,18 @@ fn home_card<D: DrawTarget<Color = Rgb565>>(t: &mut D, v: &HomeView) -> Result<(
     )
 }
 
+/// The USB row's label. The firmware has no live "a host is attached right now" signal
+/// (`usb_attach` is the time since this boot's attach), so it states what is true in every
+/// case: a device a host has set up stays set up when the cable comes out, and one that
+/// has never seen a host says so.
+fn usb_row_label(v: &HomeView) -> &'static str {
+    if v.no_host_info {
+        "No USB host"
+    } else {
+        "USB host set up"
+    }
+}
+
 fn repaint_home_row<D: DrawTarget<Color = Rgb565>>(
     t: &mut D,
     v: &HomeView,
@@ -103,6 +115,15 @@ fn repaint_home_row<D: DrawTarget<Color = Rgb565>>(
     let mut clipped = t.clipped(&eg_rect(bounds));
     group_card(&mut clipped, HOME_CARD_TOP, 3)?;
     match index {
+        0 => row_body(
+            &mut clipped,
+            bounds,
+            Glyph::Usb,
+            usb_row_label(v),
+            None,
+            false,
+            false,
+        ),
         1 => row_body(
             &mut clipped,
             bounds,
@@ -143,9 +164,14 @@ pub fn render_home_change<D: DrawTarget<Color = Rgb565>>(
         return Ok(());
     }
 
-    let previous_idle = matches!(previous.status, StatusKind::Idle);
-    let next_idle = matches!(next.status, StatusKind::Idle);
-    if previous_idle && next_idle {
+    let previous_card = previous.shows_card();
+    let next_card = next.shows_card();
+    if previous_card && next_card {
+        // The USB row says whether a host ever set this device up, so it can flip
+        // under a still card — the no-host clock running out while the panel rests.
+        if previous.no_host_info != next.no_host_info {
+            repaint_home_row(t, next, 0)?;
+        }
         if previous.pin_set != next.pin_set {
             repaint_home_row(t, next, 1)?;
         }
@@ -154,7 +180,7 @@ pub fn render_home_change<D: DrawTarget<Color = Rgb565>>(
         }
         return Ok(());
     }
-    if !previous_idle && !next_idle && previous.status == next.status {
+    if !previous_card && !next_card && previous.status == next.status {
         // PIN/passkey facts are not visible while Home shows an activity state.
         return Ok(());
     }

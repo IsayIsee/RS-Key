@@ -153,9 +153,9 @@ The closed vocabulary the `Subject` column below is drawn from. Printed here bec
 | 3 | nix-community/cache-nix-action | `none` | A cache keyed on `flake.lock`. A cache hit and a cache miss must produce the same bytes; the rebuild step is what says they do. |
 | 4 | actions/cache | `none` | The cargo registry cache. Outside the Nix sandbox, so it feeds no shipped byte — `nix build` vendors from `Cargo.lock`. |
 | 5 | sigstore/cosign-installer | `none` | Installs the signer. Its pin is part of the trust base: this is the code that holds the OIDC token. |
-| 6 | resolve tag | `admission` | Shape, charset, the run's own ref, and an ancestor-of-`main`/`my_main` test. The ref test makes the published identity the release's: a run anywhere but at the tag it releases stops here. The rest is defence in depth: an actor who can push a tag also controls this file at that ref, so the primary control is a repository tag ruleset. |
-| 7 | build the 3 reproducible firmware flavors | `none` | Produces the images. A build alone establishes nothing — it is the rebuild below that turns it into evidence. |
-| 8 | reproducibility gate — rebuild all 3, require bit-identical | `bit-for-bit` | Recompiles every flavor already in the store and fails on a hash mismatch, so a non-reproducible image is never published. Says the BUILD is a function of its inputs; says nothing about what the machine code means. |
+| 6 | resolve tag | `admission` | Shape, charset, the run's own ref, and an ancestor-of-`main` test. The ref test makes the published identity the release's: a run anywhere but at the tag it releases stops here. The rest is defence in depth: an actor who can push a tag also controls this file at that ref, so the primary control is a repository tag ruleset. |
+| 7 | build the 4 reproducible firmware flavors | `none` | Produces the images. A build alone establishes nothing — it is the rebuild below that turns it into evidence. |
+| 8 | reproducibility gate — rebuild all 4, require bit-identical | `bit-for-bit` | Recompiles every flavor already in the store and fails on a hash mismatch, so a non-reproducible image is never published. Says the BUILD is a function of its inputs; says nothing about what the machine code means. |
 | 9 | generate the CycloneDX SBOM | `inventory` | The firmware crate's dependency tree, scoped to the shipped target. |
 | 10 | checksums | `integrity` | A digest of every `.uf2` and of the SBOM. It does not cover itself, its own signature or the provenance bundle — the last two are written after this step, and the attestation is what stands behind them. |
 | 11 | attest build provenance | `origin` | GitHub build provenance for the `.uf2` files this step is handed, bound to THIS reusable workflow's identity — the difference between SLSA Build L3 and L2. |
@@ -193,10 +193,10 @@ exit 1
 fi
 echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
-# 7. build the 3 reproducible firmware flavors
+# 7. build the 4 reproducible firmware flavors
 tag="${{ steps.tag.outputs.tag }}"
 mkdir -p dist
-for pkg in firmware-display-keys firmware-display-keys-strong-pin firmware-display-keys-always-uv; do
+for pkg in firmware-display-keys firmware-display-keys-strong-pin firmware-display-keys-always-uv firmware-display-lcd2; do
 echo "::group::nix build .#$pkg"
 out="$(nix build ".#$pkg" --no-link --print-out-paths)"
 label="${pkg#firmware}"; label="${label#-}"
@@ -205,13 +205,13 @@ cp "$out/$pkg.uf2" "dist/rs-key-${tag}-${label}.uf2"
 echo "::endgroup::"
 done
 ls -l dist
-# 8. reproducibility gate — rebuild all 3, require bit-identical
-for pkg in firmware-display-keys firmware-display-keys-strong-pin firmware-display-keys-always-uv; do
+# 8. reproducibility gate — rebuild all 4, require bit-identical
+for pkg in firmware-display-keys firmware-display-keys-strong-pin firmware-display-keys-always-uv firmware-display-lcd2; do
 echo "::group::nix build .#$pkg --rebuild"
 nix build ".#$pkg" --rebuild --no-link
 echo "::endgroup::"
 done
-echo "all 3 flavors rebuilt bit-identical"
+echo "all 4 flavors rebuilt bit-identical"
 # 9. generate the CycloneDX SBOM
 tag="${{ steps.tag.outputs.tag }}"
 nix develop -c cargo cyclonedx --manifest-path firmware/Cargo.toml --target thumbv8m.main-none-eabihf --format json
@@ -299,6 +299,7 @@ The build step and the reproducibility gate iterate the same list, and a differe
 | `firmware-display-keys` | `rs-key-<tag>-display-keys.uf2` | `--features display-keys`, `board = "waveshare-geek"`, `flashSize = "16M"`, `ledKind = "none"` |
 | `firmware-display-keys-strong-pin` | `rs-key-<tag>-display-keys-strong-pin.uf2` | `--features display-keys,strong-pin`, `board = "waveshare-geek"`, `flashSize = "16M"`, `ledKind = "none"` |
 | `firmware-display-keys-always-uv` | `rs-key-<tag>-display-keys-always-uv.uf2` | `--features display-keys,always-uv`, `board = "waveshare-geek"`, `flashSize = "16M"`, `ledKind = "none"` |
+| `firmware-display-lcd2` | `rs-key-<tag>-display-lcd2.uf2` | `--features display`, `board = "waveshare-touch-lcd-2"`, `flashSize = "16M"`, `ledKind = "none"` |
 
 ### Inside the sandbox
 
@@ -321,8 +322,8 @@ The files that decide what a release is. A digest here covers the parts the tabl
 | File | sha256 |
 |---|---|
 | `.github/workflows/release.yml` | `9f4218cfb9869bc458be8076f2185af6bdb734598db9b49167557dca30324a05` |
-| `.github/workflows/release-build.yml` | `45df501d17b2ca9a6dbbd363c9b62b469773c12b45660c3289ea04605662fdc2` |
-| `nix/firmware.nix` | `f6105606c43a10b3beecb7e1b69771658a83a656ac72ed04a72cfd1dbb285da1` |
+| `.github/workflows/release-build.yml` | `2dba3fafba3f376489b2b98e44bdf276e64f5e604ae922cca9ea997cb35b0f6a` |
+| `nix/firmware.nix` | `f840d97c458837ecbbf306814f5195b98d4b3203c007d0967fc43d0bbd7ddb45` |
 | `scripts/pt.sh` | `c55ba6255421a664c13ba8b1e3b05b01af842d3ba8e95cd986a7a46005c877ed` |
 
 The CI code that runs them, pinned by commit:
@@ -338,7 +339,7 @@ The CI code that runs them, pinned by commit:
 
 The toolchain closure — `flake.lock`, `Cargo.lock` and the tools they pin — is the table above this section, and is deliberately not restated here: one copy, one place it can rot.
 
-Published assets: `SHA256SUMS`, `SHA256SUMS.sigstore.json`, `rs-key-<tag>-display-keys-always-uv.uf2`, `rs-key-<tag>-display-keys-strong-pin.uf2`, `rs-key-<tag>-display-keys.uf2`, `rs-key-<tag>-sbom.cdx.json`, `rs-key-<tag>.intoto.jsonl`.
+Published assets: `SHA256SUMS`, `SHA256SUMS.sigstore.json`, `rs-key-<tag>-display-keys-always-uv.uf2`, `rs-key-<tag>-display-keys-strong-pin.uf2`, `rs-key-<tag>-display-keys.uf2`, `rs-key-<tag>-display-lcd2.uf2`, `rs-key-<tag>-sbom.cdx.json`, `rs-key-<tag>.intoto.jsonl`.
 
 ### What this table does not read
 
@@ -425,7 +426,7 @@ immutable.
 ### Steps 2 and 3 before flashing: `rsk flash`
 
 ```sh
-rsk flash rs-key-<tag>-default.uf2    # the board in BOOTSEL
+rsk flash rs-key-<tag>-display-lcd2.uf2    # the board in BOOTSEL
 ```
 
 `rsk flash` takes a release image with `SHA256SUMS` and

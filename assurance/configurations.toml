@@ -233,7 +233,7 @@ columns = [
   "firmware-2mb", "firmware-16mb", "firmware-strict-config", "keygen-bench",
   "core1-stats", "bench", "fido-conformance", "ea-conformance-rpid",
   "largeblob-ext", "preview-sign", "abrobot-16m", "abrobot-4m", "seeed-xiao",
-  "tenstar-usb", "waveshare-one", "waveshare-touch-lcd",
+  "tenstar-usb", "waveshare-one", "waveshare-touch-lcd", "waveshare-geek",
 ]
 disposition = "out-of-scope"
 basis = "crate-absent"
@@ -985,61 +985,103 @@ and both `BOARD=` firmware rows pin `waveshare-one`. So the column is real and \
 WHOLLY UNEXERCISED, and what is left to decide is whether the tree should build \
 it, or whether it should be a knob of `firmware-display` instead."""
 
-# ---- The fork's board columns (Waveshare RP2350-GEEK) -----------------------
-#
-# The touchless build and the board preset it was adapted for. Same two shapes
-# as the columns above — a feature set and a board — and the same reason each
-# owes a question: `check.sh` builds these images without measuring anything
-# against them.
-
 [[question]]
 column = "firmware-display-keys"
 owner = "contributor"
 settled_by = "evidence"
 text = """
-The one-button consent path. The P0-launch authorization rows are about a \
-physical gate the operator decides at; this build keeps one — BOOTSEL, a short \
-press to confirm and a hold to decline — but changes what stands in front of \
-the operator: a 240×135 confirm page drawn by the keys UI, with no touch and no \
-on-panel PIN pad, where the touch columns have an Approve/Deny page and a pad. \
-What is open is which rows rest on the operator having SEEN the relying party \
-before deciding, and whether a hold reaches the refusal path the touch build's \
-Deny does. No evidence is produced against this column: `check.sh` builds the \
-image and runs `rsk-ui`'s unit tests, and the TLC models are about the arbiter \
-rather than the screen. Settled by evidence: a `tests/*.py` (or `tools/emu`) \
-run against a `display-keys` image that drives one confirm and one decline \
-through the gesture."""
+The second screen build, and the first with no touch pad: `uv` is unadvertised, \
+CCID pinpad is off, and the consent source is the BOOTSEL button driven through \
+`GestureWait` — an edge-and-hold machine, not the touch controller's level. \
+`SEC-DISP-001`/`-002`/`-003` are implemented a second time here rather than \
+absent, and the three rows that build the column are `rustdoc`/`clippy`/\
+`build`, none of which is an evidence class. Which class would carry them, and \
+does any of the other 37 want a row built at this column?"""
 
 [[question]]
 column = "firmware-display-keys-strong-pin"
 owner = "contributor"
 settled_by = "evidence"
-text = "As `firmware-display-keys`, plus the `firmware-strong-pin` question: on a build whose only PIN entry is the host's `setPIN`, the raised floor and the guessability rules bind that one surface — and no row runs against THIS column."
+text = """
+As `firmware-display-keys`, plus: a six-code-point PIN floor and a \
+trivially-guessable-PIN refusal. No PIN is ever entered on this build's own \
+screen — there is no touch pad — so does either rule reach a row here, or are \
+both of them host-side only?"""
 
 [[question]]
 column = "firmware-display-keys-always-uv"
 owner = "contributor"
 settled_by = "evidence"
 text = """
-As `firmware-display-keys`, plus the `firmware-always-uv` question, narrowed: \
-that column argues from the alwaysUv gate's DEMAND changing. Here there is no \
-built-in user verification at all — CTAP 2.1 §7.2.4's exception names one, and \
-a build with no pad has none — so while alwaysUv is on, the CTAP1/U2F interface \
-is disabled outright and every UV ceremony is a host PIN over USB. Which rows \
-written about an on-panel ceremony, or about U2F's presence-only gate, are \
-answered by that surface, and which are vacuous?"""
+As `firmware-display-keys`, plus: `always-uv` demands the touch on every \
+operation, and this build's touch IS the confirm page's button. Does that leave \
+`SEC-POL-*`'s comparisons identical to `firmware-always-uv`'s, stronger (one \
+gesture for one operation, nothing ambient to spend), or undecidable without a \
+row that builds it?"""
 
 [[question]]
 column = "waveshare-geek"
 owner = "maintainer"
 settled_by = "ruling"
 text = """
-The adapted board without `display-keys`: `LED_KIND=none`, \
-`presence.source = "bootsel"`, panel pins compiled as inert constants. As \
-`waveshare-touch-lcd`, nothing in `check.sh` builds `firmware` on this preset — \
-the `BOARD=` firmware rows pin it WITH `display-keys`, and the board loop builds \
-`rsk-wipe` — so the column is real and unexercised. Its sharper half is the \
-presence source: BOOTSEL is the boot ROM's button, no other board column uses \
-it, and the P0 rows about presence are written about a GPIO button. Is a \
-ROM-owned pad the same gate, and does this column earn its own row or is it a \
-knob of `firmware-display-keys`?"""
+The display-keys BOARD without the `display-keys` feature: 16 MB geometry, \
+`LED_KIND=none`, and the panel keys the touchless build reads (`madctl_scan`, \
+`win_x`/`win_y`, `cs`/`dc`/`rst`, `bl_pin`, `bl_pwm_*`) compiled as inert \
+constants. Its `SEC-DISP-001`/`-002`/`-003` rows are the `crate-absent` cell's. \
+Nothing in `check.sh` builds `firmware` on this preset either — all three GEEK \
+rows pass `--features display-keys` — so the column is real and WHOLLY \
+UNEXERCISED, and the sharper half is the question `waveshare-touch-lcd` already \
+asks: should the tree build this preset, or is the panel a knob of \
+`firmware-display-keys`? The board file's `bl_pwm_slice`/`bl_pwm_channel` exist \
+only to keep it shaped like a `display` board it is never built as, which is \
+the shape of the answer."""
+
+[[question]]
+column = "waveshare-touch-lcd-2"
+owner = "maintainer"
+settled_by = "ruling"
+text = """
+The 2" touch board as a preset: 16 MB geometry, `LED_KIND=none`, and the wiring \
+its board file declares — the PIO link on this board's own spi0 pins (GP18/19), \
+the CST816D on i2c0 (GP12/GP13), the backlight on GP15 slice 7 channel B, and \
+LCD_RST sharing GP20 with Touch_RST — compiled as inert constants, since a board \
+preset sets knobs and never a cargo feature. Its `SEC-DISP-001`/`-002`/`-003` \
+rows are therefore the `crate-absent` cell's, as the 2.8"'s and the GEEK's are. \
+The sharper half is what this column means for the touch build's cells: the \
+`covered` ones were measured on a 240×320 ST7789 with a CST328 on I2C1, and this \
+board is a 240×320 ST7789T3 with a CST816D on i2c0 — same geometry, a different \
+controller and a different touch part — so does a second trusted-display board \
+inherit those cells, or start as `gap` the way the GEEK's column did? Which row \
+would settle it is itself open."""
+
+[[question]]
+column = "firmware-display-lcd2"
+owner = "maintainer"
+settled_by = "ruling"
+text = """
+The 2" touch display as a shipped flavor (`BOARD=waveshare-touch-lcd-2`, \
+`--features display`, 16 MB, `LED_KIND=none`): the preset the \
+`waveshare-touch-lcd-2` column above describes, with the feature that actually \
+compiles the touch flow. That column is wholly unexercised because no row built \
+the preset; this one is the build the release ships, so the two now differ in \
+exactly the way that question is about. Its `SEC-DISP-*` cells are the same \
+open question — whether a second trusted-display board inherits the 2.8"'s \
+measured cells, given a CST816D on i2c0 in place of a CST328 on I2C1 on the same \
+240×320 geometry — and this column makes it sharper: the released image is \
+where those cells would have to hold. Whether the preset column survives once \
+the flavor exists, or the two collapse into one, is the ruling this asks for."""
+
+[[question]]
+column = "display-calib"
+owner = "maintainer"
+settled_by = "ruling"
+text = """
+The bench-only calibration build (`--features display-calib`, never shipped): \
+the display flow with the ambient status loop replaced by the tool's own, so the \
+panel walks four targets at known coordinates and shows the touch range solved \
+from the taps — the four numbers a board file needs and that no automated row \
+can produce. No row in `check.sh` builds it and no release ships it, so the \
+column is real and WHOLLY UNEXERCISED. The question is which P0-family rows a \
+build whose only job is reading the raw touch report can move at all — it drives \
+the panel and the I2C bus and nothing else — and whether a bench tool belongs as \
+a column in this matrix or beside the other never-shipped flavors."""

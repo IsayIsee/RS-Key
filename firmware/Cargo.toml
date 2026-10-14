@@ -191,6 +191,13 @@ display-keys = ["dep:rsk-ui", "dep:mipidsi", "dep:embedded-graphics"]
 # feature docs). OFF by default: the default image carries none of it. Build
 # `--features preview-sign`.
 preview-sign = ["rsk-fido/preview-sign"]
+# Touch-calibration tool build for a screen+touch board — BENCH ONLY, never
+# shipped: instead of the trusted-display flow, the panel walks four targets at
+# known coordinates and shows the touch range solved from the taps (see
+# `display_calib`). Its output is four numbers for the board file, so it is built
+# by hand when a panel is replaced or a new board is brought up, and it is not in
+# the release matrix. Implies `display` (it drives the same panel and touch).
+display-calib = ["display", "rsk-display/display-calib"]
 
 [[bin]]
 name = "firmware"

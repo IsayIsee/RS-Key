@@ -31,6 +31,106 @@ pub fn parse_cst328(report: &[u8]) -> Option<Point> {
     Some(Point::new(x, y))
 }
 
+/// The register a CST816D report block starts at; the driver reads six bytes
+/// from here and hands them to [`parse_cst816d`].
+pub const CST816_BLOCK: u8 = 0x01;
+
+/// Parse a CST816D report block read starting at register 0x01, returning the
+/// first finger's raw coordinate or `None` (no finger down, or a short block).
+///
+/// Byte layout: `[0]` gesture, `[1]` finger count, `[2]` X high 4 bits, `[3]` X
+/// low 8, `[4]` Y high 4, `[5]` Y low 8 — the CST816 family's single-byte
+/// register layout (0x01..0x06), unlike the CST328's 16-bit addresses. No
+/// rotation is applied here: the vendor example swaps the axes and subtracts X
+/// from the width for its *landscape* demo, and this panel is portrait, so the
+/// orientation belongs to [`TouchRange`], where a board states it once.
+pub fn parse_cst816d(report: &[u8]) -> Option<Point> {
+    if report.len() < 6 || report[1] == 0 {
+        return None;
+    }
+    let x = (((report[2] as u16) & 0x0F) << 8) | report[3] as u16;
+    let y = (((report[4] as u16) & 0x0F) << 8) | report[5] as u16;
+    Some(Point::new(x, y))
+}
+
+/// Where a controller's raw coordinates sit on the panel: the range it reports
+/// with a finger at each edge of the glass. A contact area smaller than the
+/// glass, a mount offset and a mirrored scan all show up as a range narrower
+/// than the panel or one that runs the other way — so one pair of numbers per
+/// axis states all three, and `min > max` *is* the mirror, with no flag beside
+/// it to keep in sync. Both axes are in the controller's own frame, so a board
+/// that mirrors one axis (a MADCTL scan bit) states it here rather than in the
+/// driver.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TouchRange {
+    pub x_min: u16,
+    pub x_max: u16,
+    pub y_min: u16,
+    pub y_max: u16,
+}
+
+impl TouchRange {
+    /// The identity: the controller already reports panel pixels edge to edge
+    /// (the 2.8"'s CST328 is configured at the panel resolution).
+    pub const IDENTITY: Self = Self {
+        x_min: 0,
+        x_max: crate::PANEL_W - 1,
+        y_min: 0,
+        y_max: crate::PANEL_H - 1,
+    };
+
+    /// Map a raw report onto panel pixels. A reading a little outside the calibrated span is
+    /// a fingertip that ran off the glass — a corner press reports past the edge the
+    /// calibration extrapolated to — and is pinned to the edge it left, which is what the
+    /// corner and edge of the panel need to stay reachable. A reading past the panel's
+    /// **bottom** edge is refused outright instead: that edge is the nav bar, and the frame
+    /// the controller still holds after a contact ends reads there (raw y = 3584 against a
+    /// calibrated maximum of 323, measured 2026-09-29). `None` for that, for a reading past
+    /// the edge slop, and for a degenerate axis.
+    pub fn map(&self, raw: Point) -> Option<Point> {
+        // Whichever end of `y` is numerically larger is the panel's bottom, mirrored axis or
+        // not — and that end admits nothing at all.
+        if raw.y > self.y_min.max(self.y_max) {
+            return None;
+        }
+        Some(Point::new(
+            scale(raw.x, self.x_min, self.x_max, crate::PANEL_W)?,
+            scale(raw.y, self.y_min, self.y_max, crate::PANEL_H)?,
+        ))
+    }
+}
+
+/// `raw` in `lo..=hi` onto `0..=len-1`, refusing anything outside that span. `None` for a
+/// reading outside it, and for a degenerate axis (`lo == hi`).
+///
+/// There is deliberately no clamping. Pinning an out-of-range reading to the edge decides
+/// *where* an impossible frame lands, and the panel's bottom edge is the nav bar: the 2"
+/// read raw y = 3584 against a calibrated maximum of 323 once (eleven times the axis), and
+/// a milder one of the same kind — a few units past that maximum, inside any generous edge
+/// tolerance — pinned to the last row and tapped the nav bar's Home cell every time a
+/// contact ended (2026-09-29). The range already describes a fingertip *at* the glass: the
+/// calibration targets sit inside the panel and the solve extrapolates out to its edge, so
+/// nothing a real finger produces lands outside it.
+/// How far outside the calibrated span a reading may still be a fingertip that ran off the
+/// glass, as a divisor of the axis' own span. Past that it describes no contact at all.
+const EDGE_SLOP_DIVISOR: i32 = 8;
+
+/// `raw` in `lo..=hi` onto `0..=len-1`, pinning a reading within the edge slop onto the edge
+/// it left and refusing one past it. `None` for a refusal, and for a degenerate axis.
+fn scale(raw: u16, lo: u16, hi: u16, len: u16) -> Option<u16> {
+    let span = hi as i32 - lo as i32;
+    if span == 0 {
+        return None;
+    }
+    let last = (len - 1) as i32;
+    let mapped = (raw as i32 - lo as i32) * last / span;
+    let slop = (span / EDGE_SLOP_DIVISOR).max(1);
+    if !(-slop..=last + slop).contains(&mapped) {
+        return None;
+    }
+    Some(mapped.clamp(0, last) as u16)
+}
+
 #[cfg(test)]
 #[path = "touch_tests.rs"]
 mod tests;

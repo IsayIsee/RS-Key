@@ -220,6 +220,7 @@ check the seal with `picotool`. The flavors mirror the
 | `.#firmware-always-uv` | `--features always-uv` (CTAP 2.1 `alwaysUv` on by default; also `.#firmware-always-uv-pqc`) |
 | `.#firmware-strict-up` | `--features strict-up` (touch on every assertion — **not spec-conformant** for `up:false`; also `.#firmware-strict-up-pqc`) |
 | `.#firmware-display` | `--features display`, `FLASH_SIZE=16M`, `LED_KIND=none` (experimental, Waveshare RP2350-Touch-LCD-2.8) |
+| `.#firmware-display-lcd2` | `--features display`, `BOARD=waveshare-touch-lcd-2`, `FLASH_SIZE=16M`, `LED_KIND=none` (experimental, Waveshare RP2350-Touch-LCD-2") |
 | `.#firmware-display-keys` | `--features display-keys`, `BOARD=waveshare-geek`, `FLASH_SIZE=16M`, `LED_KIND=none` (experimental, Waveshare RP2350-GEEK) |
 | `.#firmware-display-keys-strong-pin` | the GEEK image + `strong-pin` (6-code-point PIN floor + trivial-PIN block) |
 | `.#firmware-display-keys-always-uv` | the GEEK image + `always-uv` (CTAP 2.1 `alwaysUv`; a PIN for every operation) |

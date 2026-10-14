@@ -59,6 +59,7 @@ fn shoot(dir: &Path) -> std::io::Result<Vec<String>> {
                 status: StatusKind::Idle,
                 pin_set: true,
                 passkeys: 0,
+                no_host_info: false,
             }),
         );
     });
@@ -105,6 +106,7 @@ fn shoot(dir: &Path) -> std::io::Result<Vec<String>> {
                 brightness: rsk_ui::BRIGHTNESS_LEVELS,
                 timeout_secs: 15,
                 sleep_secs: 30,
+                nohost_idx: rsk_ui::settings_store::DEFAULT_NOHOST_IDX,
                 version: crate::bcd::BCD_DEVICE,
                 chipid: 0,
                 device_pin_set: true,

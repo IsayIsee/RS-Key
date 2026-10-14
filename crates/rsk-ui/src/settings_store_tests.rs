@@ -5,7 +5,8 @@ use super::*;
 
 #[test]
 fn conf_len_matches_layout() {
-    assert_eq!(CONF_LEN, 4);
+    assert_eq!(CONF_LEN, 5);
+    assert_eq!(FLAGS_LEN, 4);
     assert_eq!(CORE_LEN, 3);
 }
 
@@ -15,6 +16,8 @@ fn default_mirrors_firmware_runtime_defaults() {
     assert_eq!(d.brightness, crate::BRIGHTNESS_LEVELS);
     assert_eq!(d.sleep_secs, 60);
     assert!(!d.pin_declined);
+    assert_eq!(d.nohost_idx, DEFAULT_NOHOST_IDX);
+    assert_eq!(nohost_secs(d.nohost_idx), 30);
 }
 
 #[test]
@@ -24,6 +27,7 @@ fn encode_decode_roundtrip() {
         sleep_secs: 120,
         pin_declined: true,
         scramble_pin: false,
+        nohost_idx: 1,
     };
     let mut got = DisplayConfig::default();
     got.apply_block(&cfg.encode());
@@ -31,18 +35,20 @@ fn encode_decode_roundtrip() {
 }
 
 #[test]
-fn encode_layout_is_brightness_then_be_sleep_then_flags() {
+fn encode_layout_is_brightness_then_be_sleep_then_flags_then_nohost() {
     let b = DisplayConfig {
         brightness: 4,
         sleep_secs: 300,
         pin_declined: true,
         scramble_pin: false,
+        nohost_idx: 2,
     }
     .encode();
-    assert_eq!(b.len(), 4);
+    assert_eq!(b.len(), CONF_LEN);
     assert_eq!(b[0], 4);
     assert_eq!(u16::from_be_bytes([b[1], b[2]]), 300);
     assert_eq!(b[3], FLAG_PIN_DECLINED);
+    assert_eq!(b[4], 2);
 }
 
 #[test]
@@ -52,6 +58,7 @@ fn pin_declined_clear_encodes_zero_flags() {
         sleep_secs: 60,
         pin_declined: false,
         scramble_pin: false,
+        nohost_idx: DEFAULT_NOHOST_IDX,
     }
     .encode();
     assert_eq!(b[3], 0);
@@ -64,6 +71,7 @@ fn off_sentinel_roundtrips() {
         sleep_secs: 0, // Off
         pin_declined: false,
         scramble_pin: false,
+        nohost_idx: DEFAULT_NOHOST_IDX,
     };
     let mut got = DisplayConfig::default();
     got.apply_block(&cfg.encode());
@@ -81,6 +89,32 @@ fn legacy_core_block_loads_fields_and_keeps_flag_default() {
     assert_eq!(got.brightness, 3);
     assert_eq!(got.sleep_secs, 30);
     assert!(!got.pin_declined);
+    assert_eq!(got.nohost_idx, DEFAULT_NOHOST_IDX);
+}
+
+/// A record written after the flags byte but before the no-host index is exactly
+/// `FLAGS_LEN`: every field it carries loads and the delay keeps its default, so the
+/// upgrade changes nothing about how a host-less device behaves until the owner asks it
+/// to. The record growing a byte is not the same as the setting changing.
+#[test]
+fn a_flags_only_block_keeps_the_default_no_host_delay() {
+    let mut got = DisplayConfig::default();
+    got.apply_block(&[4, 0x00, 0x3C, FLAG_PIN_DECLINED]);
+    assert_eq!(got.brightness, 4);
+    assert_eq!(got.sleep_secs, 60);
+    assert!(got.pin_declined);
+    assert_eq!(got.nohost_idx, DEFAULT_NOHOST_IDX);
+}
+
+#[test]
+fn nohost_secs_clamps_a_corrupt_index() {
+    assert_eq!(nohost_secs(0), NOHOST_CHOICES[0]);
+    assert_eq!(
+        nohost_secs(NOHOST_CHOICES.len() as u8 - 1),
+        NOHOST_CHOICES[NOHOST_CHOICES.len() - 1]
+    );
+    // flash can hand back anything; the lookup must not index past the table
+    assert_eq!(nohost_secs(0xFF), NOHOST_CHOICES[NOHOST_CHOICES.len() - 1]);
 }
 
 #[test]
@@ -118,6 +152,7 @@ fn longer_future_block_reads_known_prefix() {
         sleep_secs: 30,
         pin_declined: true,
         scramble_pin: false,
+        nohost_idx: 2,
     };
     let mut b = [0u8; 7];
     b[..CONF_LEN].copy_from_slice(&cfg.encode());
@@ -176,10 +211,15 @@ fn apply_block_no_panic_and_idempotent_over_random_slices() {
             assert_eq!(a.brightness, DisplayConfig::default().brightness);
             assert_eq!(a.sleep_secs, DisplayConfig::default().sleep_secs);
         }
-        if len >= CONF_LEN {
+        if len >= FLAGS_LEN {
             assert_eq!(a.pin_declined, block[3] & FLAG_PIN_DECLINED != 0);
         } else {
             assert!(!a.pin_declined); // default
+        }
+        if len >= CONF_LEN {
+            assert_eq!(a.nohost_idx, block[4]);
+        } else {
+            assert_eq!(a.nohost_idx, DEFAULT_NOHOST_IDX);
         }
     }
 }
@@ -194,6 +234,8 @@ fn all_ones_block_loads_without_panic() {
     assert_eq!(got.brightness, 0xFF); // raw; firmware clamps to 1..=BRIGHTNESS_LEVELS
     assert_eq!(got.sleep_secs, 0xFFFF);
     assert!(got.pin_declined);
+    // raw too; `nohost_secs` clamps it to a listed choice before anything uses it
+    assert_eq!(got.nohost_idx, 0xFF);
 }
 
 /// The scramble bit rides the flags byte that already existed, so the record does not
@@ -208,6 +250,7 @@ fn the_scramble_flag_is_independent_of_the_onboarding_flag() {
             sleep_secs: 45,
             pin_declined: declined,
             scramble_pin: scramble,
+            nohost_idx: DEFAULT_NOHOST_IDX,
         };
         let mut back = DisplayConfig::default();
         back.apply_block(&cfg.encode());
@@ -229,20 +272,25 @@ fn an_older_record_loads_with_scrambling_off() {
     }
 }
 
-/// And the other direction: an older firmware reading a record this one wrote sees the
-/// fields it knows, because the bit went into a spare bit of a byte that was already
-/// there rather than lengthening the block.
+/// The other direction: a firmware that knows only the 4-byte layout reads a record this
+/// one wrote. Its own fields are where it left them — the no-host index went on the end,
+/// so the older reader never looks at it and everything it does look at still parses.
 #[test]
-fn an_older_firmware_still_reads_a_record_carrying_the_new_bit() {
+fn an_older_firmware_still_reads_the_prefix_it_knows() {
     let block = DisplayConfig {
         brightness: 2,
         sleep_secs: 30,
         pin_declined: true,
         scramble_pin: true,
+        nohost_idx: 1,
     }
     .encode();
-    assert_eq!(block.len(), CONF_LEN, "the record must not have grown");
-    assert_eq!(block[0], 2);
-    assert_eq!(u16::from_be_bytes([block[1], block[2]]), 30);
-    assert_eq!(block[3] & FLAG_PIN_DECLINED, FLAG_PIN_DECLINED);
+    assert_eq!(block.len(), CONF_LEN);
+    let mut older = DisplayConfig::default();
+    older.apply_block(&block[..FLAGS_LEN]);
+    assert_eq!(older.brightness, 2);
+    assert_eq!(older.sleep_secs, 30);
+    assert!(older.pin_declined);
+    assert!(older.scramble_pin);
+    assert_eq!(older.nohost_idx, DEFAULT_NOHOST_IDX);
 }

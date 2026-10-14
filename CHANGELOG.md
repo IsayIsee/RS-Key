@@ -24,10 +24,10 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
 > comes up factory-empty: no passkeys, no OpenPGP or PIV keys, no OATH
 > credentials.
 >
-> This affects the 16 MB flavors only — `display` and `16mb`, and the
-> `abrobot-16m` and `waveshare-touch-lcd` board presets. **4 MB and 2 MB keys
-> upgrade in place**: their stores end far below the E10 block and their layouts
-> are byte-identical to 0.4.7.
+> This affects the 16 MB flavors only — `display`, `display-lcd2` and `16mb`,
+> and the `abrobot-16m` and `waveshare-touch-lcd` board presets. **4 MB and 2 MB
+> keys upgrade in place**: their stores end far below the E10 block and their
+> layouts are byte-identical to 0.4.7.
 >
 > Kept here as well as in the release's own notes below: this banner is for
 > whoever opens the file, and the copy inside the release section is what the
@@ -2163,6 +2163,131 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
   registrations leave one record); the replug and warm-reboot scans rebuild an index
   that already matches flash unless a fault was injected, so no test separates them.
   Host-only: no firmware image differs.
+
+## [0.4.11-isk.2] - 2026-09-30
+
+> ### ⚠️ Upgrading a 16 MB key provisioned before 0.4.8 still wipes it
+>
+> **Export your seed first** ([seed backup](docs/guides/seed-backup.md)). 0.4.8
+> moved the store 4 KB down on 16 MB parts to clear the RP2350-E10 block, so a
+> key provisioned by an older 16 MB build comes up factory-empty. The `display`,
+> `display-lcd2` and `16mb` flavors and the `abrobot-16m` / `waveshare-touch-lcd`
+> presets are the affected ones; **4 MB and 2 MB keys upgrade in place.**
+
+### Changed
+
+- **The backlight is seven perceptually-even steps, not five arithmetic ones.**
+  The duty table split the PWM range linearly, which put four of the five levels
+  in the top half of the *perceived* brightness — the bench report was "level 3
+  is basically full" on one end and "level 1 is invisible" on the other. The
+  table is now `(level/7)^2.2` across the range the panel can actually show
+  (duty 12..=255; below that the backlight's low-side switch never visibly
+  lights), and the backlight PWM runs at 39 kHz instead of 625 kHz for the same
+  reason — a ~0.4 µs turn-off delay is a third of a 1.6 µs period. The level bar
+  in Settings → Display → Brightness is now sized from the panel, so seven
+  segments fit the glass.
+
+### Added
+
+- **A device with no host shows its status card instead of spinning for ever.**
+  A key on a charger or in a drawer never receives a `SET_CONFIGURATION`, so the
+  LED status engine stays in its boot state and Home painted "Starting…" — with a
+  10 Hz repaint — while nothing was wrong and nothing was coming. After a delay
+  (Settings → Display → **No-host info**, 3/5/10/30 s, default 30) the resting
+  card replaces the spinner, exactly as it does on an idle device. The delay
+  rides `EF_DISPLAY`, which grew a byte (4 → 5): a record written by an older
+  build loads whole and keeps the 30 s default, and an older build reading this
+  one sees the prefix it knows. The card's USB row also stops claiming
+  "USB connected" — false on a host-less key — and states what is true in both
+  cases: **"No USB host"** until a host has configured the device, **"USB host
+  set up"** after (a device that was set up stays set up when the cable comes
+  out).
+- **The Waveshare RP2350-Touch-LCD-2 is a supported display board, and it ships
+  an image.** The 2" shares none of the 2.8"'s wiring: its ST7789T3 panel runs
+  on the second SPI block (PIO on `GP18`/`GP19`), its CST816D touch controller
+  on `i2c0` (`GP12`/`GP13`), panel and touch share one reset line (`GP20`), and
+  the backlight hangs off `GP15` (PWM slice 7 channel B). The display's pins,
+  I2C instance, touch controller, calibrated touch area, panel init set and
+  reset sharing are board-file data now rather than constants; the CST816D is
+  read the way the vendor's own drivers read it — one register per transfer, at
+  the `Touch_INT` announcement, so the report block's idle contents are never
+  mistaken for a touch; and the PWM config now writes the channel the board
+  actually uses (a channel whose compare stays 0 is held low for the whole
+  period, so channel B would have stayed dark). `firmware-display-lcd2`
+  (`BOARD=waveshare-touch-lcd-2`, `--features display`, 16 MB, `LED_KIND=none`)
+  joins the flavors this fork builds — the nix package, the CI board row, and
+  both loops of the release workflow — so the board no longer needs a build
+  environment to be usable.
+
+### Fixed
+
+- **A hand resting on the glass is presence, not a tap.** The auto-lock counts
+  from the last *local* interaction, and only an armed tap counted as one —
+  arming needs an observed release — so a contact that never lifted, or taps
+  arriving faster than the 100 ms poll saw a release, moved no clock at all and
+  the lock engaged under a hand still on the panel (measured on the 2" bench:
+  a 10 s timeout locked the screen while it was being touched). The touch poll
+  now reports the two halves separately: any contact refreshes the activity and
+  lock clocks, and only a contact that began on the screen now showing presses
+  what it sits on.
+- **The Info screen writes its hex the way the rest of the project does.** The
+  build counter read `0x09da` on the glass while everything a person compares it
+  against is uppercase — `0x09DA` in the SOP, `REV_09DA` in the USB hardware id
+  a host reads — so the screen's hex helpers are uppercase now. `tools/rsk`'s
+  inventory output keeps its lowercase `0x%04x`: that is a machine-readable
+  field, not something read off a screen.
+
+## [0.4.11-isk.1] - 2026-09-28
+
+### Changed
+
+- **The fork moves its base onto upstream `0.4.11`.** That section, below, is
+  the whole of it — the flash probe that read a *failed* read as an absent
+  record and was swept as a class, the CTAP 2.2/2.3 gap against a YubiKey 5.8,
+  `FW_VERSION` 5.8.0, FIDO over the card interface — and this fork's own line
+  sits on top of it unchanged: the Waveshare RP2350-GEEK `display-keys` image
+  and its two security-posture variants are still the flavors published here,
+  built only for the board this fork exists for. `bcdDevice` follows upstream,
+  `0x098F` → **`0x09DA`**. The working branch is `my_main` now (it was
+  `my_dev`): the workflow triggers, the release tag check and the docs site's
+  root version follow the name GitHub carries.
+
+> ### ⚠️ Upgrading a 16 MB key provisioned before 0.4.8 still wipes it
+>
+> **Export your seed first** ([seed backup](docs/guides/seed-backup.md)). 0.4.8
+> moved the store 4 KB down on 16 MB parts to clear the RP2350-E10 block, so a
+> key provisioned by an older 16 MB build comes up factory-empty. The `display`
+> and `16mb` flavors and the `abrobot-16m` / `waveshare-touch-lcd` presets are
+> the affected ones; **4 MB and 2 MB keys upgrade in place.**
+
+### Fixed
+
+- **The GEEK panel build compiles against 0.4.11's system-clock constant.**
+  0.4.11 added `BUILD_DISPLAY_SYS_CLOCK_HZ` under `#[cfg(feature = "display")]`
+  while this fork's `display-keys` panel clocks the same 80 MHz SPI / 160 MHz
+  system pair, so the touchless build stopped compiling. The constant and its
+  2:1 assert gate on either display feature now — which is also what keeps a
+  board file from moving one half of the pair without the other. Neither build
+  changes behaviour.
+- **The no-host menu's OTP slot status follows upstream's `read_slot` rename.**
+  The 0.4.11 merge turned `read_slot` into `try_read_slot` returning
+  `Result<Option<usize>>`, and the fork's `slot_status` still called the old
+  name; the conflict block around the slot tests had also left one closing
+  brace outside the fork's function. The unseal path is unchanged — the caller
+  reads `Ok(Some(len))` where it read `Some(_)` — and the menu's rows read the
+  same.
+- **`docs/verified-compilation.md` states the fork's row counts again.** The
+  board rows (`clippy (display keys)`, `rustdoc (firmware keys)`, `build
+  firmware (display keys)`) had moved four numbers the page states about the
+  gate's own shape — 124 rows / 55 cargo / 19 clippy / 8 rustdoc is now 127 /
+  58 / 20 / 9 — and `scripts/level11c_gate.py` re-derives every one of them.
+  Numbers only: the argument around them reads the same.
+- **The gate rows the board work left behind.** `assurance/configurations.toml`
+  carries the four `display-keys` columns as `gap` cells with settling
+  questions, the `comutants` anchor the last merge had resolved away is back
+  (`GestureWait::wait` opens with the same comment and the same two lines as
+  `ButtonWait::wait`, so only its return type tells them apart), and the model
+  citations the board work moved were re-taken.
 
 ## [0.4.10-isk.2] - 2026-09-14
 
@@ -15992,6 +16117,8 @@ family that keeps the "enterprise" features in the open tree.
   [docs/releases.md](docs/releases.md) to verify a download.
 
 [Unreleased]: https://github.com/TheMaxMur/RS-Key/compare/v0.4.11...HEAD
+[0.4.11-isk.2]: https://github.com/IsayIsee/RS-Key/releases/tag/v0.4.11-isk.2
+[0.4.11-isk.1]: https://github.com/IsayIsee/RS-Key/releases/tag/v0.4.11-isk.1
 [0.4.10-isk.2]: https://github.com/IsayIsee/RS-Key/releases/tag/v0.4.10-isk.2
 [0.4.10-isk.1]: https://github.com/IsayIsee/RS-Key/releases/tag/v0.4.10-isk.1
 [0.4.11]: https://github.com/TheMaxMur/RS-Key/compare/v0.4.10...v0.4.11

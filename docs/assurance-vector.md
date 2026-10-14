@@ -37,7 +37,7 @@ The `freshness` axis reads committed history only, so an uncommitted edit to an 
 - **34 of the 47** rows the v1 word calls `MODELLED-ONLY` carry such a twin: the word means *no Kani harness*, and never *untested*.
 - **10 of 60** are checked by a configuration that ACCEPTS a recorded session, and **10** by one that must REFUSE a negative one.
 - **11 of 60** carry at least one Kani harness named after them. That is all `BOUNDED` keys on — a harness NAME, not the `#[kani::proof]` attribute, not a bound, not a `cfg` — so it points at the bundle's method table and is never the proof itself.
-- Rows carrying a dated raw evidence bundle: **17 of 60**; of those, still ahead of every input they are about: **6**.
+- Rows carrying a dated raw evidence bundle: **17 of 60**; of those, still ahead of every input they are about: **0**.
 - No property is claimed on more than **10** built image(s) of the configuration ledger; every other column is a gap or out of scope.
 - **2 of 60** carry a result measured on a board, each naming the revision it was taken on.
 
@@ -62,12 +62,12 @@ The `freshness` axis reads committed history only, so an uncommitted edit to an 
 | `SEC-REF-004` | `R4bEventConsensus` | 2 of 9 | 0 | 2 of 9 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
 | `SEC-REF-005` | `NoAuthorizationBypassA` | 1 of 2 | 0 | 0 of 0 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
 | `SEC-REF-006` | `RequiredGateAgreesWithRelation` | 0 of 1 | 0 | 0 of 0 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
-| `SEC-FIDO-001` | `NoAuthorizationBypass` | 5 of 50 | 12 | 0 of 0 | 4 | 0 | 3 | 4 | `f52b720` stale (60 input(s) newer) | BOUNDED |
+| `SEC-FIDO-001` | `NoAuthorizationBypass` | 5 of 50 | 12 | 0 of 0 | 4 | 0 | 3 | 4 | `f52b720` stale (61 input(s) newer) | BOUNDED |
 | `SEC-FIDO-002` | `NoCrossTransportTouchConsumption` | 5 of 42 | 5 | 0 of 0 | 2 | 0 | 3 | 4 | `31c21a7` stale (5 input(s) newer) | BOUNDED |
-| `SEC-FIDO-003` | `NoTokenAfterInvalidation` | 5 of 45 | 6 | 0 of 0 | 2 | 0 | 4 | 0 | `31c21a7` stale (10 input(s) newer) | BOUNDED |
-| `SEC-FIDO-004` | `NoAccessibleSecretWithoutGate` | 5 of 39 | 2 | 0 of 0 | 0 | 0 | 4 | 0 | `31c21a7` stale (5 input(s) newer) | MODELLED-ONLY |
-| `SEC-FIDO-005` | `NoUnmanageableCredential` | 5 of 40 | 3 | 0 of 0 | 0 | 0 | 4 | 0 | `31c21a7` stale (6 input(s) newer) | MODELLED-ONLY |
-| `SEC-FIDO-006` | `ResetNeverWeakensSurvivingState` | 5 of 40 | 3 | 0 of 0 | 1 | 0 | 4 | 0 | `31c21a7` stale (5 input(s) newer) | BOUNDED |
+| `SEC-FIDO-003` | `NoTokenAfterInvalidation` | 5 of 45 | 6 | 0 of 0 | 2 | 0 | 4 | 0 | `31c21a7` stale (11 input(s) newer) | BOUNDED |
+| `SEC-FIDO-004` | `NoAccessibleSecretWithoutGate` | 5 of 39 | 2 | 0 of 0 | 0 | 0 | 4 | 0 | `31c21a7` stale (6 input(s) newer) | MODELLED-ONLY |
+| `SEC-FIDO-005` | `NoUnmanageableCredential` | 5 of 40 | 3 | 0 of 0 | 0 | 0 | 4 | 0 | `31c21a7` stale (8 input(s) newer) | MODELLED-ONLY |
+| `SEC-FIDO-006` | `ResetNeverWeakensSurvivingState` | 5 of 40 | 3 | 0 of 0 | 1 | 0 | 4 | 0 | `31c21a7` stale (7 input(s) newer) | BOUNDED |
 | `SEC-FIDO-006A` | `ResetKeepsThePinGate` | 1 of 2 | 1 | 0 of 0 | 1 | 0 | 4 | 0 | `b185fc3` stale (3 input(s) newer) | BOUNDED |
 | `SEC-FIDO-006B` | `ResetKeepsTheAlwaysUvGate` | 1 of 2 | 1 | 0 of 0 | 1 | 0 | 4 | 0 | `b185fc3` stale (3 input(s) newer) | BOUNDED |
 | `SEC-FIDO-006C` | `ResetKeepsTheBackupSeal` | 1 of 2 | 1 | 0 of 0 | 1 | 0 | 4 | 0 | `b185fc3` stale (3 input(s) newer) | BOUNDED |
@@ -86,12 +86,12 @@ The `freshness` axis reads committed history only, so an uncommitted edit to an 
 | `SEC-SEAM-004` | `ReselectPreservesAccessStatus` | 2 of 31 | 2 | 1 of 2 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
 | `SEC-SEAM-005` | `ExemptRefusalPreservesStatus` | 2 of 31 | 2 | 1 of 2 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
 | `SEC-SEAM-006` | `AccessCodeRemovalNeedsTheCode` | 2 of 30 | 1 | 1 of 2 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
-| `SEC-STORE-001` | `NoOrphanedMetadata` | 2 of 13 | 2 | 0 of 0 | 0 | 0 | 4 | 0 | `982fb2f` fresh | MODELLED-ONLY |
-| `SEC-STORE-002` | `NoFalseAbsent` | 2 of 13 | 2 | 0 of 0 | 3 | 0 | 4 | 0 | `982fb2f` fresh | BOUNDED |
-| `SEC-STORE-003` | `NoRecordLostToMetaWrite` | 2 of 15 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | `982fb2f` fresh | MODELLED-ONLY |
-| `SEC-STORE-004` | `NoFalseMetaAbsent` | 2 of 12 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | `982fb2f` fresh | MODELLED-ONLY |
-| `SEC-STORE-005` | `CacheHonest` | 2 of 4 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | `982fb2f` fresh | MODELLED-ONLY |
-| `SEC-STORE-006` | `NoSilentOrphan` | 2 of 12 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | `982fb2f` fresh | MODELLED-ONLY |
+| `SEC-STORE-001` | `NoOrphanedMetadata` | 2 of 13 | 2 | 0 of 0 | 0 | 0 | 4 | 0 | `982fb2f` stale (3 input(s) newer) | MODELLED-ONLY |
+| `SEC-STORE-002` | `NoFalseAbsent` | 2 of 13 | 2 | 0 of 0 | 3 | 0 | 4 | 0 | `982fb2f` stale (3 input(s) newer) | BOUNDED |
+| `SEC-STORE-003` | `NoRecordLostToMetaWrite` | 2 of 15 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | `982fb2f` stale (3 input(s) newer) | MODELLED-ONLY |
+| `SEC-STORE-004` | `NoFalseMetaAbsent` | 2 of 12 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | `982fb2f` stale (3 input(s) newer) | MODELLED-ONLY |
+| `SEC-STORE-005` | `CacheHonest` | 2 of 4 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | `982fb2f` stale (3 input(s) newer) | MODELLED-ONLY |
+| `SEC-STORE-006` | `NoSilentOrphan` | 2 of 12 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | `982fb2f` stale (3 input(s) newer) | MODELLED-ONLY |
 | `SEC-LAT-001` | `NoAuthWhenBlocked` | 2 of 16 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
 | `SEC-LAT-002` | `WrongAttemptIsCharged` | 2 of 17 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
 | `SEC-LAT-003` | `BudgetRisesOnlyWithItsSecret` | 2 of 24 | 9 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
@@ -106,9 +106,9 @@ The `freshness` axis reads committed history only, so an uncommitted edit to an 
 | `SEC-ADM-002` | `PrivilegedOpNeedsPresence` | 1 of 6 | 1 | 0 of 0 | 0 | 0 | 3 | 4 | — | MODELLED-ONLY |
 | `SEC-ADM-003` | `DisableSetSurvivesLockWrite` | 1 of 6 | 1 | 0 of 0 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
 | `SEC-ADM-004` | `DisabledAppletNeverDispatches` | 1 of 6 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
-| `SEC-DISP-001` | `ConfirmNamesTheOperation` | 1 of 5 | 1 | 0 of 0 | 0 | 0 | 0 | 31 | — | MODELLED-ONLY |
-| `SEC-DISP-002` | `StaleTouchApprovesNothing` | 1 of 5 | 1 | 0 of 0 | 0 | 0 | 0 | 31 | — | MODELLED-ONLY |
-| `SEC-DISP-003` | `OnlyAllowConfirms` | 1 of 5 | 1 | 0 of 0 | 0 | 0 | 0 | 31 | — | MODELLED-ONLY |
+| `SEC-DISP-001` | `ConfirmNamesTheOperation` | 1 of 5 | 1 | 0 of 0 | 0 | 0 | 0 | 32 | — | MODELLED-ONLY |
+| `SEC-DISP-002` | `StaleTouchApprovesNothing` | 1 of 5 | 1 | 0 of 0 | 0 | 0 | 0 | 32 | — | MODELLED-ONLY |
+| `SEC-DISP-003` | `OnlyAllowConfirms` | 1 of 5 | 1 | 0 of 0 | 0 | 0 | 0 | 32 | — | MODELLED-ONLY |
 | `SEC-BOOT-001` | `MarkerNeverLies` | 4 of 13 | 2 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
 | `SEC-BOOT-002` | `TheWholeLockRides` | 3 of 8 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
 | `SEC-TRANS-001` | `NoCrossChannelSplice` | 1 of 5 | 1 | 0 of 0 | 2 | 0 | 10 | 0 | — | BOUNDED |
@@ -143,6 +143,7 @@ The same 40 P0-family rows, counted the other way round: per column rather than 
 | `firmware-strict-up-pqc` | package | no | 3 | 38 |
 | `firmware-pico` | package | no | 41 | 0 |
 | `firmware-display` | package | no | 0 | 41 |
+| `firmware-display-lcd2` | package | yes | 0 | 41 |
 | `firmware-display-keys` | package | yes | 0 | 41 |
 | `firmware-display-keys-strong-pin` | package | yes | 0 | 41 |
 | `firmware-display-keys-always-uv` | package | yes | 0 | 41 |
@@ -156,12 +157,14 @@ The same 40 P0-family rows, counted the other way round: per column rather than 
 | `ea-conformance-rpid` | feature | no | 3 | 38 |
 | `largeblob-ext` | feature | no | 3 | 38 |
 | `preview-sign` | feature | no | 3 | 38 |
+| `display-calib` | feature | no | 0 | 41 |
 | `abrobot-16m` | board | no | 9 | 32 |
 | `abrobot-4m` | board | no | 37 | 4 |
 | `seeed-xiao` | board | no | 9 | 32 |
 | `tenstar-usb` | board | no | 9 | 32 |
-| `waveshare-geek` | board | no | 0 | 41 |
+| `waveshare-geek` | board | no | 3 | 38 |
 | `waveshare-one` | board | no | 41 | 0 |
+| `waveshare-touch-lcd-2` | board | no | 0 | 41 |
 | `waveshare-touch-lcd` | board | no | 9 | 32 |
 
 Read the feature rows first: every one of them carries the same handful of placed cells and the rest unplaced, which is the shape roadmap §12 calls feature blindness. A default-build proof is not a proof about the image a feature builds, and the column is where that stops being invisible.
@@ -172,17 +175,23 @@ Three spellings of "not current", which used to sit on two different pages and i
 
 | Kind | Subject | What is outstanding |
 |---|---|---|
-| bundle | `SEC-FIDO-001` | 60 input(s) newer than `f52b720` |
+| bundle | `SEC-FIDO-001` | 61 input(s) newer than `f52b720` |
 | bundle | `SEC-FIDO-002` | 5 input(s) newer than `31c21a7` |
-| bundle | `SEC-FIDO-003` | 10 input(s) newer than `31c21a7` |
-| bundle | `SEC-FIDO-004` | 5 input(s) newer than `31c21a7` |
-| bundle | `SEC-FIDO-005` | 6 input(s) newer than `31c21a7` |
-| bundle | `SEC-FIDO-006` | 5 input(s) newer than `31c21a7` |
+| bundle | `SEC-FIDO-003` | 11 input(s) newer than `31c21a7` |
+| bundle | `SEC-FIDO-004` | 6 input(s) newer than `31c21a7` |
+| bundle | `SEC-FIDO-005` | 8 input(s) newer than `31c21a7` |
+| bundle | `SEC-FIDO-006` | 7 input(s) newer than `31c21a7` |
 | bundle | `SEC-FIDO-006A` | 3 input(s) newer than `b185fc3` |
 | bundle | `SEC-FIDO-006B` | 3 input(s) newer than `b185fc3` |
 | bundle | `SEC-FIDO-006C` | 3 input(s) newer than `b185fc3` |
 | bundle | `SEC-FIDO-007` | 10 input(s) newer than `3e08f75` |
 | bundle | `SEC-FIDO-008` | 5 input(s) newer than `31c21a7` |
+| bundle | `SEC-STORE-001` | 3 input(s) newer than `982fb2f` |
+| bundle | `SEC-STORE-002` | 3 input(s) newer than `982fb2f` |
+| bundle | `SEC-STORE-003` | 3 input(s) newer than `982fb2f` |
+| bundle | `SEC-STORE-004` | 3 input(s) newer than `982fb2f` |
+| bundle | `SEC-STORE-005` | 3 input(s) newer than `982fb2f` |
+| bundle | `SEC-STORE-006` | 3 input(s) newer than `982fb2f` |
 | bundle | `SEC-ADM-002` | no raw evidence bundle |
 | bundle | `SEC-ADM-004` | no raw evidence bundle |
 | bundle | `SEC-BOOT-001` | no raw evidence bundle |
@@ -222,7 +231,7 @@ Three spellings of "not current", which used to sit on two different pages and i
 | platform | `PLAT-TOOLCHAIN-002` | docs/unsafe.md is the enumeration of the first-party `unsafe` sites: e |
 | platform | `PLAT-UNSAFE-002` | `SendUsb` is sound: `embassy_usb::UsbDevice` is `!Send` only for the ` |
 | platform | `PLAT-UNSAFE-003` | `HEAP.0.init` runs exactly once, over a static buffer nothing else tou |
-| platform | `PLAT-UNSAFE-004` | Each of the nine build-selected GPIOs handed to `AnyPin::steal` has ex |
+| platform | `PLAT-UNSAFE-004` | Each of the ten build-selected GPIOs handed to `AnyPin::steal` has exa |
 | platform | `PLAT-UNSAFE-005` | The two `static mut` prime sieves are single-core-exclusive: `CORE0_SI |
 | platform | `PLAT-UNSAFE-006` | Each core programs MSPLIM once, on the core that owns that stack, befo |
 | platform | `PLAT-UNSAFE-007` | The three FFI calls into the vendored ARM assembly pass fully owned, l |
@@ -308,4 +317,4 @@ For the commit that carries this page — which is why no commit is named here: 
 | `liveness` | `./formal/run-tlc.sh liveness` | 2026-10-01 | `6471abf` | Apple M5 Pro (18 cores) |
 | `safety` | `./formal/run-tlc.sh safety` | 2026-10-01 | `6471abf` | Apple M5 Pro (18 cores) |
 
-**Raw evidence bundles:** `SEC-FIDO-001`, `SEC-FIDO-002`, `SEC-FIDO-003`, `SEC-FIDO-004`, `SEC-FIDO-005`, `SEC-FIDO-006`, `SEC-FIDO-006A`, `SEC-FIDO-006B`, `SEC-FIDO-006C`, `SEC-FIDO-007`, `SEC-FIDO-008`, `SEC-STORE-001`, `SEC-STORE-002`, `SEC-STORE-003`, `SEC-STORE-004`, `SEC-STORE-005`, `SEC-STORE-006` — of 60 registered properties. Stale against this commit: `SEC-FIDO-001`, `SEC-FIDO-002`, `SEC-FIDO-003`, `SEC-FIDO-004`, `SEC-FIDO-005`, `SEC-FIDO-006`, `SEC-FIDO-006A`, `SEC-FIDO-006B`, `SEC-FIDO-006C`, `SEC-FIDO-007`, `SEC-FIDO-008`.
+**Raw evidence bundles:** `SEC-FIDO-001`, `SEC-FIDO-002`, `SEC-FIDO-003`, `SEC-FIDO-004`, `SEC-FIDO-005`, `SEC-FIDO-006`, `SEC-FIDO-006A`, `SEC-FIDO-006B`, `SEC-FIDO-006C`, `SEC-FIDO-007`, `SEC-FIDO-008`, `SEC-STORE-001`, `SEC-STORE-002`, `SEC-STORE-003`, `SEC-STORE-004`, `SEC-STORE-005`, `SEC-STORE-006` — of 60 registered properties. Stale against this commit: `SEC-FIDO-001`, `SEC-FIDO-002`, `SEC-FIDO-003`, `SEC-FIDO-004`, `SEC-FIDO-005`, `SEC-FIDO-006`, `SEC-FIDO-006A`, `SEC-FIDO-006B`, `SEC-FIDO-006C`, `SEC-FIDO-007`, `SEC-FIDO-008`, `SEC-STORE-001`, `SEC-STORE-002`, `SEC-STORE-003`, `SEC-STORE-004`, `SEC-STORE-005`, `SEC-STORE-006`.

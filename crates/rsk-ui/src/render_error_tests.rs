@@ -92,6 +92,7 @@ fn home_and_settings_updates_propagate_every_panel_error() {
         status: StatusKind::Idle,
         pin_set: false,
         passkeys: 0,
+        no_host_info: false,
     };
     for status in [
         StatusKind::Boot,
@@ -103,6 +104,7 @@ fn home_and_settings_updates_propagate_every_panel_error() {
             status,
             pin_set: true,
             passkeys: 7,
+            no_host_info: false,
         };
         every_draw_failure(|d| render(d, &Screen::Home(home)));
         every_draw_failure(|d| render_home_change(d, &idle, &home));
@@ -123,6 +125,7 @@ fn home_and_settings_updates_propagate_every_panel_error() {
                 brightness: 3,
                 timeout_secs: 30,
                 sleep_secs: if enabled { 60 } else { 0 },
+                nohost_idx: 3,
                 version: 0x1234,
                 chipid: 1234,
                 device_pin_set: enabled,

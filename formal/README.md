@@ -1943,12 +1943,12 @@ what the registry refuses:
 - `StaleTouchApprovesNothing` — the touch controller reports *level, not
   edges*, so a finger already down when the card paints would read as a tap on
   it; the release edge is the whole defence, and it is two layers — the ambient
-  chokepoint (`crates/rsk-display/src/power.rs:53-63`) and the ceremony's own
+  chokepoint (`crates/rsk-display/src/power.rs:63-82`) and the ceremony's own
   release wait (`crates/rsk-display/src/presence.rs:192`);
 - `OnlyAllowConfirms` — Deny, the power button, timeout and CTAPHID cancel all
   end as Cancelled (`crates/rsk-display/src/presence.rs:114-118`); the
   Allow/Deny rectangles are disjoint and a stray touch above the band is no
-  button at all (`crates/rsk-ui/src/lib.rs:254-262`).
+  button at all (`crates/rsk-ui/src/lib.rs:257-265`).
 
 All three are ghosts, and the module says why plainly: a completed ceremony
 leaves nothing on the glass, so no reachable *state* distinguishes a phished
@@ -1999,13 +1999,13 @@ superseded weak copy readable in a raw flash dump until a compaction lap pushes
 it off the medium. `EF_HARDENED` says the lap has run
 (`crates/rsk-fs/src/lib.rs:29-124`); the boot runs it iff the marker is absent
 and writes the marker only after `compact()` returns Ok
-(`crates/rsk-fs/src/lib.rs:126-144`) — marker AFTER scrub, the same write-order
+(`crates/rsk-fs/src/lib.rs:126-148`) — marker AFTER scrub, the same write-order
 family as the store's delete and the PIN flows' revoke. The boot glue keeps only
-the OTP gate and the placement of the stall (`firmware/src/main.rs:791-807`).
+the OTP gate and the placement of the stall (`firmware/src/main.rs:898-916`).
 Every *lazy* re-key **or delete** after the lap must re-arm it — a tombstone
 appends too: **run-35 found four of five re-key sites skipping exactly that**,
 and the swept sites are the module's citations. *After the lap* means after any
-lap this device ever ran, the boot pass at `firmware/src/main.rs:739-787`
+lap this device ever ran, the boot pass at `firmware/src/main.rs:846-894`
 included: the marker latches once, so a boot that skipped a record — a faulted
 `read_key`, a refused `put` — leaves it standing over the boot that finally
 migrates that record. Those six arms re-arm for that reason, not because they
@@ -3080,7 +3080,7 @@ it does not promote MODELLED-ONLY to a proof or turn bounded Kani into PROVEN.
 behaviour than the firmware, "which is sound for safety". That was false**, and
 the one that broke it was holding the green run up: `PowerCut` left the seed as
 the cut found it, while the firmware regenerates a missing seed on **every**
-boot that can read its fused key (`firmware/src/main.rs:786`,
+boot that can read its fused key (`firmware/src/main.rs:893`,
 `tools/emu/src/device.rs:510`). A cut device
 was permanently seedless in the model and could never hold a usable credential
 again — the model was *narrower* than the code, which is the one direction a
@@ -3107,7 +3107,7 @@ abstractions producing traces the firmware cannot follow.
 - **Any boot may mint the grant record, or not.** `BootEnsuresSeed` leaves
   `gate.ppuatRec` either way. `ensure_seed` skips the mint on a vendor-soft-locked
   key (`seed.rs:687`), and mints nothing when a step before it fails or the record
-  cannot be read or opened — an error `firmware/src/main.rs:786` drops. The trace
+  cannot be read or opened — an error `firmware/src/main.rs:893` drops. The trace
   mapper pins the mint it predicts for the unlocked emulator, so R4a still holds
   the recording to one branch.
 - **A regenerated seed still opens the credentials made under the old one.**

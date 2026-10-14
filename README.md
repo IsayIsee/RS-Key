@@ -72,6 +72,7 @@ Which file to take:
 | 2 MB flash (Seeed XIAO RP2350, Waveshare RP2350-Zero-CM) | `2mb` |
 | 16 MB flash (TenStar RP2350-USB) | `16mb` |
 | Waveshare RP2350-Touch-LCD-2.8 | `display` |
+| Waveshare RP2350-Touch-LCD-2" | `display-lcd2` |
 | Waveshare RP2350-GEEK (screen + one button) | `display-keys` |
 
 The other twelve images are behaviour variants (post-quantum algorithms, the FIPS
@@ -79,8 +80,10 @@ profile, `alwaysUv`, PIN hardening). Full table, plus how to verify the cosign
 signature and reproduce the build yourself: [docs/releases.md](docs/releases.md).
 
 > **This fork** ([IsayIsee/RS-Key](https://github.com/IsayIsee/RS-Key)) publishes
-> only the Waveshare RP2350-GEEK images — `display-keys` plus its `-strong-pin`
-> and `-always-uv` variants. For every other board take the upstream releases:
+> only the boards it has adapted: the Waveshare RP2350-GEEK images —
+> `display-keys` plus its `-strong-pin` and `-always-uv` variants — and the
+> Waveshare RP2350-Touch-LCD-2" (`display-lcd2`). For every other board take the
+> upstream releases:
 > [TheMaxMur/RS-Key/releases](https://github.com/TheMaxMur/RS-Key/releases/latest).
 
 The longer walkthrough, with the PIN, `ssh` and `gpg` steps, is

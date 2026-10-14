@@ -13,6 +13,7 @@ fn home(status: StatusKind, pin_set: bool, passkeys: u16) -> Screen {
         status,
         pin_set,
         passkeys,
+        no_host_info: false,
     })
 }
 
@@ -315,6 +316,29 @@ fn a_returned_panel_flow_asks_for_the_dead_stack_sweep() {
 }
 
 #[test]
+fn a_resting_contact_postpones_the_lock_without_pressing_anything() {
+    // Bench-found on the 2" build (2026-09-28): a finger that never lifts never
+    // arms a tap — that needs an observed release — so a hand resting on the glass,
+    // or taps faster than the 100 ms poll sees a release, left the auto-lock
+    // counting down under it and locked the user out with their hand on the panel.
+    // Presence is what the deadline measures; acting stays the armed tap's half.
+    let env = Env::new();
+    let tab = center(rsk_ui::nav_tab_rect(1));
+    let mut ui = env.ui(Pad::resting(tab));
+    ui.onboarding = false;
+    let before = ui.shown;
+    backdate_local(DEFAULT_SLEEP_MS);
+    let stale = LAST_LOCAL_MS.load(Ordering::Relaxed);
+    assert!(!env.local(&mut ui).handle_local_input(StatusKind::Idle));
+    assert_ne!(
+        LAST_LOCAL_MS.load(Ordering::Relaxed),
+        stale,
+        "a hand on the glass is presence"
+    );
+    assert_eq!(ui.shown, before, "…and it pressed nothing");
+}
+
+#[test]
 fn the_panel_blanks_after_the_sleep_timeout() {
     let env = Env::new();
     let mut ui = env.ui(Pad::idle());
@@ -468,27 +492,6 @@ fn a_finger_still_down_when_a_tab_closes_is_not_a_second_tap() {
     );
 }
 
-/// A contact resting on the panel — a finger, or something lying on it — is one tap. Read
-/// as a fresh one every tick it kept the local-activity clock current, and the auto-lock
-/// never armed for as long as it rested.
-#[test]
-fn a_contact_resting_on_the_panel_cannot_hold_the_lock_off() {
-    let env = Env::new();
-    env.set_device_pin(PIN);
-    let mut ui = env.ui(Pad::held(nowhere()));
-    ui.locked = false;
-    ui.touch_armed = true;
-    let landed = env.local(&mut ui).handle_local_input(StatusKind::Idle);
-    backdate_local(lock_after_ms(SLEEP_TIMEOUT_MS.load(Ordering::Relaxed)));
-    let rested = env.local(&mut ui).handle_local_input(StatusKind::Idle);
-    ui.tick_deadlines();
-    assert_eq!(
-        (landed, rested, ui.locked),
-        (true, false, true),
-        "a resting contact must not count as a tap again, or the auto-lock never arms"
-    );
-}
-
 #[test]
 fn an_unlock_tap_repaints_home_but_power_cancellation_keeps_the_panel_dark() {
     let env = Env::new();
@@ -631,4 +634,64 @@ fn a_direct_nav_call_on_an_awake_locked_ui_repaints_locked_instead_of_home() {
     assert_eq!(ui.shown, Some(Screen::Locked));
     assert_eq!(env.fs.borrow().write_gen(), generation);
     assert!(!ui.panel.oob);
+}
+
+// --- The no-host status card ------------------------------------------------
+
+/// A device no host ever configured shows its card once the delay is up, and the
+/// spinner pulse stops with it. The pulse paints the arc straight onto the panel every
+/// tick, so leaving it armed redraws over the card ten times a second — the bench
+/// symptom of getting this wrong was the card appearing with the spinner still
+/// spinning on top of it.
+#[test]
+fn the_no_host_card_is_not_pulsed_over_by_the_spinner() {
+    let env = Env::new();
+    let mut ui = env.ui(Pad::idle());
+    ui.onboarding = false;
+    let (mut spin, mut breathe) = (rsk_ui::STATUS_ARC_START, 0u8);
+
+    let t0 = Instant::now();
+    ui.hooks.led = rsk_led::STATUS_BOOT;
+    ui.tick_no_host(t0);
+    ui.tick_no_host(t0 + Duration::from_secs(31));
+    assert!(ui.no_host_info, "the no-host clock never ran out");
+
+    // First tick paints the card; the next one must leave it alone.
+    env.local(&mut ui).ambient_repaint(1, &mut spin, &mut breathe);
+    let writes = ui.panel.writes;
+    let damage = ui.panel.damage_presentations;
+    env.local(&mut ui).ambient_repaint(2, &mut spin, &mut breathe);
+    assert_eq!(
+        ui.panel.writes, writes,
+        "the spinner pulsed over the no-host card"
+    );
+    assert_eq!(ui.panel.damage_presentations, damage);
+}
+
+/// The no-host clock: it starts in the boot state, the delay flips the card up, and a
+/// host configuring the device ends it for good — a later detach must not put the panel
+/// back to claiming there is no USB host, which would be false.
+#[test]
+fn a_configured_host_ends_the_no_host_clock_for_good() {
+    let env = Env::new();
+    let mut ui = env.ui(Pad::idle());
+    let t0 = Instant::now();
+
+    ui.hooks.led = rsk_led::STATUS_BOOT;
+    ui.tick_no_host(t0);
+    ui.tick_no_host(t0 + Duration::from_secs(29));
+    assert!(!ui.no_host_info, "the card appeared before the delay");
+    ui.tick_no_host(t0 + Duration::from_secs(31));
+    assert!(ui.no_host_info, "the card never appeared");
+
+    // A host configures the device.
+    ui.hooks.led = rsk_led::STATUS_IDLE;
+    ui.tick_no_host(t0 + Duration::from_secs(32));
+    assert!(!ui.no_host_info);
+
+    // The cable comes out and the status engine is back in its boot state. "USB host
+    // set up" is still true, so the card must not come back.
+    ui.hooks.led = rsk_led::STATUS_BOOT;
+    ui.tick_no_host(t0 + Duration::from_secs(600));
+    assert!(!ui.no_host_info, "a detach restarted the no-host clock");
 }

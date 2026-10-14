@@ -41,6 +41,7 @@ mod applets;
 mod audit;
 mod backup;
 mod boot;
+mod calib;
 mod ceremony;
 mod components;
 mod home;
@@ -64,6 +65,7 @@ pub use backup::{
     render_seal_confirm, render_seed_phrase, render_share_picker, render_slip39_share,
 };
 pub use boot::render_locked_breathe;
+pub use calib::render_calib;
 pub use ceremony::render_add_passkey;
 pub use home::{STATUS_ARC_START, render_home_change, render_status_arc};
 pub use keys::{

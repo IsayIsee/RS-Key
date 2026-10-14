@@ -3,11 +3,13 @@
 
 # Trusted display
 
-**Experimental.** An RS-Key variant for a screen-and-touch RP2350 board (the
-reference target is the **Waveshare RP2350-Touch-LCD-2.8**). The screen turns the
-key into a *trusted display*: the operations that matter (approving a sign-in,
-typing a PIN) happen on the device's own glass, not on the host. A compromised or
-phishing host cannot fake what you see or capture what you type. Concretely:
+**Experimental.** An RS-Key variant for a screen-and-touch RP2350 board — the
+**Waveshare RP2350-Touch-LCD-2.8** (the reference target) and the
+**RP2350-Touch-LCD-2** (see [The 2-inch board](#the-2-inch-board)). The screen
+turns the key into a *trusted display*: the operations that matter (approving a
+sign-in, typing a PIN) happen on the device's own glass, not on the host. A
+compromised or phishing host cannot fake what you see or capture what you type.
+Concretely:
 
 - An **Approve / Deny** prompt paints the *real* relying party for every
   signature. A signature cannot be obtained without a physical tap on a screen
@@ -22,7 +24,7 @@ The whole feature is `dep:`-gated. A standard key without a screen compiles
 from the default firmware image), so an ordinary build is byte-for-byte
 unaffected.
 
-![The trusted display's Home screen: a bright "Ready" status beside a check, a status card reading USB connected / Device PIN set / Passkeys 0, and a bottom navigation bar with Home, Passkeys, Apps and Settings tabs](../images/display-home.png)
+![The trusted display's Home screen: a bright "Ready" status beside a check, a status card with USB, device-PIN and passkey rows, and a bottom navigation bar with Home, Passkeys, Apps and Settings tabs](../images/display-home.png)
 
 The full GUI uses always-on antialiasing. Text uses four-bit IBM Plex Sans and
 Mono coverage data. Icons, circles, status rings, rounded cards, and controls
@@ -110,6 +112,30 @@ Two notes:
 - You can reach BOOTSEL from the panel itself: **Settings → Firmware → reboot to
   BOOTSEL** (a deliberate hold). The reboot routes through the worker so live RAM
   secrets are scrubbed first.
+
+## The 2-inch board
+
+The **RP2350-Touch-LCD-2** wires its panel and touch to different pads than the
+2.8", so it is a board of its own — `BOARD=waveshare-touch-lcd-2` at build time,
+or the image this fork publishes:
+
+```sh
+nix build .#firmware-display-lcd2              # → result/firmware.uf2
+```
+
+Its panel is an **ST7789T3** on the second SPI block (PIO on `GP18`/`GP19`), its
+touch controller is a **CST816D** on `i2c0` (`GP12`/`GP13`) rather than the
+CST328, the backlight is `GP15` (PWM slice 7 channel B), and panel and touch
+share one reset line (`GP20`). The touch's active area is measured per panel and
+mapped onto the glass — the CST816D reports in its own frame, so the numbers in
+`firmware/boards/waveshare-touch-lcd-2.toml` are what put a tap on the pixel it
+was aimed at. A replacement panel's mount can differ enough to need them
+re-measured; `--features display-calib` builds the guided tool that reads them
+off the bench.
+
+**The board has no wake button** (BOOTSEL and RESET only), so the `WAKE_PIN`
+behaviour above does not apply here: the panel wakes when it is touched and
+sleeps on the display-sleep timeout.
 
 ## What's on screen
 
@@ -255,12 +281,14 @@ point is ever shown, and no OATH code is computed (the device has no clock).
 
 Grouped into three domains, plus the journal / backup / reset actions:
 
-- **Display**: backlight brightness (PWM), the display-sleep timeout, and the
-  touch timeout, each adjusted live. All three **persist across reboots**:
-  brightness and sleep in an `EF_DISPLAY` flash record; the touch timeout in
-  `EF_PHY`'s `PresenceTimeout`, the same field `rsk hw --touch-timeout` writes,
-  so the panel and the host tool stay in sync. A configuration lock shuts the host
-  tool's write and not the panel's, which no host can reach.
+- **Display**: backlight brightness (PWM, seven perceptually-even steps), the
+  display-sleep timeout, the touch timeout, and the no-host info delay — how long
+  Home spins "Starting…" before showing its card when no host has configured the
+  device — each adjusted live. All four **persist across reboots**: brightness,
+  sleep and the no-host delay in an `EF_DISPLAY` flash record; the touch timeout
+  in `EF_PHY`'s `PresenceTimeout`, the same field `rsk hw --touch-timeout`
+  writes, so the panel and the host tool stay in sync. A configuration lock shuts
+  the host tool's write and not the panel's, which no host can reach.
 - **Security**: set / change the **device PIN** and the **FIDO clientPIN** (each
   chosen entirely on the panel). Changing the clientPIN asks for the current one
   first, and that prompt *is* the card's `changePIN` check: a **wrong** entry

@@ -51,6 +51,8 @@ mod core1;
 // sits above it (the touch flow vs the key flow) differs per feature.
 #[cfg(feature = "display")]
 mod display;
+#[cfg(feature = "display-calib")]
+mod display_calib;
 #[cfg(feature = "display-keys")]
 mod display_keys;
 #[cfg(any(feature = "display", feature = "display-keys"))]
@@ -273,7 +275,7 @@ const BUILD_WAKE_ACTIVE_HIGH: bool = env_u16(env!("PK_WAKE_ACTIVE_HIGH")) != 0;
 // already drives — catch a bad `WAKE_PIN` at compile time rather than double-claim a pad.
 #[cfg(feature = "display")]
 const _: () = assert!(
-    !BUILD_WAKE_ENABLED || BUILD_WAKE_PIN < 10 || BUILD_WAKE_PIN > 18,
+    !BUILD_WAKE_ENABLED || !matches!(BUILD_WAKE_PIN, 10..=18),
     "WAKE_PIN collides with an LCD/touch GPIO (10..=18) owned by the display build"
 );
 // Display GPIOs — defaults for the Waveshare RP2350-Touch-LCD-2.8.
@@ -282,11 +284,12 @@ const _: () = assert!(
 // knobs below (PWM slice/channel, I2C, wake button) stay `display`-gated.
 #[cfg(any(feature = "display", feature = "display-keys"))]
 const BUILD_DISPLAY_SPI_FREQ_HZ: u32 = env_u32(env!("PK_DISPLAY_SPI_FREQ_HZ"));
-/// The display build's system clock. The panel's PIO program spends two instructions
+/// The display builds' system clock. The panel's PIO program spends two instructions
 /// per serial bit, so `clk_sys` has to be exactly twice `display.spi_freq_hz` for the
 /// divider to be 1 — which is what puts this above the RP2350's rated 150 MHz. The
 /// trade is written down in docs/limitations.md; the const assert below is what stops
-/// a board file from moving one half of it without the other.
+/// a board file from moving one half of it without the other. The fork's GEEK
+/// `display-keys` panel runs the same 80 MHz/160 MHz pair (boards/waveshare-geek.toml).
 #[cfg(any(feature = "display", feature = "display-keys"))]
 const BUILD_DISPLAY_SYS_CLOCK_HZ: u32 = 160_000_000;
 
@@ -310,6 +313,74 @@ const BUILD_DISPLAY_BL_PWM_SLICE: u8 = env_u16(env!("PK_DISPLAY_BL_PWM_SLICE")) 
 const BUILD_DISPLAY_BL_PWM_CHANNEL: u8 = env_u16(env!("PK_DISPLAY_BL_PWM_CHANNEL")) as u8;
 #[cfg(any(feature = "display", feature = "display-keys"))]
 const BUILD_DISPLAY_TP_RST: u8 = env_u16(env!("PK_DISPLAY_TP_RST")) as u8;
+// The PIO serial link's pads — PIO0/SM0 either way, only the pads are board
+// data on the touch builds (GP10/GP11 on the 2.8", GP18/GP19 on the 2") because
+// a `PioPin` is a type; the button build's one board takes them as literals.
+#[cfg(feature = "display")]
+const BUILD_DISPLAY_SPI_CLK: u8 = env_u16(env!("PK_DISPLAY_SPI_CLK")) as u8;
+#[cfg(feature = "display")]
+const BUILD_DISPLAY_SPI_MOSI: u8 = env_u16(env!("PK_DISPLAY_SPI_MOSI")) as u8;
+// The touch bus: I2C1 on GP6/GP7 by default, i2c0 on GP12/GP13 on the 2". Both
+// halves are board data — a pad does not name its instance — and `main` matches
+// the triple below.
+#[cfg(feature = "display")]
+const BUILD_DISPLAY_I2C_INSTANCE: u8 = env_u16(env!("PK_DISPLAY_I2C_INSTANCE")) as u8;
+#[cfg(feature = "display")]
+const BUILD_DISPLAY_I2C_SDA: u8 = env_u16(env!("PK_DISPLAY_I2C_SDA")) as u8;
+#[cfg(feature = "display")]
+const BUILD_DISPLAY_I2C_SCL: u8 = env_u16(env!("PK_DISPLAY_I2C_SCL")) as u8;
+/// The board wires LCD_RST and Touch_RST to one pad, so the panel's reset pulse
+/// resets the touch controller too and nothing else may claim that pad.
+#[cfg(any(feature = "display", feature = "display-keys"))]
+const BUILD_DISPLAY_TP_RST_SHARED: bool = env_u16(env!("PK_DISPLAY_TP_RST_SHARED")) != 0;
+/// Which panel register set the controller wants: 0 = ST7789V2 (GEEK, 2.8"),
+/// 1 = ST7789T3 (the 2"). Both live in [`display_panel`].
+#[cfg(any(feature = "display", feature = "display-keys"))]
+const BUILD_DISPLAY_PANEL_INIT: u8 = env_u16(env!("PK_DISPLAY_PANEL_INIT")) as u8;
+/// The touch controller: the CST328 the 2.8" carries, or the CST816D on the 2".
+/// Their register layouts share nothing — 16-bit addresses against single-byte
+/// ones — so the driver dispatches on this.
+#[cfg(feature = "display")]
+const TOUCH_CST328: u8 = 0;
+#[cfg(feature = "display")]
+const TOUCH_CST816D: u8 = 1;
+#[cfg(feature = "display")]
+const BUILD_DISPLAY_TOUCH_IC: u8 = env_u16(env!("PK_DISPLAY_TOUCH_IC")) as u8;
+// The board file's `touch_ic` reaches the driver as `PK_DISPLAY_TOUCH_IC`, which the dispatch
+// in `display::read_report` compares against these two names — pinned here so the encoding
+// is stated once and neither name is left unreferenced by the arm that names only one.
+#[cfg(feature = "display")]
+const _: () = assert!(TOUCH_CST328 == 0 && TOUCH_CST816D == 1);
+/// The calibrated touch range — the raw coordinates at the glass's edges — or
+/// `None` when the controller already reports panel pixels (the 2.8"'s CST328
+/// is configured at the panel resolution). Build.rs bakes 0xFFFF for "unset".
+#[cfg(feature = "display")]
+const BUILD_DISPLAY_TOUCH_RANGE: Option<rsk_ui::touch::TouchRange> = {
+    let x_min = env_u16(env!("PK_DISPLAY_TOUCH_X_MIN"));
+    if x_min == 0xFFFF {
+        None
+    } else {
+        Some(rsk_ui::touch::TouchRange {
+            x_min,
+            x_max: env_u16(env!("PK_DISPLAY_TOUCH_X_MAX")),
+            y_min: env_u16(env!("PK_DISPLAY_TOUCH_Y_MIN")),
+            y_max: env_u16(env!("PK_DISPLAY_TOUCH_Y_MAX")),
+        })
+    }
+};
+// A CST816D reports in its own frame rather than the panel's, so a board that
+// selects one without the calibrated range would map every tap through the
+// identity and land it in the wrong place. The two are required together.
+#[cfg(feature = "display")]
+const _: () = assert!(
+    BUILD_DISPLAY_TOUCH_IC != TOUCH_CST816D || BUILD_DISPLAY_TOUCH_RANGE.is_some(),
+    "a cst816d board must declare touch_x_min/touch_x_max/touch_y_min/touch_y_max"
+);
+/// The controller's Touch_INT pad, or `u8::MAX` for a board that wires none — which is
+/// every display board but the 2". The calibration tool counts the reports the
+/// controller announces on it (`display_calib`); the flow itself does not read the line.
+#[cfg(feature = "display")]
+const BUILD_DISPLAY_TOUCH_IRQ: u8 = env_u16(env!("PK_DISPLAY_TOUCH_IRQ")) as u8;
 #[cfg(feature = "display")]
 const BUILD_DISPLAY_I2C_FREQ_HZ: u32 = env_u32(env!("PK_DISPLAY_I2C_FREQ_HZ"));
 #[cfg(any(feature = "display", feature = "display-keys"))]
@@ -333,14 +404,33 @@ pub(crate) const BUILD_DISPLAY_WIN_OFF: (u16, u16) = (
 // by both panel builds; the wake-button overlap check is touch-build-only.
 #[cfg(any(feature = "display", feature = "display-keys"))]
 const _: () = {
+    // The controller's announcement line, where the board wires one — and the sentinel
+    // otherwise, which no real pad can collide with (the touchless build has none).
+    #[cfg(feature = "display")]
+    const TOUCH_IRQ_PIN: u8 = BUILD_DISPLAY_TOUCH_IRQ;
+    #[cfg(feature = "display-keys")]
+    const TOUCH_IRQ_PIN: u8 = u8::MAX;
+
     const DISPLAY_CTLS: &[u8] = &[
         BUILD_DISPLAY_CS,
         BUILD_DISPLAY_DC,
         BUILD_DISPLAY_RST,
         BUILD_DISPLAY_TP_RST,
         BUILD_DISPLAY_BL_PIN,
+        TOUCH_IRQ_PIN,
     ];
-    // Pins the panel's hard-wired PIO serial link (10/11) and I2C1 (6/7) own.
+    // Pins the panel's serial link and the touch bus own, from the board config:
+    // GP10/11 and GP6/7 on the 2.8", GP18/19 and GP12/13 on the 2". The touchless
+    // `display-keys` build has no touch bus, so it reserves the link its panel
+    // actually uses plus the I2C pads its boards leave free.
+    #[cfg(feature = "display")]
+    const HW_PINS: &[u8] = &[
+        BUILD_DISPLAY_SPI_CLK,
+        BUILD_DISPLAY_SPI_MOSI,
+        BUILD_DISPLAY_I2C_SDA,
+        BUILD_DISPLAY_I2C_SCL,
+    ];
+    #[cfg(feature = "display-keys")]
     const HW_PINS: &[u8] = &[10, 11, 6, 7];
 
     const fn contains(hay: &[u8], needle: u8) -> bool {
@@ -358,7 +448,17 @@ const _: () = {
     while i < DISPLAY_CTLS.len() {
         let mut j = i + 1;
         while j < DISPLAY_CTLS.len() {
-            assert!(DISPLAY_CTLS[i] != DISPLAY_CTLS[j], "duplicate panel GPIO");
+            // One pair may repeat: on a `tp_rst_shared` board LCD_RST and
+            // Touch_RST are the same pad, and then the panel's reset pulse is the
+            // touch controller's too. Any other repeat is still two owners.
+            let rst_pair = (DISPLAY_CTLS[i] == BUILD_DISPLAY_RST
+                && DISPLAY_CTLS[j] == BUILD_DISPLAY_TP_RST)
+                || (DISPLAY_CTLS[i] == BUILD_DISPLAY_TP_RST
+                    && DISPLAY_CTLS[j] == BUILD_DISPLAY_RST);
+            assert!(
+                DISPLAY_CTLS[i] != DISPLAY_CTLS[j] || (BUILD_DISPLAY_TP_RST_SHARED && rst_pair),
+                "duplicate panel GPIO"
+            );
             j += 1;
         }
         i += 1;
@@ -412,28 +512,29 @@ const _: () = {
     }
 };
 
-// Backlight PWM: the only valid (pin, slice, channel) combos on the RP2350.
-// Build.rs bakes the values; catch an unsupported combo at compile time so the
-// runtime `_ => unreachable!(...)` arm below is reachable only on a typo'd build.
+// The supported display wirings, one row per board: (SPI_CLK, SPI_MOSI,
+// I2C_INSTANCE, I2C_SDA, I2C_SCL, BL_PIN, BL_SLICE, BL_CHANNEL). Build.rs bakes
+// the values; one arm of a single match in `main` moves the row's pads, because
+// each of them is a single-owner `Peri` — so a ROW, not an individual knob, is
+// what a new board adds. An unlisted row is a build error rather than a
+// silently mis-wired panel.
 #[cfg(feature = "display")]
 const _: () = assert!(
     matches!(
         (
+            BUILD_DISPLAY_SPI_CLK,
+            BUILD_DISPLAY_SPI_MOSI,
+            BUILD_DISPLAY_I2C_INSTANCE,
+            BUILD_DISPLAY_I2C_SDA,
+            BUILD_DISPLAY_I2C_SCL,
             BUILD_DISPLAY_BL_PIN,
             BUILD_DISPLAY_BL_PWM_SLICE,
-            BUILD_DISPLAY_BL_PWM_CHANNEL
+            BUILD_DISPLAY_BL_PWM_CHANNEL,
         ),
-        (16, 0, 0)
-            | (17, 0, 1)
-            | (18, 1, 0)
-            | (19, 1, 1)
-            | (20, 2, 0)
-            | (21, 2, 1)
-            | (13, 6, 1)
-            | (15, 7, 1)
+        (10, 11, 1, 6, 7, 16, 0, 0) | (18, 19, 0, 12, 13, 15, 7, 1)
     ),
-    "unsupported backlight PWM config (BL_PIN, SLICE, CHANNEL) — \
-     see the Pwm::new_output_* match in main.rs for the supported set"
+    "unsupported display wiring (SPI_CLK, SPI_MOSI, I2C_INSTANCE, I2C_SDA, I2C_SCL, \
+     BL_PIN, BL_SLICE, BL_CHANNEL) — see the per-board match in main.rs"
 );
 
 // Optional nuisance user/status LED to hold OFF at boot (`USR_LED_PIN`): a plain
@@ -541,6 +642,12 @@ static PHY_MANUFACTURER: StaticCell<[u8; 64]> = StaticCell::new();
 /// invariant as FS/RNG above — borrows never span `.await`.
 #[cfg(feature = "display")]
 static UI: StaticCell<RefCell<display::Ui>> = StaticCell::new();
+/// The touch controller's I2C bus, shared by the flow's polls and by the task that reads it
+/// at the controller's own announcement (`display::TouchHw` says why). A `RefCell` is the
+/// whole of the synchronization: both readers run on the thread executor, and the UI's own
+/// cell — which a modal holds for a whole screen — is a different one.
+#[cfg(feature = "display")]
+static TOUCH_BUS: StaticCell<RefCell<display::TouchI2c>> = StaticCell::new();
 #[cfg(feature = "display-keys")]
 static KEY_UI: StaticCell<display_keys::SharedPanel> = StaticCell::new();
 /// The device identity the display's own screens unbox the resident-credential seed
@@ -802,6 +909,8 @@ async fn main(spawner: Spawner) {
         // `put` — latches the marker anyway, and the boot that finally migrates that
         // record finds the lap gated shut for the life of the key. The re-arm costs
         // nothing at this position: it clears the marker the lap below re-latches.
+        // The display-keys build defers the lap to the panel (lap_needed below): the
+        // ~30 s stall shows a working page instead of a black panel.
         #[cfg(not(feature = "display-keys"))]
         if mkek.is_some() {
             rsk_fs::run_at_rest_lap(&mut fs);
@@ -1193,19 +1302,59 @@ async fn main(spawner: Spawner) {
         let Pio {
             mut common, sm0, ..
         } = Pio::new(p.PIO0, Irqs);
-        let spi = display::PioDisplayTx::new(
-            &mut common,
-            sm0,
-            p.PIN_10,
-            p.PIN_11,
-            p.DMA_CH0,
-            Irqs,
-            BUILD_DISPLAY_SPI_FREQ_HZ,
-        );
-
+        // The transport is PIO0/SM0 on every board, but the pads are data and a
+        // `PioPin` is a type, so the board's pair picks the arm; the const assert
+        // below keeps the supported set closed.
+        // The board's display wiring in ONE match. Every pad is a single-owner
+        // `Peri` value and each consumer (PIO link, I2C instance, backlight PWM)
+        // wants a statically typed one, so a *second* match naming a pad the
+        // first has already moved fails to borrow-check — even in arms this
+        // build does not take. One row per board; the const assert below keeps
+        // that set closed.
         let mut i2c_cfg = I2cConfig::default();
         i2c_cfg.frequency = BUILD_DISPLAY_I2C_FREQ_HZ;
-        let i2c = I2c::new_blocking(p.I2C1, p.PIN_7, p.PIN_6, i2c_cfg);
+        let (spi, i2c, bl) = match (
+            BUILD_DISPLAY_SPI_CLK,
+            BUILD_DISPLAY_SPI_MOSI,
+            BUILD_DISPLAY_I2C_INSTANCE,
+            BUILD_DISPLAY_I2C_SDA,
+            BUILD_DISPLAY_I2C_SCL,
+            BUILD_DISPLAY_BL_PIN,
+            BUILD_DISPLAY_BL_PWM_SLICE,
+            BUILD_DISPLAY_BL_PWM_CHANNEL,
+        ) {
+            // Waveshare RP2350-Touch-LCD-2.8 — link on GP10/11, CST328 on I2C1
+            // (GP6/GP7), backlight on GP16 (slice 0 channel A).
+            (10, 11, 1, 6, 7, 16, 0, 0) => (
+                display::PioDisplayTx::new(
+                    &mut common,
+                    sm0,
+                    p.PIN_10,
+                    p.PIN_11,
+                    p.DMA_CH0,
+                    Irqs,
+                    BUILD_DISPLAY_SPI_FREQ_HZ,
+                ),
+                display::TouchI2c::block1(I2c::new_blocking(p.I2C1, p.PIN_7, p.PIN_6, i2c_cfg)),
+                Pwm::new_output_a(p.PWM_SLICE0, p.PIN_16, display::backlight_cfg(0)),
+            ),
+            // Waveshare RP2350-Touch-LCD-2 — link on GP18/19, CST816D on i2c0
+            // (GP12/GP13), backlight on GP15 (slice 7 channel B).
+            (18, 19, 0, 12, 13, 15, 7, 1) => (
+                display::PioDisplayTx::new(
+                    &mut common,
+                    sm0,
+                    p.PIN_18,
+                    p.PIN_19,
+                    p.DMA_CH0,
+                    Irqs,
+                    BUILD_DISPLAY_SPI_FREQ_HZ,
+                ),
+                display::TouchI2c::block0(I2c::new_blocking(p.I2C0, p.PIN_13, p.PIN_12, i2c_cfg)),
+                Pwm::new_output_b(p.PWM_SLICE7, p.PIN_15, display::backlight_cfg(0)),
+            ),
+            _ => unreachable!("unsupported display wiring (see the const assert below)"),
+        };
 
         let cs = Output::new(
             // SAFETY: a board-config panel pin that `main` hands to no other driver.
@@ -1245,34 +1394,17 @@ async fn main(spawner: Spawner) {
         } else {
             None
         };
-        // Backlight PWM — pin, slice, and channel from the board config.
-        let bl = {
-            let cfg = display::backlight_cfg(0);
-            match (
-                BUILD_DISPLAY_BL_PIN,
-                BUILD_DISPLAY_BL_PWM_SLICE,
-                BUILD_DISPLAY_BL_PWM_CHANNEL,
-            ) {
-                (16, 0, 0) => Pwm::new_output_a(p.PWM_SLICE0, p.PIN_16, cfg),
-                (17, 0, 1) => Pwm::new_output_b(p.PWM_SLICE0, p.PIN_17, cfg),
-                (18, 1, 0) => Pwm::new_output_a(p.PWM_SLICE1, p.PIN_18, cfg),
-                (19, 1, 1) => Pwm::new_output_b(p.PWM_SLICE1, p.PIN_19, cfg),
-                (20, 2, 0) => Pwm::new_output_a(p.PWM_SLICE2, p.PIN_20, cfg),
-                (21, 2, 1) => Pwm::new_output_b(p.PWM_SLICE2, p.PIN_21, cfg),
-                (13, 6, 1) => Pwm::new_output_b(p.PWM_SLICE6, p.PIN_13, cfg),
-                (15, 7, 1) => Pwm::new_output_b(p.PWM_SLICE7, p.PIN_15, cfg),
-                _ => {
-                    // Guarded by the const assert below — unreachable at runtime,
-                    // kept so the match stays exhaustive over (pin, slice, channel).
-                    unreachable!("unsupported backlight PWM config")
-                }
-            }
+        // On a `tp_rst_shared` board the panel's reset pulse already reset the
+        // touch controller, and the same pad cannot have two owners.
+        let tp_rst = if BUILD_DISPLAY_TP_RST_SHARED {
+            None
+        } else {
+            Some(Output::new(
+                // SAFETY: a board-config panel pin that `main` hands to no other driver.
+                unsafe { embassy_rp::gpio::AnyPin::steal(BUILD_DISPLAY_TP_RST) },
+                Level::High,
+            ))
         };
-        let tp_rst = Output::new(
-            // SAFETY: a board-config panel pin that `main` hands to no other driver.
-            unsafe { embassy_rp::gpio::AnyPin::steal(BUILD_DISPLAY_TP_RST) },
-            Level::High,
-        );
 
         let panel = display::PanelHw {
             spi,
@@ -1281,7 +1413,11 @@ async fn main(spawner: Spawner) {
             rst,
             bl,
         };
-        let touch = display::TouchHw { i2c, rst: tp_rst };
+        let bus: &'static RefCell<display::TouchI2c> = TOUCH_BUS.init(RefCell::new(i2c));
+        let touch = display::TouchHw {
+            i2c: bus,
+            rst: tp_rst,
+        };
         let info = display::DeviceInfo {
             version: device_release,
             chipid: u64::from_le_bytes(serial_id),
@@ -1303,6 +1439,34 @@ async fn main(spawner: Spawner) {
         let ui: &'static RefCell<display::Ui> = UI.init(RefCell::new(display::build(
             panel, touch, info, cells, rng_ref, wake_btn,
         )));
+        // The controller's announcement line, where the board wires one — the build bakes
+        // `u8::MAX` for a board without it. Both readers want it: the flow reads the report
+        // *at* each announcement, which is where the vendor's own driver reads it, and the
+        // calibration tool counts the announcements instead. It is one pad, so either build
+        // spawns one task or the other.
+        if BUILD_DISPLAY_TOUCH_IRQ != u8::MAX {
+            use embassy_rp::gpio::{Input, Pull};
+            // Board data is a const, so the pad is claimed by number — the route
+            // CS/DC/RST/TP_RST already take. Pulled **up**: the vendor configures this
+            // line that way (`pinMode(Touch_INT_PIN, INPUT_PULLUP)` in the Arduino example,
+            // `DEV_KEY_Config` in the C ones), so the pull is part of the hardware
+            // reference this fork had no reason to drive the other way (2026-09-29).
+            let irq = Input::new(
+                // SAFETY: a board-config panel pin the compile-time asserts above
+                // prove unowned, handed to no other driver.
+                unsafe { embassy_rp::gpio::AnyPin::steal(BUILD_DISPLAY_TOUCH_IRQ) },
+                Pull::Up,
+            );
+            #[cfg(feature = "display-calib")]
+            spawner.spawn(display_calib::irq_task(irq).unwrap());
+            #[cfg(not(feature = "display-calib"))]
+            spawner.spawn(display::touch_irq_task(irq, bus).unwrap());
+        }
+        // The calibration build swaps the ambient status loop for the tool's own; the
+        // flow that would repaint over its screen is never started.
+        #[cfg(feature = "display-calib")]
+        spawner.spawn(display_calib::calib_task(ui).unwrap());
+        #[cfg(not(feature = "display-calib"))]
         spawner.spawn(display::status_task(ui, cells).unwrap());
         ui
     };
