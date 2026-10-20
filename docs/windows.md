@@ -101,7 +101,7 @@ See [ssh.md](guides/ssh.md) for the WebAuthn/OpenSSH details.
   certificate login failing with `NTE_BAD_KEYSET` ("the keyset does not exist"):**
   the Windows inbox PIV minidriver enumerates the card's containers from its CHUID
   and reads the mandatory Card Capability Container (`5FC107`) while opening one.
-  Firmware 0x098F and later serves both automatically, so a freshly flashed card is
+  Firmware 0x09DB and later serves both automatically, so a freshly flashed card is
   usable; on older firmware, provision them (`ykman piv objects generate chuid`,
   `ykman piv objects generate ccc`). A Yubico-VID build avoids the inbox minidriver
   entirely — Yubico's own does not ask for the container object. (The RSA/EC signing
