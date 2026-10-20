@@ -82,7 +82,8 @@ signature and reproduce the build yourself: [docs/releases.md](docs/releases.md)
 > **This fork** ([IsayIsee/RS-Key](https://github.com/IsayIsee/RS-Key)) publishes
 > only the boards it has adapted: the Waveshare RP2350-GEEK images —
 > `display-keys` plus its `-strong-pin` and `-always-uv` variants — and the
-> Waveshare RP2350-Touch-LCD-2" (`display-lcd2`). For every other board take the
+> Waveshare RP2350-Touch-LCD-2" (`display-lcd2`, likewise with both posture
+> variants). For every other board take the
 > upstream releases:
 > [TheMaxMur/RS-Key/releases](https://github.com/TheMaxMur/RS-Key/releases/latest).
 

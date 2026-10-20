@@ -1062,6 +1062,28 @@ where those cells would have to hold. Whether the preset column survives once \
 the flavor exists, or the two collapse into one, is the ruling this asks for."""
 
 [[question]]
+column = "firmware-display-lcd2-strong-pin"
+owner = "contributor"
+settled_by = "evidence"
+text = """
+As `firmware-display-lcd2`, plus: a six-code-point PIN floor and a \
+trivially-guessable-PIN refusal. The 2" has a touch pad, so unlike the GEEK's \
+pair a PIN is entered on the build's own screen. Does either rule reach a row at \
+this column, or does the `display,always-uv`/`display,strong-pin` clippy pair \
+only prove the combinations compile?"""
+
+[[question]]
+column = "firmware-display-lcd2-always-uv"
+owner = "contributor"
+settled_by = "evidence"
+text = """
+As `firmware-display-lcd2`, plus: `always-uv` demands the touch on every \
+operation, and this build's touch pad already carries the confirm page. Does \
+that leave `SEC-POL-*`'s comparisons identical to `firmware-always-uv`'s, \
+stronger (one gesture per operation, nothing ambient to spend), or undecidable \
+without a row that exercises the policy?"""
+
+[[question]]
 column = "display-calib"
 owner = "maintainer"
 settled_by = "ruling"

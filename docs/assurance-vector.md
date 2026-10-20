@@ -62,8 +62,8 @@ The `freshness` axis reads committed history only, so an uncommitted edit to an 
 | `SEC-REF-004` | `R4bEventConsensus` | 2 of 9 | 0 | 2 of 9 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
 | `SEC-REF-005` | `NoAuthorizationBypassA` | 1 of 2 | 0 | 0 of 0 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
 | `SEC-REF-006` | `RequiredGateAgreesWithRelation` | 0 of 1 | 0 | 0 of 0 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
-| `SEC-FIDO-001` | `NoAuthorizationBypass` | 5 of 50 | 12 | 0 of 0 | 4 | 0 | 3 | 4 | `f52b720` stale (58 input(s) newer) | BOUNDED |
-| `SEC-FIDO-002` | `NoCrossTransportTouchConsumption` | 5 of 42 | 5 | 0 of 0 | 2 | 0 | 3 | 4 | `31c21a7` stale (3 input(s) newer) | BOUNDED |
+| `SEC-FIDO-001` | `NoAuthorizationBypass` | 5 of 50 | 12 | 0 of 0 | 4 | 0 | 3 | 4 | `f52b720` stale (59 input(s) newer) | BOUNDED |
+| `SEC-FIDO-002` | `NoCrossTransportTouchConsumption` | 5 of 42 | 5 | 0 of 0 | 2 | 0 | 3 | 4 | `31c21a7` stale (4 input(s) newer) | BOUNDED |
 | `SEC-FIDO-003` | `NoTokenAfterInvalidation` | 5 of 45 | 6 | 0 of 0 | 2 | 0 | 4 | 0 | `31c21a7` stale (9 input(s) newer) | BOUNDED |
 | `SEC-FIDO-004` | `NoAccessibleSecretWithoutGate` | 5 of 39 | 2 | 0 of 0 | 0 | 0 | 4 | 0 | `31c21a7` stale (5 input(s) newer) | MODELLED-ONLY |
 | `SEC-FIDO-005` | `NoUnmanageableCredential` | 5 of 40 | 3 | 0 of 0 | 0 | 0 | 4 | 0 | `31c21a7` stale (6 input(s) newer) | MODELLED-ONLY |
@@ -105,9 +105,9 @@ The `freshness` axis reads committed history only, so an uncommitted edit to an 
 | `SEC-ADM-002` | `PrivilegedOpNeedsPresence` | 1 of 6 | 1 | 0 of 0 | 0 | 0 | 3 | 4 | — | MODELLED-ONLY |
 | `SEC-ADM-003` | `DisableSetSurvivesLockWrite` | 1 of 6 | 1 | 0 of 0 | 0 | 0 | 0 | 0 | — | MODELLED-ONLY |
 | `SEC-ADM-004` | `DisabledAppletNeverDispatches` | 1 of 6 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
-| `SEC-DISP-001` | `ConfirmNamesTheOperation` | 1 of 5 | 1 | 0 of 0 | 0 | 0 | 0 | 30 | — | MODELLED-ONLY |
-| `SEC-DISP-002` | `StaleTouchApprovesNothing` | 1 of 5 | 1 | 0 of 0 | 0 | 0 | 0 | 30 | — | MODELLED-ONLY |
-| `SEC-DISP-003` | `OnlyAllowConfirms` | 1 of 5 | 1 | 0 of 0 | 0 | 0 | 0 | 30 | — | MODELLED-ONLY |
+| `SEC-DISP-001` | `ConfirmNamesTheOperation` | 1 of 5 | 1 | 0 of 0 | 0 | 0 | 0 | 31 | — | MODELLED-ONLY |
+| `SEC-DISP-002` | `StaleTouchApprovesNothing` | 1 of 5 | 1 | 0 of 0 | 0 | 0 | 0 | 31 | — | MODELLED-ONLY |
+| `SEC-DISP-003` | `OnlyAllowConfirms` | 1 of 5 | 1 | 0 of 0 | 0 | 0 | 0 | 31 | — | MODELLED-ONLY |
 | `SEC-BOOT-001` | `MarkerNeverLies` | 4 of 13 | 2 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
 | `SEC-BOOT-002` | `TheWholeLockRides` | 3 of 8 | 1 | 0 of 0 | 0 | 0 | 4 | 0 | — | MODELLED-ONLY |
 | `SEC-TRANS-001` | `NoCrossChannelSplice` | 1 of 5 | 1 | 0 of 0 | 2 | 0 | 10 | 0 | — | BOUNDED |
@@ -126,36 +126,45 @@ The same 40 P0-family rows, counted the other way round: per column rather than 
 
 | Column | Kind | Published | Placed | Unplaced |
 |---|---|---|---:|---:|
-| `firmware` | package | yes | 40 | 0 |
+| `firmware` | package | no | 40 | 0 |
 | `firmware-no-touch` | package | no | 7 | 33 |
-| `firmware-fips` | package | yes | 3 | 37 |
-| `firmware-pqc` | package | yes | 3 | 37 |
-| `firmware-fips-pqc` | package | yes | 3 | 37 |
+| `firmware-fips` | package | no | 3 | 37 |
+| `firmware-pqc` | package | no | 3 | 37 |
+| `firmware-fips-pqc` | package | no | 3 | 37 |
 | `firmware-no-touch-pqc` | package | no | 7 | 33 |
 | `firmware-no-touch-fips` | package | no | 7 | 33 |
 | `firmware-no-touch-fips-pqc` | package | no | 7 | 33 |
-| `firmware-strong-pin` | package | yes | 3 | 37 |
-| `firmware-strong-pin-pqc` | package | yes | 3 | 37 |
-| `firmware-always-uv` | package | yes | 3 | 37 |
-| `firmware-always-uv-pqc` | package | yes | 3 | 37 |
-| `firmware-strict-up` | package | yes | 3 | 37 |
-| `firmware-strict-up-pqc` | package | yes | 3 | 37 |
+| `firmware-strong-pin` | package | no | 3 | 37 |
+| `firmware-strong-pin-pqc` | package | no | 3 | 37 |
+| `firmware-always-uv` | package | no | 3 | 37 |
+| `firmware-always-uv-pqc` | package | no | 3 | 37 |
+| `firmware-strict-up` | package | no | 3 | 37 |
+| `firmware-strict-up-pqc` | package | no | 3 | 37 |
 | `firmware-pico` | package | no | 40 | 0 |
-| `firmware-display` | package | yes | 0 | 40 |
-| `firmware-2mb` | package | yes | 9 | 31 |
-| `firmware-16mb` | package | yes | 9 | 31 |
-| `firmware-strict-config` | package | yes | 3 | 37 |
+| `firmware-display` | package | no | 0 | 40 |
+| `firmware-display-lcd2` | package | yes | 0 | 40 |
+| `firmware-display-lcd2-strong-pin` | package | yes | 0 | 40 |
+| `firmware-display-lcd2-always-uv` | package | yes | 0 | 40 |
+| `firmware-display-keys` | package | yes | 0 | 40 |
+| `firmware-display-keys-strong-pin` | package | yes | 0 | 40 |
+| `firmware-display-keys-always-uv` | package | yes | 0 | 40 |
+| `firmware-2mb` | package | no | 9 | 31 |
+| `firmware-16mb` | package | no | 9 | 31 |
+| `firmware-strict-config` | package | no | 3 | 37 |
 | `keygen-bench` | feature | no | 3 | 37 |
 | `core1-stats` | feature | no | 3 | 37 |
 | `bench` | feature | no | 3 | 37 |
 | `fido-conformance` | feature | no | 3 | 37 |
 | `ea-conformance-rpid` | feature | no | 3 | 37 |
 | `largeblob-ext` | feature | no | 3 | 37 |
+| `display-calib` | feature | no | 0 | 40 |
 | `abrobot-16m` | board | no | 9 | 31 |
 | `abrobot-4m` | board | no | 36 | 4 |
 | `seeed-xiao` | board | no | 9 | 31 |
 | `tenstar-usb` | board | no | 9 | 31 |
+| `waveshare-geek` | board | no | 3 | 37 |
 | `waveshare-one` | board | no | 40 | 0 |
+| `waveshare-touch-lcd-2` | board | no | 0 | 40 |
 | `waveshare-touch-lcd` | board | no | 9 | 31 |
 
 Read the feature rows first: every one of them carries the same handful of placed cells and the rest unplaced, which is the shape roadmap §12 calls feature blindness. A default-build proof is not a proof about the image a feature builds, and the column is where that stops being invisible.
@@ -166,8 +175,8 @@ Three spellings of "not current", which used to sit on two different pages and i
 
 | Kind | Subject | What is outstanding |
 |---|---|---|
-| bundle | `SEC-FIDO-001` | 58 input(s) newer than `f52b720` |
-| bundle | `SEC-FIDO-002` | 3 input(s) newer than `31c21a7` |
+| bundle | `SEC-FIDO-001` | 59 input(s) newer than `f52b720` |
+| bundle | `SEC-FIDO-002` | 4 input(s) newer than `31c21a7` |
 | bundle | `SEC-FIDO-003` | 9 input(s) newer than `31c21a7` |
 | bundle | `SEC-FIDO-004` | 5 input(s) newer than `31c21a7` |
 | bundle | `SEC-FIDO-005` | 6 input(s) newer than `31c21a7` |

@@ -328,6 +328,27 @@ in
         "display"
       ];
     };
+    # Security-posture variants of the 2", standalone like the GEEK's pair.
+    firmware-display-lcd2-strong-pin = mkFirmware {
+      name = "firmware-display-lcd2-strong-pin";
+      board = "waveshare-touch-lcd-2";
+      flashSize = "16M";
+      ledKind = "none";
+      cargoFlags = [
+        "--features"
+        "display,strong-pin"
+      ];
+    };
+    firmware-display-lcd2-always-uv = mkFirmware {
+      name = "firmware-display-lcd2-always-uv";
+      board = "waveshare-touch-lcd-2";
+      flashSize = "16M";
+      ledKind = "none";
+      cargoFlags = [
+        "--features"
+        "display,always-uv"
+      ];
+    };
     # Touchless screen + button flavor for the Waveshare RP2350-GEEK (and, going
     # forward, every board of this form): the ST7789 panel is the status
     # indicator and the trusted confirm page, and the single BOOTSEL button is

@@ -33,7 +33,7 @@
 (* (crates/rsk-display/src/presence.rs:91), so no second operation can       *)
 (* repaint the glass mid-wait; card-swap is structurally absent and the one  *)
 (* bit is faithful. The touch controller reports LEVEL, not edges            *)
-(* (crates/rsk-display/src/power.rs:55-65) -- which is exactly why the       *)
+(* (crates/rsk-display/src/power.rs:65-84) -- which is exactly why the       *)
 (* stale-press question exists and is modelled. Timeouts and CTAPHID cancel  *)
 (* collapse into the one Dismiss exit: every non-Allow exit must read the    *)
 (* same, and that collapse IS the third invariant.                           *)
@@ -57,8 +57,8 @@ CONSTANTS
     \* a pre-screen touch, and the ambient-screen class swept with it): the
     \* panel reports contact LEVEL, not edges, so a finger already down when a
     \* screen paints reads as a tap ON that screen. The defence is the release
-    \* edge, twice: `Ui::touch_armed` + `armed_touch`
-    \* (crates/rsk-display/src/power.rs:55-65 -- a contact predating this
+    \* edge, twice: `Ui::touch_armed` + `poll_touch`
+    \* (crates/rsk-display/src/power.rs:65-84 -- a contact predating this
     \* screen stays disarmed) and the
     \* ceremony's own `wait_release_ceremony` at card entry
     \* (crates/rsk-display/src/presence.rs:198 -- "a finger already down
@@ -141,8 +141,8 @@ PadDone ==
                     /\ stale' = s
               /\ UNCHANGED << pending, viol >>
 
-\* The finger lifts: the level-based controller sees no contact, `armed_touch`
-\* re-arms, and the next press is fresh (crates/rsk-display/src/power.rs:56-59).
+\* The finger lifts: the level-based controller sees no contact, `poll_touch`
+\* re-arms, and the next press is fresh (crates/rsk-display/src/power.rs:66-73).
 Lift ==
     /\ shown = Card
     /\ stale

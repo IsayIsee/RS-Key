@@ -18,7 +18,7 @@ See [production.md](production.md) for that.
 
 | Layer | Artifact | What it proves |
 |---|---|---|
-| Reproducible build | the 14 `.uf2` flavors | the binary is a pure function of the source at the tag. Anyone can rebuild it — which says the BUILD is deterministic, not that the machine code preserves what the source proves |
+| Reproducible build | the 6 `.uf2` flavors | the binary is a pure function of the source at the tag. Anyone can rebuild it — which says the BUILD is deterministic, not that the machine code preserves what the source proves |
 | Repro **gate** | (CI, blocking) | the release job *fails* if any flavor doesn't rebuild bit-identical, so a non-reproducible image is never published |
 | Checksums + signature | `SHA256SUMS` + `SHA256SUMS.sigstore.json` | the hashes were signed by this repo's release workflow (keyless cosign). Up to v0.4.10 the same file is named `SHA256SUMS.cosign.bundle` |
 | Build provenance | a GitHub **attestation**, plus `rs-key-<tag>.intoto.jsonl` on the release | which reusable workflow, at which commit, on which runner built each `.uf2`. **SLSA v1 Build L3**, keyless via `attest-build-provenance`. The API copy is authoritative; the file is for offline checking |
@@ -154,8 +154,8 @@ The closed vocabulary the `Subject` column below is drawn from. Printed here bec
 | 4 | actions/cache | `none` | The cargo registry cache. Outside the Nix sandbox, so it feeds no shipped byte — `nix build` vendors from `Cargo.lock`. |
 | 5 | sigstore/cosign-installer | `none` | Installs the signer. Its pin is part of the trust base: this is the code that holds the OIDC token. |
 | 6 | resolve tag | `admission` | Shape, charset, and an ancestor-of-`main` test. Defence in depth only: an actor who can push a tag also controls this file at that ref, so the primary control is a repository tag ruleset. |
-| 7 | build the 4 reproducible firmware flavors | `none` | Produces the images. A build alone establishes nothing — it is the rebuild below that turns it into evidence. |
-| 8 | reproducibility gate — rebuild all 4, require bit-identical | `bit-for-bit` | Recompiles every flavor already in the store and fails on a hash mismatch, so a non-reproducible image is never published. Says the BUILD is a function of its inputs; says nothing about what the machine code means. |
+| 7 | build the 6 reproducible firmware flavors | `none` | Produces the images. A build alone establishes nothing — it is the rebuild below that turns it into evidence. |
+| 8 | reproducibility gate — rebuild all 6, require bit-identical | `bit-for-bit` | Recompiles every flavor already in the store and fails on a hash mismatch, so a non-reproducible image is never published. Says the BUILD is a function of its inputs; says nothing about what the machine code means. |
 | 9 | generate the CycloneDX SBOM | `inventory` | The firmware crate's dependency tree, scoped to the shipped target. |
 | 10 | checksums | `integrity` | A digest of every `.uf2` and of the SBOM. It does not cover itself, its own signature or the provenance bundle — the last two are written after this step, and the attestation is what stands behind them. |
 | 11 | attest build provenance | `origin` | GitHub build provenance for the `.uf2` files this step is handed, bound to THIS reusable workflow's identity — the difference between SLSA Build L3 and L2. |
@@ -189,10 +189,10 @@ exit 1
 fi
 echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
-# 7. build the 4 reproducible firmware flavors
+# 7. build the 6 reproducible firmware flavors
 tag="${{ steps.tag.outputs.tag }}"
 mkdir -p dist
-for pkg in firmware-display-keys firmware-display-keys-strong-pin firmware-display-keys-always-uv firmware-display-lcd2; do
+for pkg in firmware-display-keys firmware-display-keys-strong-pin firmware-display-keys-always-uv firmware-display-lcd2 firmware-display-lcd2-strong-pin firmware-display-lcd2-always-uv; do
 echo "::group::nix build .#$pkg"
 out="$(nix build ".#$pkg" --no-link --print-out-paths)"
 label="${pkg#firmware}"; label="${label#-}"
@@ -201,13 +201,13 @@ cp "$out/$pkg.uf2" "dist/rs-key-${tag}-${label}.uf2"
 echo "::endgroup::"
 done
 ls -l dist
-# 8. reproducibility gate — rebuild all 4, require bit-identical
-for pkg in firmware-display-keys firmware-display-keys-strong-pin firmware-display-keys-always-uv firmware-display-lcd2; do
+# 8. reproducibility gate — rebuild all 6, require bit-identical
+for pkg in firmware-display-keys firmware-display-keys-strong-pin firmware-display-keys-always-uv firmware-display-lcd2 firmware-display-lcd2-strong-pin firmware-display-lcd2-always-uv; do
 echo "::group::nix build .#$pkg --rebuild"
 nix build ".#$pkg" --rebuild --no-link
 echo "::endgroup::"
 done
-echo "all 4 flavors rebuilt bit-identical"
+echo "all 6 flavors rebuilt bit-identical"
 # 9. generate the CycloneDX SBOM
 tag="${{ steps.tag.outputs.tag }}"
 nix develop -c cargo cyclonedx --manifest-path firmware/Cargo.toml --target thumbv8m.main-none-eabihf --format json
@@ -296,6 +296,8 @@ The build step and the reproducibility gate iterate the same list, and a differe
 | `firmware-display-keys-strong-pin` | `rs-key-<tag>-display-keys-strong-pin.uf2` | `--features display-keys,strong-pin`, `board = "waveshare-geek"`, `flashSize = "16M"`, `ledKind = "none"` |
 | `firmware-display-keys-always-uv` | `rs-key-<tag>-display-keys-always-uv.uf2` | `--features display-keys,always-uv`, `board = "waveshare-geek"`, `flashSize = "16M"`, `ledKind = "none"` |
 | `firmware-display-lcd2` | `rs-key-<tag>-display-lcd2.uf2` | `--features display`, `board = "waveshare-touch-lcd-2"`, `flashSize = "16M"`, `ledKind = "none"` |
+| `firmware-display-lcd2-strong-pin` | `rs-key-<tag>-display-lcd2-strong-pin.uf2` | `--features display,strong-pin`, `board = "waveshare-touch-lcd-2"`, `flashSize = "16M"`, `ledKind = "none"` |
+| `firmware-display-lcd2-always-uv` | `rs-key-<tag>-display-lcd2-always-uv.uf2` | `--features display,always-uv`, `board = "waveshare-touch-lcd-2"`, `flashSize = "16M"`, `ledKind = "none"` |
 
 ### Inside the sandbox
 
@@ -318,8 +320,8 @@ The files that decide what a release is. A digest here covers the parts the tabl
 | File | sha256 |
 |---|---|
 | `.github/workflows/release.yml` | `943eae75595831de403c51f1468be0d255b182a20fb155ab9a9eca956c54270f` |
-| `.github/workflows/release-build.yml` | `53969a6bde5ba6b8a6dd6df5be5fcf26add564dc43c9295a7d815f9072e2afc7` |
-| `nix/firmware.nix` | `f840d97c458837ecbbf306814f5195b98d4b3203c007d0967fc43d0bbd7ddb45` |
+| `.github/workflows/release-build.yml` | `ce8c5ac73d018b0ec66bba7dec370b830b4336a24c0a846f2bbab2d520a9d421` |
+| `nix/firmware.nix` | `3189959ac3aadd48699d433dd34fdb4d91f2399d8ff9bc34e108a751826b8725` |
 | `scripts/pt.sh` | `c55ba6255421a664c13ba8b1e3b05b01af842d3ba8e95cd986a7a46005c877ed` |
 
 The CI code that runs them, pinned by commit:
@@ -335,7 +337,7 @@ The CI code that runs them, pinned by commit:
 
 The toolchain closure — `flake.lock`, `Cargo.lock` and the tools they pin — is the table above this section, and is deliberately not restated here: one copy, one place it can rot.
 
-Published assets: `SHA256SUMS`, `SHA256SUMS.sigstore.json`, `rs-key-<tag>-display-keys-always-uv.uf2`, `rs-key-<tag>-display-keys-strong-pin.uf2`, `rs-key-<tag>-display-keys.uf2`, `rs-key-<tag>-display-lcd2.uf2`, `rs-key-<tag>-sbom.cdx.json`, `rs-key-<tag>.intoto.jsonl`.
+Published assets: `SHA256SUMS`, `SHA256SUMS.sigstore.json`, `rs-key-<tag>-display-keys-always-uv.uf2`, `rs-key-<tag>-display-keys-strong-pin.uf2`, `rs-key-<tag>-display-keys.uf2`, `rs-key-<tag>-display-lcd2-always-uv.uf2`, `rs-key-<tag>-display-lcd2-strong-pin.uf2`, `rs-key-<tag>-display-lcd2.uf2`, `rs-key-<tag>-sbom.cdx.json`, `rs-key-<tag>.intoto.jsonl`.
 
 ### What this table does not read
 
@@ -364,7 +366,7 @@ nix build .#firmware            # or .#firmware-pqc, .#firmware-fips, …
 sha256sum result/firmware.uf2   # compare against SHA256SUMS
 ```
 
-CI already enforces this: the release job rebuilds all fourteen flavors with
+CI already enforces this: the release job rebuilds all six flavors with
 `nix build --rebuild` and fails on any bit-level difference before publishing.
 
 ### 2. Checksum signature (keyless cosign)

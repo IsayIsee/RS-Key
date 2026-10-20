@@ -569,6 +569,9 @@ run "clippy (display firmware)" env LED_KIND=none cargo clippy -p firmware --fea
 # The trusted-display PIN pad's trivial-PIN reject is display+strong-pin-gated, so the
 # plain display clippy above never compiles it — lint the combination explicitly.
 run "clippy (display strong-pin)" env LED_KIND=none cargo clippy -p firmware --features display,strong-pin -- -D warnings
+# The 2" ships an `always-uv` posture; no row above compiles the combination,
+# so without this its first build would be the release pipeline's.
+run "clippy (display always-uv)" env BOARD=waveshare-touch-lcd-2 LED_KIND=none cargo clippy -p firmware --features display,always-uv -- -D warnings
 # The touchless screen + button form (the fork-adapted GEEK board): its own
 # feature and board file, mutually exclusive with `display`.
 run "clippy (display keys)" env BOARD=waveshare-geek LED_KIND=none cargo clippy -p firmware --features display-keys -- -D warnings

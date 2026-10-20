@@ -38,6 +38,14 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
 
 ## [Unreleased]
 
+### Added
+
+- **The 2" touch display ships in all three postures.**
+  `firmware-display-lcd2-strong-pin` and `firmware-display-lcd2-always-uv` join
+  `firmware-display-lcd2` in the release, so a 2" board no longer needs a build
+  environment for a hardened posture. Packaging only — no firmware behaviour
+  change, so `bcdDevice` stays at 0x09DB.
+
 ### Fixed
 
 - **PIV serves a Card Capability Container** (`5FC107`) where it previously
