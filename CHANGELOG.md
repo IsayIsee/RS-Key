@@ -38,6 +38,16 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
 
 ## [Unreleased]
 
+## [0.4.11-isk.3] - 2026-10-20
+
+> ### ⚠️ Upgrading a 16 MB key provisioned before 0.4.8 still wipes it
+>
+> **Export your seed first** ([seed backup](docs/guides/seed-backup.md)). 0.4.8
+> moved the store 4 KB down on 16 MB parts to clear the RP2350-E10 block, so a
+> key provisioned by an older 16 MB build comes up factory-empty. The `display`,
+> `display-lcd2` and `16mb` flavors and the `abrobot-16m` / `waveshare-touch-lcd`
+> presets are the affected ones; **4 MB and 2 MB keys upgrade in place.**
+
 ### Added
 
 - **The 2" touch display ships in all three postures.**
