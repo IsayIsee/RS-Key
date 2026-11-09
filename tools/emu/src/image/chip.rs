@@ -14,7 +14,7 @@ use super::Log;
 use super::bootram::{self, BootRam};
 use super::elf::Elf;
 use super::flash::Flash;
-use super::inspect::Stack;
+use super::inspect::Stacks;
 use super::ioqspi::{IO_QSPI_BASE, IoQspi};
 use super::otp::{self, OtpCore, OtpCtrl, OtpData, SharedOtp};
 use super::psm::{PSM_BASE, Psm};
@@ -23,6 +23,7 @@ use super::sha256::{SHA256_BASE, Sha256};
 use super::trng::{TRNG_BASE, Trng};
 use super::usb::{self, SharedUsb, UsbCore, UsbDpram, UsbRegs};
 use super::watchdog::{WATCHDOG_BASE, Watchdog};
+use super::xip::{SharedXip, XIP_AUX_BASE, XIP_CTRL_BASE};
 
 /// The quantum while a core runs; a parked chip is stepped in larger ones.
 pub const RUN_QUANTUM: u32 = 64;
@@ -41,6 +42,10 @@ const QSPI_SD1: u32 = 1 << 29;
 const REBOOT_TYPE_BOOTSEL: u32 = 0x2;
 const IPSR_HARDFAULT: u32 = 3;
 const CPACR_CP7: u32 = 0x3 << 14;
+const WAKE_BUTTON: u32 = 1 << 25;
+const BACKLIGHT_CSR: u32 = 0x400A_8000;
+const BACKLIGHT_CC: u32 = 0x400A_800C;
+const BACKLIGHT_TOP: u32 = 0x400A_8010;
 
 /// Why the chip stopped running what it was running.
 #[derive(Debug, PartialEq, Eq)]
@@ -65,6 +70,8 @@ pub struct Chip {
     h_bootram: MmioHandle,
     h_watchdog: MmioHandle,
     hardfault: Option<u32>,
+    fault_stop: Option<(u32, u32)>,
+    fault_wait: Option<(u32, u32)>,
     panic_fn: Option<(u32, u32)>,
     core1_released_seen: u32,
     core1_hold: bool,
@@ -72,7 +79,9 @@ pub struct Chip {
     qmi_ops_seen: u64,
     otp_burns_seen: usize,
     emu_ns: f64,
-    stacks: Option<[Stack; 2]>,
+    stacks: Option<Stacks>,
+    pub panel: Option<super::panel::Panel>,
+    pub touch: Option<super::touch::SharedTouch>,
 }
 
 impl Chip {
@@ -101,6 +110,11 @@ impl Chip {
         emu.mount_mmio(TRNG_BASE, 0x1000, atomic, Trng::new(seed))
             .map_err(m)?;
         emu.mount_mmio(SHA256_BASE, 0x1000, atomic, Sha256::new())
+            .map_err(m)?;
+        let xip = SharedXip::default();
+        emu.mount_mmio(XIP_AUX_BASE, 0x1000, atomic, xip.aux())
+            .map_err(m)?;
+        emu.mount_mmio(XIP_CTRL_BASE, 0x1000, atomic, xip)
             .map_err(m)?;
         let otp: SharedOtp = Arc::new(Mutex::new(OtpCore::new(rows, log.clone())));
         let data = OtpData(otp.clone());
@@ -150,6 +164,10 @@ impl Chip {
             otp,
             log,
             hardfault: elf.symbol(&["HardFault_"]).map(|s| s.value & !1),
+            fault_wait: elf.symbol(&["__wfi"]).map(|s| (s.value & !1, s.size)),
+            fault_stop: elf
+                .symbol(&["rsk_tz_fault_stop"])
+                .map(|s| (s.value & !1, s.size)),
             panic_fn: elf
                 .symbol(&["rust_begin_unwind"])
                 .map(|s| (s.value & !1, s.size)),
@@ -166,6 +184,8 @@ impl Chip {
             otp_burns_seen: 0,
             emu_ns: 0.0,
             stacks: None,
+            panel: None,
+            touch: None,
         })
     }
 
@@ -210,17 +230,104 @@ impl Chip {
         s
     }
 
+    pub fn enable_panel(&mut self, touch: super::touch::SharedTouch) -> Result<(), String> {
+        // The board's active-low wake button is released until driven externally.
+        self.emu.bus.gpio_external_mask |= WAKE_BUTTON;
+        self.press_wake(false);
+        self.emu
+            .mount_mmio(
+                super::touch::I2C1_BASE,
+                0x1000,
+                MmioAliasing::Atomic,
+                super::touch::I2c::new(touch.clone()),
+            )
+            .map_err(|e| e.to_string())?;
+        self.touch = Some(touch);
+        self.panel = Some(super::panel::Panel::default());
+        Ok(())
+    }
+
+    pub fn panel_status(&mut self) -> Result<String, String> {
+        let panel = self
+            .panel
+            .as_ref()
+            .ok_or("panel model is disabled")?
+            .status();
+        let pwm = self.emu.bus.read32(BACKLIGHT_CSR, 0);
+        let (duty, top) = self.backlight();
+        let touch = self
+            .touch
+            .as_ref()
+            .ok_or("touch model is disabled")?
+            .lock()
+            .unwrap();
+        Ok(format!(
+            "{panel} backlight={duty} pwm_enabled={} pwm_top={top} touch_reports={} touch_normal={} touch_reset={}",
+            pwm & 1 != 0,
+            touch.reports,
+            touch.normal,
+            touch.reset
+        ))
+    }
+
+    pub fn backlight(&mut self) -> (u32, u32) {
+        let enabled = self.emu.bus.read32(BACKLIGHT_CSR, 0) & 1 != 0;
+        let duty = self.emu.bus.read32(BACKLIGHT_CC, 0) & 0xFFFF;
+        let top = self.emu.bus.read32(BACKLIGHT_TOP, 0);
+        (if enabled { duty.min(top) } else { 0 }, top)
+    }
+
+    pub fn press_wake(&mut self, down: bool) {
+        if down {
+            self.emu
+                .bus
+                .gpio_external_in
+                .fetch_and(!WAKE_BUTTON, Ordering::Relaxed);
+        } else {
+            self.emu
+                .bus
+                .gpio_external_in
+                .fetch_or(WAKE_BUTTON, Ordering::Relaxed);
+        }
+    }
+
     /// Run `cycles` of emulated time.
     pub fn step(&mut self, cycles: u32) -> Result<(), String> {
         let cycles = cycles.max(1);
-        self.emu.step_quantum = cycles;
-        self.emu.step().map_err(|e| e.to_string())?;
+        if let Some(panel) = &mut self.panel {
+            // The 80 MHz serial output can cross several edges in a CPU quantum.
+            self.emu.step_quantum = 1;
+            for _ in 0..cycles {
+                if let Some(touch) = &self.touch {
+                    touch.lock().unwrap().now_ns = self.emu_ns as u64;
+                }
+                self.emu.step().map_err(|e| e.to_string())?;
+                let pins = self.emu.gpio_read_all();
+                panel.sample(pins);
+                if let Some(touch) = &self.touch {
+                    touch.lock().unwrap().sample(pins);
+                }
+                self.emu_ns += 1e9 / f64::from(self.emu.bus.sys_clk_hz());
+                if let Some(error) = &panel.error {
+                    return Err(format!("panel model: {error}"));
+                }
+            }
+        } else {
+            self.emu.step_quantum = cycles;
+            self.emu.step().map_err(|e| e.to_string())?;
+            self.emu_ns += f64::from(cycles) * 1e9 / f64::from(self.emu.bus.sys_clk_hz());
+        }
         if let Some(stacks) = &mut self.stacks {
-            for (c, stack) in stacks.iter_mut().enumerate() {
-                stack.sample(self.emu.core(c).regs.sp());
+            if !self.emu.core(1).is_secure() {
+                return Err("Non-secure core1 stack measurement is unsupported".into());
+            }
+            for (c, stack) in stacks.secure.iter_mut().enumerate() {
+                stack.sample(probe::stack_registers(self.emu.core(c), true)?.0);
+            }
+            if let Some(stack) = &mut stacks.nonsecure {
+                stack.sample(probe::stack_registers(self.emu.core(0), false)?.0);
             }
         }
-        self.emu_ns += f64::from(cycles) * 1e9 / f64::from(self.emu.bus.sys_clk_hz());
         if self.core1_hold {
             self.core1_hold = false;
             self.emu.bus.atomics.clear_halted(1);
@@ -261,17 +368,34 @@ impl Chip {
         for c in 0..2 {
             let core = self.emu.core(c);
             let pc = core.regs.pc();
-            if core.regs.ipsr() == IPSR_HARDFAULT || Some(pc) == self.hardfault {
+            if self.fault_stop.is_some_and(|(start, size)| {
+                let terminal = |address: u32| address >= start && address - start < size.max(1);
+                terminal(pc)
+                    || self
+                        .fault_wait
+                        .is_some_and(|(wait, bytes)| pc >= wait && pc - wait < bytes.max(1))
+                        && terminal((core.regs.lr() & !1).saturating_sub(2))
+            }) || self.fault_stop.is_none()
+                && (core.regs.ipsr() == IPSR_HARDFAULT || Some(pc) == self.hardfault)
+            {
+                let lr = core.regs.lr();
                 let why = format!(
-                    "core {c} took a HardFault (CFSR {:#010x}), lr {}",
-                    core.ppb.cfsr,
-                    self.where_is(core.regs.lr())
+                    "core {c} took a HardFault (CFSR {:#010x}, BFAR {:#010x}, SFSR {:#010x}, SFAR {:#010x}), pc {}, lr {}, MSP_S {:#010x}, MSP_NS {:#010x}",
+                    self.emu.core(c).ppb.cfsr,
+                    self.emu.core(c).ppb.bfar,
+                    self.emu.core(c).ppb.sfsr,
+                    self.emu.core(c).ppb.sfar,
+                    self.where_is(pc),
+                    self.where_is(lr),
+                    core.regs.msp,
+                    core.regs.msp_ns
                 );
                 return Some(Stop::Dead(why));
             }
-            if self
-                .panic_fn
-                .is_some_and(|(start, size)| pc >= start && pc - start < size.max(1))
+            if self.fault_stop.is_none()
+                && self
+                    .panic_fn
+                    .is_some_and(|(start, size)| pc >= start && pc - start < size.max(1))
             {
                 // A call at the end of a function returns into the next symbol.
                 let lr = self.where_is((core.regs.lr() & !1).saturating_sub(2));

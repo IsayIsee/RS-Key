@@ -33,6 +33,17 @@ fn dev() -> Device<'static> {
 
 const TOKEN: [u8; 32] = [0x99; 32];
 
+#[test]
+fn unknown_nested_largeblob_fields_preserve_an_explicit_zero_read() {
+    let req = parse(&[0xa4, 1, 0, 3, 0, 7, 0x82, 0xa0, 0xf6, 8, 0xf6]).unwrap();
+    assert!(req.get_present);
+    assert_eq!((req.get, req.offset), (0, 0));
+    assert!(matches!(
+        parse(&[0xa1, 7, 0x82, 0xf6]),
+        Err(CtapError::InvalidCbor)
+    ));
+}
+
 fn armed(perms: u8) -> FidoState {
     let mut s = FidoState::new();
     s.paut.token = TOKEN;
@@ -180,6 +191,38 @@ fn get_offset_beyond_size_rejected() {
         run(&mut fs, &mut state, &get_request(10, 100), &mut out),
         Err(CtapError::InvalidParameter)
     );
+}
+
+#[test]
+fn a_read_at_the_stored_end_returns_an_empty_fragment() {
+    let mut fs = seeded_fs();
+    let mut state = FidoState::new();
+    let mut out = [0; 64];
+    let n = run(&mut fs, &mut state, &get_request(10, 17), &mut out).unwrap();
+    assert_eq!(get_bytes(&out, n), Vec::<u8>::new());
+}
+
+#[test]
+fn an_authenticated_array_at_the_storage_limit_commits_in_fragments() {
+    let mut body = vec![0x81, 0x59, 0x0f, 0xda];
+    body.extend_from_slice(&[0x5a; 4058]);
+    let blob = valid_blob(&body);
+    assert_eq!(blob.len(), 4078);
+    let mut fs = seeded_fs_with_pin();
+    let mut state = armed(PERM_LBW);
+    let mut out = [0; 4096];
+    for (index, fragment) in blob.chunks(1000).enumerate() {
+        let offset = index * 1000;
+        let req = set_request(
+            offset as u64,
+            (offset == 0).then_some(4078),
+            fragment,
+            &TOKEN,
+        );
+        assert_eq!(run(&mut fs, &mut state, &req, &mut out), Ok(0));
+    }
+    let n = run(&mut fs, &mut state, &get_request(4078, 0), &mut out).unwrap();
+    assert_eq!(get_bytes(&out, n), blob);
 }
 
 #[test]
@@ -734,7 +777,7 @@ fn a_faulted_pin_probe_does_not_open_the_large_blob_write_gate() {
 fn a_torn_large_blob_write_leaves_a_whole_array() {
     let blob = valid_blob(&[0xCD; 60]);
     let split = 50;
-    rsk_fs::cut::sweep(
+    assert!(!rsk_fs::cut::sweep_restarts(
         || {
             let (cut, medium) = rsk_fs::storage::faults::Cut::new();
             let mut fs = Fs::new(cut);
@@ -749,7 +792,8 @@ fn a_torn_large_blob_write_leaves_a_whole_array() {
             run(fs, &mut state, &first, &mut out).is_ok()
                 && run(fs, &mut state, &second, &mut out).is_ok()
         },
-        |fs, budget, completed, medium| {
+        |_| {},
+        |fs, budget, _second, completed, medium| {
             let mut stored = [0u8; 256];
             let n = fs
                 .read(EF_LARGEBLOB, &mut stored)
@@ -776,7 +820,7 @@ fn a_torn_large_blob_write_leaves_a_whole_array() {
                 );
             }
         },
-    );
+    ));
 }
 
 // The read-fault sweep lives in its own file; it needs this module's fixtures.

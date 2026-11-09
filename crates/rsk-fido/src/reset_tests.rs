@@ -2,6 +2,9 @@
 // Copyright (C) 2026 RS-Key contributors
 
 use super::*;
+
+#[path = "reset_mutation_tests.rs"]
+mod mutation;
 use crate::FidoState;
 use crate::consts::{EF_BACKUP_SEALED, EF_CRED, EF_LARGEBLOB, EF_PIN, EF_RP, RESET_WINDOW_MS};
 use crate::seed::{bump_sign_counter, global_sign_counter, load_keydev};
@@ -572,8 +575,8 @@ fn a_faulted_metadata_drop_is_carried_to_the_end_of_the_sweep_and_still_answered
 #[test]
 fn a_truncated_enumeration_fails_the_sweep_instead_of_reading_it_as_clear() {
     let mut fs = Fs::new(TruncatedWalk::new());
-    fs.scan();
     fs.put(EF_CRED, &[0xC0; 8]).unwrap();
+    fs.scan();
     let mut rng = SeqRng(5);
     let mut state = FidoState::new();
     let mut presence = crate::AlwaysConfirm;
@@ -1080,6 +1083,8 @@ fn provisioned_with_a_grant() -> TearAfter {
     pin_file[1] = 4; // the PIN's own length, in code points
     pin_file[2] = 1;
     fs.put(EF_PIN, &pin_file).unwrap();
+    // ensure_seed minted an unissued bootstrap grant before the PIN existed.
+    fs.force_delete(EF_PAUTHTOKEN.get()).unwrap();
     crate::seed::ensure_ppuat(&dev(), &mut fs, &mut rng).unwrap();
     fs.into_storage()
 }
@@ -1752,3 +1757,6 @@ fn two_resets_in_a_row_leave_two_different_store_tags() {
         [before, once, twice]
     );
 }
+
+#[path = "reset_restart_tests.rs"]
+mod restarts;

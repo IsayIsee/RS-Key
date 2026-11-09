@@ -86,6 +86,9 @@ UNSUPPORTED = {
     "02_usb_interfaces": "reads the USB descriptors; this shim serves reports",
     "73_otp_keyboard": "drives the OTP keyboard interface over raw USB",
     "77_otp_touch_wait": "drives the OTP keyboard interface over raw USB",
+    "100_trustzone_usb_regressions": "resets and inspects physical USB through PyUSB",
+    "101_trustzone_otp_status": "exchanges OTP feature reports through raw USB",
+    "108_trustzone_hardware": "uses a selected physical USB key; run its model subcommand directly",
     "53_ccid_pinpad": "needs the PC/SC reader's FEATURE_VERIFY_PIN_DIRECT layer",
     # Faking python-fido2's own transport would leave the suite testing this shim
     # instead of a third-party client, which is the whole point of it. Under
@@ -96,7 +99,22 @@ UNSUPPORTED = {
     "29_reset_power_cut": "cuts physical USB power during a flash write",
     "54_sram_residue": "measures SRAM residue on a real chip",
     "55_stack_residue": "probes the dead stack of a `--features bench` board image",
+    "105_fido_getinfo_latency": "needs physical XIP-cache timing; neither backend models misses",
     "90_otp_mkek_migration": "migrates the OTP MKEK; the emulator has no fuses",
+}
+
+# These suites own their image, inspection socket or fault injection.
+IMAGE_ONLY = {
+    "103_trustzone_configuration",
+    "104_trustzone_late_reset",
+    "106_trustzone_rsa_events",
+    "107_trustzone_fault_recovery",
+    "94_trustzone_keepalive",
+    "95_trustzone_crypto_keepalive",
+    "96_trustzone_sessions",
+    "97_trustzone_isolation",
+    "98_trustzone_presence",
+    "99_trustzone_core1_fault",
 }
 
 # Suites that take a mandatory argument, and the flag each needs. Run without it
@@ -515,6 +533,9 @@ def main():
     name = os.path.basename(target).removesuffix(".py")
     if name in UNSUPPORTED:
         print(f"SKIP: {name} — {UNSUPPORTED[name]}. Run it against a board.")
+        sys.exit(EXIT_SKIP)
+    if name in IMAGE_ONLY:
+        print(f"SKIP: {name} — run directly with its TrustZone image fixtures.")
         sys.exit(EXIT_SKIP)
     flag = NEEDS_ARGS.get(name)
     if flag and not any(a == flag or a.startswith(f"{flag}=") for a in sys.argv[2:]):

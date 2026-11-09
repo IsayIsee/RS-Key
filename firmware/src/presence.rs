@@ -46,6 +46,8 @@ use rsk_device::presence::Outcome;
 
 use rsk_device::presence::Arbiter;
 
+// `display` uses it in the timeout assert; a non-`none` LED build in the phy
+// block. The display-keys build has neither.
 #[cfg(any(feature = "display", not(led_kind = "none")))]
 pub(crate) use rsk_device::presence::MIN_TIMEOUT_SECS;
 pub use rsk_device::presence::{SCOPE_CCID, SCOPE_FIDO, SCOPE_NONE, SCOPE_OTP};
@@ -131,7 +133,9 @@ pub(crate) enum Button {
 impl Button {
     fn sample(&mut self) -> bool {
         match self {
-            Button::Bootsel(bootsel) => is_bootsel_pressed(bootsel.reborrow()),
+            Button::Bootsel(bootsel) => {
+                crate::trustzone::mpu::with_flash_code(|| is_bootsel_pressed(bootsel.reborrow()))
+            }
             Button::Gpio(button, active_high) => {
                 if *active_high {
                     button.is_high()

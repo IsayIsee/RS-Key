@@ -6,6 +6,9 @@ use super::*;
 use crate::storage::faults::{Cut, RemoveStuck, TruncatedWalk};
 use crate::storage::ram::RamStorage;
 
+#[path = "fs_bound_counter_tests.rs"]
+mod bound_counter;
+
 // A stand-in working-EF fid used by the plain put/read tests.
 const KEY_DEV: u16 = 0xCC00;
 
@@ -24,6 +27,8 @@ struct CountingStorage {
     /// What `for_each_key` reports as its completion (models a read-fault-truncated
     /// boot scan when `false`); the keys are still yielded either way.
     scan_complete: bool,
+    mount_calls: u32,
+    mount_error: bool,
 }
 impl CountingStorage {
     fn new() -> Self {
@@ -34,10 +39,20 @@ impl CountingStorage {
             remove_calls: 0,
             write_calls: 0,
             scan_complete: true,
+            mount_calls: 0,
+            mount_error: false,
         }
     }
 }
 impl Storage for CountingStorage {
+    fn mount(&mut self) -> Result<()> {
+        self.mount_calls += 1;
+        if self.mount_error {
+            Err(Error::MemoryFatal)
+        } else {
+            Ok(())
+        }
+    }
     fn read(&mut self, fid: u16, buf: &mut [u8]) -> Option<usize> {
         self.read_calls += 1;
         self.inner.read(fid, buf)
@@ -57,6 +72,28 @@ impl Storage for CountingStorage {
     fn for_each_key(&mut self, f: &mut dyn FnMut(u16)) -> bool {
         let _ = self.inner.for_each_key(f);
         self.scan_complete
+    }
+}
+
+#[test]
+fn boot_delegates_mount_and_invalidates_cached_absence_even_when_mount_fails() {
+    for fail in [false, true] {
+        let mut fs = Fs::new(CountingStorage::new());
+        fs.scan();
+        assert_eq!(fs.try_has_data(KEY_DEV), Ok(false));
+        fs.storage.inner.write(KEY_DEV, b"new authority").unwrap();
+        fs.storage.mount_error = fail;
+        assert_eq!(
+            fs.boot_storage([0x4B; 16]),
+            if fail {
+                Err(Error::MemoryFatal)
+            } else {
+                Ok(())
+            }
+        );
+        assert_eq!(fs.storage.mount_calls, 1);
+        assert_eq!(fs.try_has_data(KEY_DEV), Ok(true));
+        assert!(fs.scan_truncated);
     }
 }
 
@@ -578,6 +615,33 @@ fn an_empty_record_is_not_data() {
     );
     fs.put(0xCC10, b"x").unwrap();
     assert!(fs.has_data(0xCC10), "a one-byte record must");
+}
+
+#[test]
+fn record_existence_distinguishes_empty_absent_and_unreadable_across_mounts() {
+    use crate::storage::faults::ProbeStuck;
+    const OWNER: u16 = 0xCC10;
+    const ABSENT: u16 = 0xCC11;
+    let (backend, medium) = ProbeStuck::new();
+    let mut fs = Fs::new(backend);
+    fs.scan();
+    fs.put(OWNER, &[]).unwrap();
+    for _ in 0..2 {
+        assert_eq!(fs.try_exists(OWNER), Ok(true));
+        assert!(fs.exists(OWNER));
+        assert!(!fs.has_data(OWNER));
+        assert_eq!(fs.try_exists(ABSENT), Ok(false));
+        assert!(!fs.exists(ABSENT));
+        fs = Fs::new(fs.into_storage());
+        fs.scan();
+    }
+    medium.stick(Some(OWNER));
+    assert_eq!(fs.try_exists(OWNER), Err(Error::MemoryFatal));
+    assert!(!fs.exists(OWNER));
+    medium.stick(None);
+    assert_eq!(fs.try_exists(OWNER), Ok(true));
+    assert!(fs.exists(OWNER));
+    assert_eq!(fs.read(OWNER, &mut []), Some(0));
 }
 
 #[test]
@@ -1833,6 +1897,15 @@ fn a_meta_record_longer_than_the_blob_stops_both_walks() {
 
 #[path = "fs_decisions_tests.rs"]
 mod decisions;
+
+#[path = "fs_lifecycle_tests.rs"]
+mod lifecycle;
+
+#[path = "fs_typed_api_tests.rs"]
+mod typed_api;
+
+#[path = "fs_fault_provider_tests.rs"]
+mod fault_provider;
 
 /// A backend whose enumeration yields every key TWICE — what a ring holding two
 /// live copies of one fid looks like from `for_each_key`.

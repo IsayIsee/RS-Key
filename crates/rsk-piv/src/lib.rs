@@ -775,7 +775,10 @@ impl PivApplet<'_> {
                 // the synthesized default too, so a Windows key-container open finds
                 // the object. A real PUT DATA still wins the read above.
                 _ if id == CCC_ID => {
-                    obj[..ccc::CCC_LEN].copy_from_slice(&ccc::CCC);
+                    let Some(dst) = obj.get_mut(..ccc::CCC_LEN) else {
+                        return Sw::EXEC_ERROR;
+                    };
+                    dst.copy_from_slice(&ccc::CCC);
                     ccc::CCC_LEN
                 }
                 _ => return Sw::FILE_NOT_FOUND,

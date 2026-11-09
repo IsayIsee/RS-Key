@@ -35,10 +35,25 @@ pub(crate) use crate::display_panel::PioDisplayTx;
 
 pub use rsk_display::{DeviceInfo, DeviceKeys, UI_YIELD_FLOOR_MS, piv_ref_title};
 
-/// CST328 7-bit I2C address.
+/// CST328 7-bit I2C address — the touch controller on the V1 revision of the
+/// Waveshare board.
+#[cfg(display_tp = "cst328")]
 const CST328_ADDR: u16 = 0x1A;
 /// CST816D 7-bit I2C address (the CST816 family shares it).
+#[cfg(display_tp = "cst816d")]
 const CST816_ADDR: u16 = 0x15;
+
+/// CST3530 7-bit I2C address — the touch controller Waveshare swapped in on the
+/// V2 revision. Select it with `DISPLAY_TP_CHIP=cst3530`.
+#[cfg(display_tp = "cst3530")]
+const CST3530_ADDR: u16 = 0x58;
+/// Report block: nine bytes, the first point at `[4..8]`.
+#[cfg(display_tp = "cst3530")]
+const CST3530_DATA_REG: u32 = 0xD007_0000;
+/// Writing this bare register address acks the report, letting the controller
+/// latch the next one.
+#[cfg(display_tp = "cst3530")]
+const CST3530_END_READ_REG: u32 = 0xD000_02AB;
 
 /// This board's instance of the flow.
 pub type Ui = rsk_display::Ui<'static, Panel, Touch, DisplayHooks>;
@@ -181,7 +196,7 @@ fn pack(p: rsk_ui::Point) -> u32 {
     ((p.x as u32 & 0x0FFF) << 12) | (p.y as u32 & 0x0FFF)
 }
 
-/// The CST328 touch controller on this board's I2C bus. The reset pin is pulsed once
+/// The touch controller on this board's I2C bus. The reset pin is pulsed once
 /// during [`build`] (or left to the panel on a `tp_rst_shared` board); the bus is the
 /// shared cell [`TouchHw`] carries.
 pub struct Touch {
@@ -195,26 +210,25 @@ impl Touch {
 }
 
 impl Touch {
-    /// Leave the controller reporting after the reset pulse.
+    /// Leave normal reporting mode set after the reset pulse — write register
+    /// 0xD109 (REG_MODE_NORMAL) as a 2-byte big-endian address with no payload.
+    /// CST328 only: it comes out of reset in monitor mode.
+    #[cfg(display_tp = "cst328")]
+    fn normal_mode(&mut self) {
+        let _ = self.bus.borrow_mut().write(CST328_ADDR, &[0xD1, 0x09]);
+    }
+
+    /// The vendor's init, in the vendor's order: DisAutoSleep (left off, it
+    /// blanks between polls and swallows the first touch after each one), then
+    /// the report and scan registers. A/B'd on the 2" 2026-09-29: they do *not*
+    /// stop its occasional false frame — the refusal in `touch::scale` does.
+    #[cfg(display_tp = "cst816d")]
     fn normal_mode(&mut self) {
         let i2c = &mut *self.bus.borrow_mut();
-        match crate::BUILD_DISPLAY_TOUCH_IC {
-            crate::TOUCH_CST816D => {
-                // The vendor's init, in the vendor's order: DisAutoSleep (left off, it
-                // blanks between polls and swallows the first touch after each one), then
-                // the report and scan registers. A/B'd on the 2" 2026-09-29: they do *not*
-                // stop its occasional false frame — the refusal in `touch::scale` does.
-                let _ = i2c.write(CST816_ADDR, &[0xFE, 0x01]); // DisAutoSleep
-                let _ = i2c.write(CST816_ADDR, &[0xFA, 0x41]); // IrqCtl, point mode
-                let _ = i2c.write(CST816_ADDR, &[0xED, 0x01]); // IrqPluseWidth
-                let _ = i2c.write(CST816_ADDR, &[0xEE, 0x01]); // NorScanPer
-            }
-            _ => {
-                // Register 0xD109 (REG_MODE_NORMAL) as a 2-byte big-endian
-                // address with no payload.
-                let _ = i2c.write(CST328_ADDR, &[0xD1, 0x09]);
-            }
-        }
+        let _ = i2c.write(CST816_ADDR, &[0xFE, 0x01]); // DisAutoSleep
+        let _ = i2c.write(CST816_ADDR, &[0xFA, 0x41]); // IrqCtl, point mode
+        let _ = i2c.write(CST816_ADDR, &[0xED, 0x01]); // IrqPluseWidth
+        let _ = i2c.write(CST816_ADDR, &[0xEE, 0x01]); // NorScanPer
     }
 
     /// One report in the *controller's* own frame, with no board range applied:
@@ -225,41 +239,56 @@ impl Touch {
     }
 }
 
+/// CST328 read: 7-byte report at register `0xD000`, cleared by writing `0xD005`.
+#[cfg(display_tp = "cst328")]
+fn read_report(i2c: &mut TouchI2c) -> Option<rsk_ui::Point> {
+    let mut buf = [0u8; 7];
+    let pt = match i2c.write_read(CST328_ADDR, &[0xD0, 0x00], &mut buf) {
+        Ok(()) => rsk_ui::touch::parse_cst328(&buf),
+        Err(()) => None,
+    };
+    // Clear register 0xD005 (write address + a 0 byte) to ack the report.
+    let _ = i2c.write(CST328_ADDR, &[0xD0, 0x05, 0x00]);
+    pt
+}
+
 /// The board's read of the controller — the one place either reader goes through, so the
 /// flow's polls and the announcement in [`touch_irq_task`] cannot drift apart. In the
 /// *controller's* own frame, with no board range applied.
+///
+/// One register per transfer. All three of the vendor's own drivers for this
+/// board read this controller that way — single-byte `I2C_Read(reg)` calls,
+/// never a block read — and the registers are the family's single-byte layout
+/// from `CST816_BLOCK`: gesture, finger count, X high/low, Y high/low. The
+/// controller is the one part of this panel whose physical behaviour we cannot
+/// change, so its read lives in this board's branch rather than in a shape
+/// shared with the CST328 (2026-09-29).
+#[cfg(display_tp = "cst816d")]
 fn read_report(i2c: &mut TouchI2c) -> Option<rsk_ui::Point> {
-    match crate::BUILD_DISPLAY_TOUCH_IC {
-        crate::TOUCH_CST816D => {
-            // One register per transfer. All three of the vendor's own drivers for this
-            // board read this controller that way — single-byte `I2C_Read(reg)` calls,
-            // never a block read — and the registers are the family's single-byte layout
-            // from `CST816_BLOCK`: gesture, finger count, X high/low, Y high/low. The
-            // controller is the one part of this panel whose physical behaviour we cannot
-            // change, so its read lives in this board's branch rather than in a shape
-            // shared with the CST328 (2026-09-29).
-            let mut buf = [0u8; 6];
-            for (i, slot) in buf.iter_mut().enumerate() {
-                let mut byte = [0u8; 1];
-                let reg = rsk_ui::touch::CST816_BLOCK + i as u8;
-                match i2c.write_read(CST816_ADDR, &[reg], &mut byte) {
-                    Ok(()) => *slot = byte[0],
-                    Err(()) => return None,
-                }
-            }
-            rsk_ui::touch::parse_cst816d(&buf)
-        }
-        _ => {
-            let mut buf = [0u8; 7];
-            let pt = match i2c.write_read(CST328_ADDR, &[0xD0, 0x00], &mut buf) {
-                Ok(()) => rsk_ui::touch::parse_cst328(&buf),
-                Err(()) => None,
-            };
-            // Clear register 0xD005 (write address + a 0 byte) to ack the report.
-            let _ = i2c.write(CST328_ADDR, &[0xD0, 0x05, 0x00]);
-            pt
+    let mut buf = [0u8; 6];
+    for (i, slot) in buf.iter_mut().enumerate() {
+        let mut byte = [0u8; 1];
+        let reg = rsk_ui::touch::CST816_BLOCK + i as u8;
+        match i2c.write_read(CST816_ADDR, &[reg], &mut byte) {
+            Ok(()) => *slot = byte[0],
+            Err(()) => return None,
         }
     }
+    rsk_ui::touch::parse_cst816d(&buf)
+}
+
+/// CST3530 read: nine-byte report at `0xD0070000`, acked by writing the bare
+/// `0xD00002AB` address. Any I2C error still acks, so a half-read frame can not
+/// wedge the controller's next report.
+#[cfg(display_tp = "cst3530")]
+fn read_report(i2c: &mut TouchI2c) -> Option<rsk_ui::Point> {
+    let mut buf = [0u8; 9];
+    let pt = match i2c.write_read(CST3530_ADDR, &CST3530_DATA_REG.to_be_bytes(), &mut buf) {
+        Ok(()) => rsk_ui::touch::parse_cst3530(&buf),
+        Err(()) => None,
+    };
+    let _ = i2c.write(CST3530_ADDR, &CST3530_END_READ_REG.to_be_bytes());
+    pt
 }
 
 impl TouchPad for Touch {
@@ -452,10 +481,9 @@ pub fn build(
         crate::BUILD_DISPLAY_WIN_OFF,
     );
 
-    // CST328 reset pulse (high → low → high), then normal reporting mode. On a
-    // `tp_rst_shared` board there is no second pad: the panel's reset in
-    // `Panel::new` drove the shared line, with the longer low time the touch
-    // controller asks for (`display_panel::reset_and_init`).
+    // Reset pulse (high → low → high), then normal reporting mode unless the
+    // controller (CST3530) comes up in it. On `tp_rst_shared` the panel's reset
+    // already drove this line (`display_panel::reset_and_init`).
     if let Some(rst) = tp_rst.as_mut() {
         rst.set_high();
         block_for(Duration::from_millis(10));
@@ -464,8 +492,13 @@ pub fn build(
         rst.set_high();
         block_for(Duration::from_millis(50));
     }
-    let mut touch = Touch::new(i2c);
-    touch.normal_mode();
+    let touch = Touch::new(i2c);
+    #[cfg(not(display_tp = "cst3530"))]
+    let touch = {
+        let mut touch = touch;
+        touch.normal_mode();
+        touch
+    };
 
     let hooks = DisplayHooks {
         bl,

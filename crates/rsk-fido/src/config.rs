@@ -335,8 +335,9 @@ pub(crate) fn always_uv_enabled<S: Storage>(fs: &mut Fs<S>) -> bool {
 fn always_uv_state<S: Storage>(fs: &mut Fs<S>) -> rsk_sdk::error::Result<bool> {
     let mut v = [0u8; 1];
     Ok(match fs.try_read(EF_ALWAYS_UV, &mut v)? {
-        Some(n) if n >= 1 => v[0] != 0,
-        _ => DEFAULT_ALWAYS_UV,
+        Some(1) if v[0] <= 1 => v[0] != 0,
+        Some(_) => return Err(rsk_sdk::error::Error::MemoryFatal),
+        None => DEFAULT_ALWAYS_UV,
     })
 }
 
@@ -447,7 +448,7 @@ fn set_ea_rpids<S: Storage, R: Rng>(ctx: &mut Ctx<S, R>, rp_ids: &[&str]) -> Cta
         return Ok(0);
     }
     let mut data = [0u8; 32 * MAX_EA_RPIDS];
-    for (slot, id) in data.chunks_exact_mut(32).zip(rp_ids) {
+    for (slot, id) in data.as_chunks_mut::<32>().0.iter_mut().zip(rp_ids) {
         slot.copy_from_slice(&sha256(id.as_bytes()));
     }
     ctx.fs
@@ -487,7 +488,7 @@ fn set_min_pin_length<S: Storage, R: Rng>(
     // no change demanded, `force_change_pending` reads the cleared flag for good,
     // and the live token is not invalidated. Nothing is written yet here, so
     // refusing costs a retry.
-    let pin_set = ctx.fs.try_has_data(EF_PIN).map_err(|_| CtapError::Other)?;
+    let pin_set = ctx.fs.try_exists(EF_PIN).map_err(|_| CtapError::Other)?;
     if force_change && !pin_set {
         return Err(CtapError::PinNotSet);
     }

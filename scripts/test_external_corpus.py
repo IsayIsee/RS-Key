@@ -134,3 +134,138 @@ def test_check_sh_replays_through_the_existing_fuzz_row():
     check = (corpus.ROOT / "scripts/check.sh").read_text()
     assert gate_lines.runs(check, 'scripts/external_corpus.py --replay "$manifest"')
     assert gate_lines.runs(check, 'fuzz_targets_are_alive')
+
+
+def test_cross_applet_sequences_keep_both_gate_directions_and_the_wipe():
+    seeds = {(target, name): data for target, name, data in corpus.records()
+             if name.startswith("rs-key-cross-applet-")
+             and "-oath-code-" not in name
+             and name != "rs-key-cross-applet-oath-put-calculate-delete"}
+    assert {target for target, _ in seeds} == {"cross_applet"}
+    assert len(seeds) == 11
+    # Independently encoded: OpenPGP is applet 1 with CAP_OPENPGP 0x0008; its
+    # disabled seed turns that bit off, refreshes, then selects. The reenabled
+    # twin replays the same refused SELECT before restoring the supported mask.
+    disabled = bytes([0xF6, 0x02, 0x33, 0xF3, 1])
+    assert seeds["cross_applet", "rs-key-cross-applet-openpgp-disabled-select"] == disabled
+    assert seeds["cross_applet", "rs-key-cross-applet-openpgp-reenabled-select"] == (
+        disabled + bytes([0xF6, 0x02, 0x3B, 0xF3, 1]))
+    # The wipe disables every gated applet, selects each, then reset-card +
+    # factory-wipe + refresh; the trailing 1,3 are the restored OpenPGP/OATH
+    # selects the target asserts as served.
+    assert seeds["cross_applet", "rs-key-cross-applet-factory-wipe-restores-caps"] == (
+        bytes([0xF6, 0x00, 0x00, 0xF3, 1, 3, 4, 5, 7, 0xF1, 0xF4, 0xF3, 1, 3]))
+    assert {name.removeprefix("rs-key-cross-applet-").removesuffix("-disabled-select")
+            for _, name in seeds if name.endswith("-disabled-select")} == {
+        "openpgp", "oath", "otp", "piv", "fido"}
+    assert sum(name.endswith("-reenabled-select") for _, name in seeds) == 5
+
+
+def test_fs_ops_sequences_build_state_before_the_contracts():
+    seeds = {(target, name): data for target, name, data in corpus.records()
+             if name.startswith("rs-key-fs-ops-")}
+    assert {target for target, _ in seeds} == {"fs_ops"}
+    assert len(seeds) == 6
+    # Independently encoded: op = (index << 3) | verb (put 0, read 1, meta add 3,
+    # find 4, delete 5, reboot 6, query 7) and the extra byte is the op's value.
+    assert seeds["fs_ops", "rs-key-fs-ops-put-read-clamp"] == bytes(
+        [0, 40, 1, 0, 1, 16, 1, 39, 1, 40, 1, 255, 7])
+    assert seeds["fs_ops", "rs-key-fs-ops-reboot-read"] == bytes(
+        [0, 50, 3, 6, 6, 1, 64, 4, 7])
+    assert seeds["fs_ops", "rs-key-fs-ops-reboot-clears-meta"] == bytes(
+        [3, 4, 5, 6, 7, 4])
+    boundary = seeds["fs_ops", "rs-key-fs-ops-meta-nomemory-boundary"]
+    assert boundary[:8] == bytes([3, 255, 11, 255, 19, 255, 27, 255])
+    assert boundary[-2:] == bytes([28, 7])
+
+
+def test_power_cut_negative_space_seeds_keep_their_budgets_and_modes():
+    seeds = {(target, name): data for target, name, data in corpus.records()
+             if name.startswith(("rs-key-power-cut-credential-",
+                                 "rs-key-power-cut-config-",
+                                 "rs-key-power-cut-piv-",
+                                 "rs-key-power-cut-reset-"))}
+    assert {target for target, _ in seeds} == {"power_cut"}
+    assert len(seeds) == 53
+    assert sum("credential-" in name for _, name in seeds) == 12
+    assert sum("config-" in name for _, name in seeds) == 20
+    assert sum("piv-" in name for _, name in seeds) == 16
+    assert sum("reset-" in name for _, name in seeds) == 5
+    # Big-endian budgets: 0xFFFF is no cut; 64 is the command byte budget.
+    assert seeds["power_cut", "rs-key-power-cut-credential-create-no-cut"] == bytes(
+        [0x90, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0])
+    assert seeds["power_cut", "rs-key-power-cut-credential-replace-command-cut"] == (
+        bytes([0x90, 1, 0x00, 0x40, 0x00, 0x00, 0]))
+    # Config change is data[1] % 5; legacy is the fourth transition.
+    assert seeds["power_cut", "rs-key-power-cut-config-legacy-no-cut"] == bytes(
+        [0xA0, 4, 0xFF, 0xFF, 0xFF, 0xFF, 0])
+    # PIV mode is data[0] & 3, bit 2 damages the public key: 0xB0|3|4 = 0xB7.
+    assert seeds["power_cut", "rs-key-power-cut-piv-empty-pubkey-command-cut"] == (
+        bytes([0xB7, 7, 0x00, 0x40, 0x00, 0x00, 0]))
+    # Reset budget is big-endian with its top nibble in byte 1.
+    assert seeds["power_cut", "rs-key-power-cut-reset-no-cut"] == bytes(
+        [0xF0, 0x0F, 0xFF, 0xFF, 0])
+    assert seeds["power_cut", "rs-key-power-cut-reset-cut-16-keydev"] == bytes(
+        [0xF0, 0x00, 0x00, 0x10, 1])
+
+
+def test_authenticated_store_seeds_cover_both_banks_and_recovery():
+    seeds = {(target, name): data for target, name, data in corpus.records()
+             if name.startswith("rs-key-authenticated-store-")
+             and "-v2-" not in name}
+    assert {target for target, _ in seeds} == {"authenticated_store"}
+    assert len(seeds) == 10
+    # Little-endian budgets: 0xFFFF is no cut, 64 is the command budget.
+    assert seeds["authenticated_store", "rs-key-authenticated-store-owner-write"] == (
+        bytes([0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0xA7, 0]))
+    assert seeds["authenticated_store", "rs-key-authenticated-store-owner-cut"] == (
+        bytes([0x40, 0x00, 0x00, 0x00, 0x00, 0xA7, 0]))
+    # Flags: bit 0 counter bank, bit 2 remove, bit 3 post-activation damage.
+    assert seeds["authenticated_store", "rs-key-authenticated-store-counter-damage"] == (
+        bytes([0xFF, 0xFF, 0xFF, 0xFF, 0x09, 0x5C, 0]))
+    assert seeds["authenticated_store", "rs-key-authenticated-store-owner-warm"][6] == 64
+    flags = {data[4] for data in seeds.values()}
+    assert {0x00, 0x01, 0x02, 0x04, 0x05, 0x09} <= flags
+
+
+def test_cross_applet_oath_lifecycle_keeps_its_acknowledged_state():
+    seeds = {(target, name): data for target, name, data in corpus.records()
+             if name == "rs-key-cross-applet-oath-put-calculate-delete"}
+    assert set(seeds) == {("cross_applet", "rs-key-cross-applet-oath-put-calculate-delete")}
+    data = seeds["cross_applet", "rs-key-cross-applet-oath-put-calculate-delete"]
+    # SELECT OATH (3), then a raw frame: 0x08 selector, length 0x23, APDU.
+    assert len(data) == 97
+    assert data[:3] == bytes([3, 0x08, 0x23])
+    assert data[3:8] == bytes([0x00, 0x01, 0x00, 0x00, 0x1E])
+    assert data[8:15] == bytes([0x71, 4]) + b"seed" + bytes([0x73])
+    # DELETE frame (0x0B bytes) and the final CALCULATE frame (0x15 bytes).
+    assert data[61:65] == bytes([0x08, 0x0B, 0x00, 0x02])
+    assert data[74:78] == bytes([0x08, 0x15, 0x00, 0xA2])
+
+
+def test_cross_applet_oath_code_seeds_drive_the_hmac_route():
+    seeds = {(target, name): data for target, name, data in corpus.records()
+             if name.startswith("rs-key-cross-applet-oath-code-")}
+    assert {target for target, _ in seeds} == {"cross_applet"}
+    assert len(seeds) == 10
+    # The scripted route is the 0xF7 opcode; the next byte is the algorithm.
+    assert {data[0] for data in seeds.values()} == {0xF7}
+    assert {data[1] for data in seeds.values()} == {1, 2, 3}
+    assert seeds["cross_applet", "rs-key-cross-applet-oath-code-sha1"] == bytes.fromhex(
+        "f7010ea5010203040506070801")
+
+
+def test_authenticated_store_v2_seeds_cover_import_activation_rekey_and_compaction():
+    seeds = {(target, name): data for target, name, data in corpus.records()
+             if name.startswith("rs-key-authenticated-store-v2-")}
+    assert {target for target, _ in seeds} == {"authenticated_store"}
+    assert len(seeds) == 18
+    assert all(data.startswith(b"V2H1") for data in seeds.values())
+    assert {name.removeprefix("rs-key-authenticated-store-v2-") for _, name in seeds} == {
+        "legacy-boot", "legacy-administer", "rescue-import", "rescue-initv2",
+        "manifest-cut-recover", "manifest-corrupt", "activation-witness",
+        "root-rekey", "rekey-two-faults", "rekey-two-faults-long",
+        "compaction-cold", "capacity", "silent-write-readback", "torn-write",
+        "read-write-erase", "command-recovery-cut", "corrupt-during-rekey",
+        "corrupt-during-compaction",
+    }

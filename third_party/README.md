@@ -1,6 +1,6 @@
 # third_party — code from elsewhere
 
-Code that is not RS-Key's, kept in the tree so a checkout has what it needs. Five
+Code that is not RS-Key's, kept in the tree so a checkout has what it needs. Six
 unrelated kinds live here:
 
 - **Four external conformance suites** — `pico-fido-tests/`,
@@ -8,11 +8,33 @@ unrelated kinds live here:
   validated without checking out the upstream repos. They are **not** part of RS-Key's own test
   suite (`tests/`, `cargo test`) — they are the upstream ecosystems' own tests,
   kept runnable against this implementation. Everything below is about them.
-- **A vendored crate carrying a local fork** — `sequential-storage/` plus
+- **Vendored crates carrying local forks** — `sequential-storage/` plus
   `sequential-storage.patch`, wired into `[patch.crates-io]` by the root,
   `fuzz/` and `tools/emu/` manifests. All three, or the emulator runs a
   different KV store from the firmware. The patch file's own header is the
-  record of what each change is and why the fork stays inside `src/map.rs`.
+  record of the map/item repairs and the const cache constructor used for static
+  store initialization; `src/cache/mod.rs` changes no runtime cache behavior.
+  `p384/` plus `p384.patch` specialize 32-bit P-384 field products with a
+  constant-time CIOS product and symmetric square kernels; the same three
+  workspaces resolve that fork.
+  The patch records its origin, unchanged surfaces and host/ARM verification.
+  `p256/` plus `p256.patch` remove repeated borrow-mask conversions from the
+  32-bit field backend and inline its correction, retaining ctutils barriers.
+  Field squaring specializes the upstream symmetric product for eight words
+  with constant cross-term indices and unchanged reduction.
+  All four workspaces, including the TUI, resolve this fork; the patch records
+  its provenance.
+  `crypto-bigint/` plus `crypto-bigint.patch` propagate the protected borrow
+  across P-521's 17-word integers on 32-bit targets without intermediate masks.
+  Other widths keep the upstream word loop. All four workspaces use this fork of 0.7.6; its security fixes and ctutils primitives are retained.
+- **The image emulator** — `tools/emu` pins the picoem fork in
+  [its Cargo manifest](../tools/emu/Cargo.toml). See the
+  [emulator isolation report](../assurance/reports/trustzone-evidence.md#emulator-source-and-isolation-checks)
+  for the ROM and isolation checks.
+- **MC/DC tooling patches** — `mcdc-supercov-*.patch` and
+  `mcdc-picoem-cps.patch` support coverage experiments. The
+  [MC/DC reports](../assurance/reports/README.md) record the application order
+  and the measurement scope.
 - **Generated font data** — `ibm-plex/`, the four-bit coverage tables the
   trusted display draws its text from, emitted by
   `scripts/generate_ui_fonts.py` from the Nix-pinned IBM Plex Sans/Mono files
@@ -22,6 +44,7 @@ unrelated kinds live here:
   carries. OFL governs the font data, AGPL-3.0-only the rest of the image; the
   two coexist because neither is a derivative of the other.
 - **Test vectors** — `acvp/`, NIST's ACVP-Server ML-DSA keyGen/sigGen/sigVer
+  and ML-KEM-768 keyGen/encapsulation/decapsulation
   cases, filtered to what `crates/rsk-mldsa` can express and written one line of
   hex per case by `scripts/acvp_vectors.py`; and `wycheproof/`, C2SP
   Wycheproof's RSA PKCS#1 v1.5 decryption and signing cases and its ECDH and

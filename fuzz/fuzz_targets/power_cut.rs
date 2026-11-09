@@ -201,6 +201,25 @@ impl Device for MockDevice {
     }
 }
 
+fn diagnostic_mount(dev: &MockDevice) -> Fs<TortureStorage> {
+    let mut snapshot = dev.shared.flash.borrow().clone();
+    snapshot.bytes_until_shutoff = None;
+    let mut fs = Fs::new(new_storage(SharedMock {
+        flash: Rc::new(RefCell::new(snapshot)),
+        dead: Rc::new(Cell::new(false)),
+    }));
+    fs.scan();
+    fs
+}
+
+fn recovery_mount(dev: &mut MockDevice, budget: u32) -> Fs<TortureStorage> {
+    dev.revive();
+    dev.shared.flash.borrow_mut().bytes_until_shutoff = Some(budget);
+    let mut fs = dev.boot();
+    fs.scan();
+    fs
+}
+
 struct ResetRng(u8);
 
 impl rsk_fido::Rng for ResetRng {
@@ -362,6 +381,8 @@ fn scribble(flash: &mut Mock, len: usize, seed: &[u8]) {
 }
 
 pub enum Outcome {
+    Credentials(credentials::Outcome),
+    Config(config::Outcome),
     Piv(piv::Outcome),
     OpenPgp(openpgp::Outcome),
     Journal(journal::Outcome),
@@ -371,6 +392,18 @@ pub enum Outcome {
 }
 
 pub fn run(data: &[u8]) -> Outcome {
+    if data
+        .first()
+        .is_some_and(|b| b & 0xf0 == credentials::MODE_PREFIX)
+    {
+        return Outcome::Credentials(credentials::run(data));
+    }
+    if data
+        .first()
+        .is_some_and(|b| b & 0xf0 == config::MODE_PREFIX)
+    {
+        return Outcome::Config(config::run(data));
+    }
     if data.first().is_some_and(|b| b & 0xf0 == 0xb0) {
         return Outcome::Piv(piv::run(data));
     }
@@ -478,3 +511,9 @@ pub mod openpgp;
 
 #[path = "power_cut_piv.rs"]
 pub mod piv;
+
+#[path = "power_cut_config.rs"]
+pub mod config;
+
+#[path = "power_cut_credential.rs"]
+pub mod credentials;

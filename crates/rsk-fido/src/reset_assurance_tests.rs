@@ -259,8 +259,8 @@ fn the_secret_sweep_is_where_a_seed_the_medium_kept_stops_the_wipe() {
 /// 3 of 3 runs. And the one test that states the defect behaviourally,
 /// `reset_tests.rs::a_seed_the_medium_kept_stops_the_wipe_before_the_gates`, is a
 /// COIN FLIP: `RamStorage` is a `HashMap`
-/// (`crates/rsk-fs/src/storage.rs:78`) and `for_each_key` iterates it
-/// (`crates/rsk-fs/src/storage.rs:105`), so whether the aborted sweep reaches
+/// (`crates/rsk-fs/src/storage.rs:119`) and `for_each_key` iterates it
+/// (`crates/rsk-fs/src/storage.rs:146`), so whether the aborted sweep reaches
 /// 0xCC02 before it stops on the refused 0xCC00 is a fresh permutation per
 /// process — 167 of 400 fixtures lose the marker.
 ///
@@ -334,3 +334,20 @@ fn a_reset_projection_never_deletes_a_record_outside_the_fido_domain() {
         assert!(reset.well_formed(&volatile));
     }
 }
+
+#[test]
+fn an_unmodelled_secret_fid_is_swept_without_changing_modelled_records() {
+    let mut reset = ResetRefinement::new(protected());
+    let mut volatile = ResetVolatileView::default();
+    assert!(reset.begin(&mut volatile));
+    assert!(reset.delete(EF_KEY_DEV.get()));
+    assert!(reset.delete(EF_KEY_DEV_ENC.get()));
+    assert!(reset.advance());
+    let before = reset.persistent;
+    assert!(reset.delete(crate::consts::EF_RP));
+    assert_eq!(reset.persistent, before);
+    assert!(reset.well_formed(&volatile));
+}
+
+#[path = "reset_projection_tests.rs"]
+mod projection;

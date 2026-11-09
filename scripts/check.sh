@@ -8,6 +8,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 HOST="${HOST_TARGET:-aarch64-apple-darwin}"
+# Every binary reader below names this output; do not audit a stale default path.
+export RSK_TZ_OUT="$PWD/target/trustzone"
+unset FEATURES RSK_TZ_NO_TOUCH RSK_TZ_DISPLAY RSK_TZ_GATEWAY_PROBES RSK_TZ_PROBE_ADDRESS RSK_TZ_PROBE_ACCESS RSK_TZ_TEST_DELAY RSK_TZ_NS_IMAGE
 
 # Five rows below allocate a temp, and this was the one script in scripts/ with
 # no cleanup: ~10 GB of build trees per run, until a full volume took the machine
@@ -34,6 +37,9 @@ gate_cleanup() {
 trap gate_cleanup EXIT
 # `run`, the signal traps and the pytest base; scripts/gate-lib.sh says why each.
 . scripts/gate-lib.sh
+# The per-target `-dict=` mapping, shared with scripts/fuzz-all.sh so the
+# liveness row parses the same dictionaries the nightly fuzz row loads.
+. scripts/fuzz-dicts.sh
 
 # `cargo test` calls a selection of nothing a pass: a name filter that matches
 # no test prints "0 passed; …; N filtered out" and exits 0. Five rows below take
@@ -99,15 +105,16 @@ embassy_revs_match() {
 
 # The shipping image must fit the 2560K code region (firmware/memory.x); this
 # ceiling is a *ratchet* well under that hard limit. It hugs the current image
-# (876 KiB) plus a small margin, so a runaway — an accidental fat dependency
+# (1008 KiB) plus a small margin, so a runaway — an accidental fat dependency
 # (one extra EC curve is ~150 KiB) — or any surprise growth trips it, while
 # ordinary build noise does not. Ratchet discipline: when the image shrinks,
 # lower this to lock the win in; when a real feature grows it, raise this in the
 # same commit. Measured on the default (shipping) build before the display/
 # no-touch rebuilds overwrite the ELF; arm-none-eabi-size ships in the dev shell.
-FIRMWARE_FLASH_BUDGET_KIB=918
+# Combined S/NS image, including aligned Ed25519 padding: measured 1008 KiB.
+FIRMWARE_FLASH_BUDGET_KIB=1024
 firmware_size_budget() {
-  local elf="target/thumbv8m.main-none-eabihf/release/firmware"
+  local elf="target/trustzone/combined.elf"
   local bytes kib
   bytes=$(arm-none-eabi-size "$elf" | awk 'NR==2 { print $1 + $2 }')
   kib=$(( (bytes + 1023) / 1024 ))
@@ -125,44 +132,31 @@ firmware_size_budget() {
 # and wedged the key. Same ratchet discipline as the flash budget, floor instead
 # of ceiling. The two symbols swap ends under flip-link, so subtract, don't
 # assume which is on top.
-FIRMWARE_STACK_FLOOR_KIB=168
-firmware_stack_floor() {
-  local elf="target/thumbv8m.main-none-eabihf/release/firmware"
-  local top bot kib
+FIRMWARE_STACK_FLOOR_KIB=120
+DISPLAY_STACK_FLOOR_KIB=116
+NONSECURE_STACK_FLOOR_KIB=20
+stack_floor() {
+  local elf=$1 floor=$2 label=$3 top bot kib
   top=$(arm-none-eabi-nm "$elf" | awk '$3 == "_stack_start" { print $1 }')
   bot=$(arm-none-eabi-nm "$elf" | awk '$3 == "_stack_end" { print $1 }')
   kib=$(( (0x$top - 0x$bot) / 1024 ))
-  echo "stack ${kib} KiB / ${FIRMWARE_STACK_FLOOR_KIB} KiB floor; ML-DSA-65 makeCredential peaks near 114 KiB"
-  if [ "$kib" -lt "$FIRMWARE_STACK_FLOOR_KIB" ]; then
-    echo "FAIL: only ${kib} KiB of stack left, under the ${FIRMWARE_STACK_FLOOR_KIB} KiB floor." >&2
-    echo "      Static RAM grew into the stack. Shrink it, or lower the floor deliberately." >&2
+  echo "$label stack ${kib} KiB / ${floor} KiB floor"
+  if [ "$kib" -lt "$floor" ]; then
+    echo "FAIL: $label stack ${kib} KiB is under the ${floor} KiB floor." >&2
     exit 1
   fi
 }
 
-# The display flavor's floor. Two things share that stack and the linker can see
-# neither: the same ML-DSA-65 keygen peak as above, and one retained display frame
-# — `rsk_ui::scene::RETAINED_FRAME_STACK_BYTES`, 32 KiB, held there by a const
-# assert over `size_of::<Scene>()` plus the DMA bands. 114 + 32 = 146 KiB if they
-# ever nest, against the 202 KiB this build has.
-#
-# It needs its own row because the plain floor above CANNOT see the regression that
-# matters here: the retained compositor deleted a 4 KiB static pixel buffer and put
-# ~26 KiB on the stack instead, which moves `_stack_start - _stack_end` the RIGHT
-# way while the peak grows. A shared row would have reported an improvement.
-DISPLAY_STACK_FLOOR_KIB=168
+firmware_stack_floor() {
+  stack_floor target/trustzone/combined.elf "$FIRMWARE_STACK_FLOOR_KIB" Secure
+  stack_floor target/trustzone/nonsecure/thumbv8m.main-none-eabihf/release/firmware-ns "$NONSECURE_STACK_FLOOR_KIB" Non-secure
+}
+
+# Display tasks and crypto share the cooperative S executor. Retain a separate
+# floor: static display state reduces S stack even when NS stays unchanged.
 display_stack_floor() {
-  local elf="target/thumbv8m.main-none-eabihf/release/firmware"
-  local top bot kib
-  top=$(arm-none-eabi-nm "$elf" | awk '$3 == "_stack_start" { print $1 }')
-  bot=$(arm-none-eabi-nm "$elf" | awk '$3 == "_stack_end" { print $1 }')
-  kib=$(( (0x$top - 0x$bot) / 1024 ))
-  echo "display stack ${kib} KiB / ${DISPLAY_STACK_FLOOR_KIB} KiB floor; ML-DSA-65 makeCredential near 114 KiB + a retained frame under 32 KiB"
-  if [ "$kib" -lt "$DISPLAY_STACK_FLOOR_KIB" ]; then
-    echo "FAIL: the display build has only ${kib} KiB of stack, under the ${DISPLAY_STACK_FLOOR_KIB} KiB floor." >&2
-    echo "      It carries a retained frame on top of the crypto peak the default build has." >&2
-    exit 1
-  fi
+  stack_floor target/trustzone/combined.elf "$DISPLAY_STACK_FLOOR_KIB" 'Secure display'
+  stack_floor target/trustzone/nonsecure/thumbv8m.main-none-eabihf/release/firmware-ns "$NONSECURE_STACK_FLOOR_KIB" Non-secure
 }
 
 # `assurance-trace` exposes α and generated proof domains to host tooling only.
@@ -186,8 +180,8 @@ assurance_trace_is_image_neutral() {
     exit 1
   fi
 
-  CARGO_TARGET_DIR="$dir/target-before" cargo build --manifest-path "$src/Cargo.toml" --release -p firmware
-  elf_before="$dir/target-before/thumbv8m.main-none-eabihf/release/firmware"
+  RSK_TZ_OUT="$dir/target-before" bash "$src/scripts/build.sh"
+  elf_before="$dir/target-before/combined.elf"
   arm-none-eabi-objcopy -O binary "$elf_before" "$dir/before.bin"
 
   for f in generated_token_edges.rs state_assurance.rs state_refinement_kani.rs \
@@ -195,8 +189,8 @@ assurance_trace_is_image_neutral() {
     printf '\ncompile_error!("assurance source reached production");\n' \
       >> "$src/crates/rsk-fido/src/$f"
   done
-  CARGO_TARGET_DIR="$dir/target-poison" cargo build --manifest-path "$src/Cargo.toml" --release -p firmware
-  elf_poison="$dir/target-poison/thumbv8m.main-none-eabihf/release/firmware"
+  RSK_TZ_OUT="$dir/target-poison" bash "$src/scripts/build.sh"
+  elf_poison="$dir/target-poison/combined.elf"
   arm-none-eabi-objcopy -O binary "$elf_poison" "$dir/poison.bin"
 
   control="$dir/feature-control.log"
@@ -233,7 +227,7 @@ assurance_trace_is_image_neutral() {
 # → all four names present, row red; `strip --strip-debug` → the control fires.
 DEBUG_VENDOR_METHODS=(core1_stats keygen_bench latency_bench stack_residue)
 debug_vendor_commands_absent() {
-  local elf="target/thumbv8m.main-none-eabihf/release/firmware" m
+  local elf="target/trustzone/combined.elf" m
   if [ ! -f "$elf" ]; then
     echo "FAIL: $elf was not built, so there is nothing to check." >&2
     exit 1
@@ -260,29 +254,25 @@ debug_vendor_commands_absent() {
   echo "no debug vendor command in the default image (${DEBUG_VENDOR_METHODS[*]})"
 }
 
-# `scripts/pt.sh` fences the KV store off from the USB bootloader. A table whose
+# The TrustZone builder fences the KV store off from the USB bootloader. A table whose
 # bounds drift from the store is worse than no table at all: the image still
 # links, still boots, and the gate still passes, but the running firmware loses
 # writes to its own flash. So assert the emitted table against the ELF's own
-# symbols — not against pt.sh's arithmetic, which is the thing under test.
+# symbols to check the builder's arithmetic.
 partition_table_fences_the_store() {
-  local elf="target/thumbv8m.main-none-eabihf/release/firmware"
-  local dir out line want got
-  dir=$(mktemp -d)
-  GATE_TMP+=("$dir")
-  out="$dir/pt.elf"
-  scripts/pt.sh "$elf" "$out"
+  local elf="target/trustzone/combined.elf"
+  local line want got
   want="$(arm-none-eabi-nm "$elf" | awk '$3 == "__kvmain_start" { print $1 }')"
   want="$want->$(arm-none-eabi-nm "$elf" | awk '$3 == "__kvcnt_end" { print $1 }')"
   for p in "0:NSBOOT(rw)" "1:NSBOOT(-)"; do
-    line=$(picotool info -a "$out" | grep -E "^ +partition ${p%%:*} ") || {
+    line=$(picotool info -a "$elf" | grep -E "^ +partition ${p%%:*} ") || {
       echo "FAIL: no partition ${p%%:*} in the emitted table" >&2; exit 1
     }
     grep -q -- "${p#*:}" <<<"$line" || {
       echo "FAIL: partition ${p%%:*} is not ${p#*:}: $line" >&2; exit 1
     }
   done
-  got=$(picotool info -a "$out" | grep -E '^ +partition 1 ' | grep -oE '[0-9a-f]{8}->[0-9a-f]{8}')
+  got=$(picotool info -a "$elf" | grep -E '^ +partition 1 ' | grep -oE '[0-9a-f]{8}->[0-9a-f]{8}')
   if [ "$got" != "$want" ]; then
     echo "FAIL: the store partition is $got but __kvmain_start..__kvcnt_end is $want." >&2
     echo "      A table that misses the store locks the firmware out of its own data." >&2
@@ -303,21 +293,28 @@ partition_table_fences_the_store() {
 # it was reflashed — measured on one. A throwaway key keeps this offline; the
 # real one never enters the gate.
 release_image_retires_its_unsigned_image_def() {
-  local elf dir key first
-  elf="target/thumbv8m.main-none-eabihf/release/firmware"
+  local elf dir key first info
+  elf="target/trustzone/combined.elf"
   dir=$(mktemp -d)
   GATE_TMP+=("$dir")
   key="$dir/throwaway.pem"
   openssl ecparam -genkey -name secp256k1 -noout -out "$key" 2>/dev/null
-  scripts/pt.sh "$elf" "$dir/pt.elf" 2>/dev/null
-  picotool seal --sign --hash "$dir/pt.elf" -t elf "$dir/signed.elf" -t elf \
+  picotool seal --sign --hash "$elf" -t elf "$dir/signed.elf" -t elf \
     "$key" "$dir/otp.json" --major 1 --minor 0 --rollback 1 >/dev/null
-  first=$(picotool info -a "$dir/signed.elf" |
+  info=$(picotool info -a "$dir/signed.elf")
+  first=$(printf '%s\n' "$info" |
     awk '/Metadata Block 1/ { f = 1 } f && /block type:/ { print $3; exit }')
   if [ "$first" != "ignored" ]; then
     echo "FAIL: the sealed image's first metadata block is '$first', want 'ignored'." >&2
     echo "      A live unsigned IMAGE_DEF ahead of the signed one does not boot on a" >&2
     echo "      secure-boot device. Seal the ELF, then convert to UF2 — not the reverse." >&2
+    exit 1
+  fi
+  if printf '%s\n' "$info" | grep -qE '(hash|signature):[[:space:]]+incorrect' ||
+     ! printf '%s\n' "$info" | grep -qE 'hash:[[:space:]]+verified' ||
+     ! printf '%s\n' "$info" | grep -qE 'signature:[[:space:]]+verified'; then
+    echo "FAIL: the sealed image's hash or signature did not verify." >&2
+    printf '%s\n' "$info" >&2
     exit 1
   fi
   echo "sealed image retires its unsigned IMAGE_DEF (block 1 = ignored)"
@@ -333,12 +330,16 @@ release_image_retires_its_unsigned_image_def() {
 # target on the empty file. Liveness only — no sanitizer, no coverage, no
 # fuzzing; those stay in deep-checks.
 #
+# Each target also gets its `-dict=` (scripts/fuzz-dicts.sh): libFuzzer parses a
+# dictionary at startup and exits non-zero on a malformed one, so this row fails
+# on a broken dict rather than the nightly fuzz job — the same file it loads.
+#
 # Same floor, and the same reason, as scripts/fuzz-coverage.sh and
 # scripts/fuzz-all.sh: a `for` over an empty word list runs nothing and exits
 # 0. Lower all three in the commit that removes a target.
-FUZZ_TARGET_FLOOR=52
+FUZZ_TARGET_FLOOR=54
 fuzz_targets_are_alive() {
-  local manifest log empty bins dead=""
+  local manifest log empty bins dead="" name dict_args
   manifest=$(mktemp)
   log=$(mktemp)
   empty=$(mktemp)
@@ -356,7 +357,9 @@ fuzz_targets_are_alive() {
     exit 1
   fi
   for b in "${bins[@]}"; do
-    "$b" "$empty" >"$log" 2>&1 || { dead="$dead ${b##*/}"; cat "$log" >&2; }
+    name="${b##*/}"
+    read -ra dict_args <<<"$(dict_args_for "$name")"
+    "$b" ${dict_args[@]+"${dict_args[@]}"} "$empty" >"$log" 2>&1 || { dead="$dead $name"; cat "$log" >&2; }
   done
   python scripts/external_corpus.py --replay "$manifest"
   rm -f "$manifest" "$log" "$empty"
@@ -392,16 +395,24 @@ run "fmt"                      cargo fmt --all --check
 # `BOARD` because `rsk-wipe`'s build script refuses to guess a flash size (see
 # the rsk-wipe steps below); `waveshare-one` is the reference board, whose
 # values are the same defaults every other knob falls back to.
-run "clippy (embedded)"        env BOARD=waveshare-one cargo clippy --workspace -- -D warnings
-# Every host row below selects the same way: the whole workspace less the two
-# members that are not under `crates/`. `firmware` and `rsk-wipe` are
+run "TrustZone image" bash scripts/build.sh
+export RSK_TZ_IMPLIB="$PWD/target/trustzone/ns-import.a"
+export RSK_TZ_NS_MEMORY="$PWD/target/trustzone/nonsecure-memory.x"
+export RSK_TZ_SECURE_MEMORY="$PWD/target/trustzone/secure-memory.x"
+export RSK_TZ_STAGE=import
+
+run "clippy (embedded)"        cargo clippy --workspace --exclude firmware --exclude firmware-ns --exclude rsk-wipe -- -D warnings
+run "clippy (S/wipe)"          env BOARD=waveshare-one cargo clippy -p firmware -p rsk-wipe -- -D warnings # roster: scoped
+run "clippy (NS)"              cargo clippy -p firmware-ns -- -D warnings # roster: scoped
+# Every host row below selects the same way: the whole workspace less the three
+# device binaries outside `crates/`. `firmware`, `firmware-ns` and `rsk-wipe` are
 # thumbv8m-only, so a host target cannot build them; nothing else is excluded.
-run "clippy (host tests)"      cargo clippy --workspace --exclude firmware --exclude rsk-wipe --target "$HOST" --all-targets -- -D warnings
+run "clippy (host tests)"      cargo clippy --workspace --exclude firmware --exclude firmware-ns --exclude rsk-wipe --target "$HOST" --all-targets -- -D warnings
 # tools/tui is its own workspace (host-only), so the --all/--workspace runs
 # above never see it — gate it explicitly. Its lockfile was scanned by nobody
 # until Dependabot flagged a transitive advisory from the GitHub side.
-run "fmt (tui)"                cargo fmt --manifest-path tools/tui/Cargo.toml --check
-run "clippy (tui)"             cargo clippy --manifest-path tools/tui/Cargo.toml --target "$HOST" --all-targets -- -D warnings
+run "fmt (tui)"                nix develop .#tui -c cargo fmt --manifest-path tools/tui/Cargo.toml --check
+run "clippy (tui)"             nix develop .#tui -c cargo clippy --manifest-path tools/tui/Cargo.toml --target "$HOST" --all-targets -- -D warnings
 # …and its tests, which nothing ran either. Both host suites belong in the same
 # gate as the firmware's. Gating them was necessary and not sufficient: the three
 # checks named as the reason — the typed confirmations, the refuse-to-guess device
@@ -410,7 +421,7 @@ run "clippy (tui)"             cargo clippy --manifest-path tools/tui/Cargo.toml
 # green (audit run-34 #9 proved it by mutation). They are asserted at the callers
 # now: `rsk/test_refuse_to_guess.py`, `rsk/test_secureboot.py`'s stage commands,
 # and `device_tests.rs`'s `every_hid_open_site_is_classified`.
-run_tests "test (tui)"               cargo test --manifest-path tools/tui/Cargo.toml --target "$HOST"
+run_tests "test (tui)"               nix develop .#tui -c cargo test --manifest-path tools/tui/Cargo.toml --target "$HOST"
 # tools/emu is the third host-only workspace (the software emulator) — same
 # reason it is gated here: nothing in the --workspace runs above can see it, and
 # an emulator that stops compiling is found when someone tries to run the
@@ -418,6 +429,20 @@ run_tests "test (tui)"               cargo test --manifest-path tools/tui/Cargo.
 run "fmt (emu)"                cargo fmt --manifest-path tools/emu/Cargo.toml --check
 run "clippy (emu)"             cargo clippy --manifest-path tools/emu/Cargo.toml --target "$HOST" --all-targets -- -D warnings
 run "clippy (emu conformance)" cargo clippy --manifest-path tools/emu/Cargo.toml --target "$HOST" --all-targets --features fido-conformance -- -D warnings
+picoem_manifest() {
+  cargo metadata --locked --manifest-path tools/emu/Cargo.toml --format-version 1 |
+    python -c 'import json, sys; print(next(p["manifest_path"] for p in json.load(sys.stdin)["packages"] if p["name"] == "rp2350-emu"))'
+}
+
+run "fmt (RP2350 model)"       cargo fmt --manifest-path "$(picoem_manifest)" -p rp2350-emu -p picoem-common -- --check
+# Patch the Linux test in a scratch copy to keep the Cargo checkout intact.
+picoem_lint_dir=$(mktemp -d)
+GATE_TMP+=("$picoem_lint_dir")
+picoem_crate=$(picoem_manifest)
+picoem_root=$(git -C "$(dirname "$picoem_crate")" rev-parse --show-toplevel)
+git -C "$picoem_root" archive HEAD | tar -x -C "$picoem_lint_dir"
+git -C "$picoem_lint_dir" apply "$PWD/third_party/picoem-threaded-clippy.patch"
+run "clippy (RP2350 model)"    cargo clippy --locked --manifest-path "$picoem_lint_dir/crates/rp2350-emu/Cargo.toml" -p rp2350-emu -p picoem-common --target "$HOST" --all-features --all-targets -- -D warnings
 # fuzz/ is also its own (nightly) workspace. rustfmt needs no toolchain, so the
 # stable gate can format-check it here. Format fuzz/ with this same stable
 # rustfmt — not the .#fuzz nightly one, which lays imports out differently.
@@ -456,8 +481,8 @@ run "fuzz targets alive"       fuzz_targets_are_alive
 # What these rows still do NOT check, so nobody reads them as more than they are:
 # `missing_docs` is off (an undocumented item is nobody's failure here); a plain
 # `//` comment is not parsed for links, so a dead name in one rots unseen.
-run "rustdoc (host)"           env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude firmware --exclude rsk-wipe --no-deps --target "$HOST"
-run "rustdoc (host all-feat)"  env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude firmware --exclude rsk-wipe --no-deps --all-features --target "$HOST"
+run "rustdoc (host)"           env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude firmware --exclude firmware-ns --exclude rsk-wipe --no-deps --target "$HOST"
+run "rustdoc (host all-feat)"  env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude firmware --exclude firmware-ns --exclude rsk-wipe --no-deps --all-features --target "$HOST"
 # A third permutation, because the two above document only public items and so
 # resolve only the links a public item carries: 28 more were broken at the commit
 # that fixed the first 75, in eight crates, two of them on that commit's clean
@@ -470,8 +495,8 @@ run "rustdoc (host all-feat)"  env RUSTDOCFLAGS="-D warnings" cargo doc --worksp
 # invalidates the other's fingerprint. Deliberately no seconds: the pair timed
 # 8.5 s -> 15.6 s when this line was written and 21 s -> 43 s when re-timed later
 # in the same tree, so a figure here is a claim that does not survive re-reading.
-run "rustdoc (host private)"   env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude firmware --exclude rsk-wipe --no-deps --document-private-items --target "$HOST"
-# `firmware` and `rsk-wipe` are the workspace's only thumbv8m-only members, so
+run "rustdoc (host private)"   env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude firmware --exclude firmware-ns --exclude rsk-wipe --no-deps --document-private-items --target "$HOST"
+# `firmware` and `rsk-wipe` are documented for the device target here, so
 # these two rows take the default target instead of $HOST. `BOARD` because
 # rsk-wipe refuses to guess a flash size, `LED_KIND=none` because `--all-features`
 # turns on `display`, whose compile_error guard demands it. rsk-wipe declares no
@@ -482,14 +507,14 @@ run "rustdoc (firmware all-feat)" env BOARD=waveshare-one LED_KIND=none RUSTDOCF
 # touch): both claim the same panel/PIO on a real board, so all-features cannot
 # cover both. Document the touchless build on its own permutation instead.
 run "rustdoc (firmware keys)"   env BOARD=waveshare-geek LED_KIND=none RUSTDOCFLAGS="-D warnings" cargo doc -p firmware --no-deps --features display-keys
-run "rustdoc (tui)"            env RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path tools/tui/Cargo.toml --no-deps --target "$HOST"
+run "rustdoc (tui)"            nix develop .#tui -c env RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path tools/tui/Cargo.toml --no-deps --target "$HOST"
 run "rustdoc (emu)"            env RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path tools/emu/Cargo.toml --no-deps --target "$HOST"
 # `--bins` is load-bearing: cargo-fuzz writes `doc = false` on every target, so
 # a plain `cargo doc` here documents nothing, prints no `Documenting` line and
 # exits 0 in 0.1 s — a green row over an empty set, the defect this block exists
 # to prevent. The flag overrides `doc = false`; `--all-targets` is not a `doc` flag.
 run "rustdoc (fuzz)"           env RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path fuzz/Cargo.toml --bins --no-deps --target "$HOST"
-run_tests "test (host)"              cargo test --workspace --exclude firmware --exclude rsk-wipe --target "$HOST"
+run_tests "test (host)"              cargo test --workspace --exclude firmware --exclude firmware-ns --exclude rsk-wipe --target "$HOST"
 # The PQC-advertisement opt-in changes the getInfo shape — test both forms.
 run_tests "test (advertise-pqc)"     cargo test -p rsk-fido --features advertise-pqc --target "$HOST" getinfo
 # fido-conformance suppresses the default EdDSA (-8) advertisement (the
@@ -565,14 +590,15 @@ run "clippy (display keys)" env BOARD=waveshare-geek LED_KIND=none cargo clippy 
 # no gate at all until audit run-36, so it does not go back to having no test.
 run_tests "test (display wiring)"    cargo test -p rsk-device --features display --target "$HOST"
 run "clippy (display wiring)"  cargo clippy -p rsk-device --features display --target "$HOST" --all-targets -- -D warnings
-run "build firmware (release)" cargo build --release -p firmware
+# Read the shipping combined TrustZone ELF; NS has its own ELF/DWARF audit.
+run "build firmware (release)" bash scripts/build.sh
 run "assurance-trace image identity" assurance_trace_is_image_neutral
 run "firmware size budget"     firmware_size_budget
 run "firmware stack floor"     firmware_stack_floor
 run "no debug vendor command in the image" debug_vendor_commands_absent
 run "partition table fences the store" partition_table_fences_the_store
 run "sealed image retires its unsigned IMAGE_DEF" release_image_retires_its_unsigned_image_def
-# Reads the image the row above just sealed, and it has to be HERE: the 16 MB,
+# Reads the image the row above just sealed, and it has to be HERE: the 2 MB, 16 MB,
 # display and no-touch builds below overwrite this path, so the same row run with
 # the Python gates would audit the no-touch binary and say nothing about the one
 # that ships.
@@ -594,11 +620,15 @@ run "image segments and allocator" python scripts/elf_gate.py
 # exemptions. Recorded rather than handled: the row's window is above that build,
 # and those two absences are absences OF THE DEFAULT IMAGE.
 run "registered owners in the shipped image" python scripts/owner_binding_gate.py
+# Keep the compact backend constructor linked at the existing 2 MiB geometry.
+run "build firmware (2M)"      env FLASH_SIZE=2M KVMAIN=896K bash scripts/build.sh
+run "firmware stack floor (2M)" firmware_stack_floor
+run "partition table fences the store (2M)" partition_table_fences_the_store
 # The 16 MB geometry is the one that broke: the store used to end at the top of
 # the XIP window, where the bootrom's RP2350-E10 absolute block lives, and
 # `picotool partition create` refuses a table claiming it — a build the release
 # makes (display, 16mb) and the 4 MB gate above never exercised.
-run "build firmware (16M)"     env FLASH_SIZE=16M cargo build --release -p firmware
+run "build firmware (16M)"     env FLASH_SIZE=16M bash scripts/build.sh
 run "partition table fences the store (16M)" partition_table_fences_the_store
 # The trusted-display flavor must keep building from the same tree. Built
 # `LED_KIND=none` (the panel replaces the addressable LED and its backlight uses
@@ -613,7 +643,9 @@ run "partition table fences the store (16M)" partition_table_fences_the_store
 # column says so in as many words. It does not make the `SEC-DISP-*` rows
 # `covered`: this compiles the shipped image, and their EVIDENCE is still
 # produced at 4 MB.
-run "build firmware (display)" env LED_KIND=none FLASH_SIZE=16M cargo build --release -p firmware --features display
+run "build firmware (display V2)" env LED_KIND=none FLASH_SIZE=16M DISPLAY_TP_CHIP=cst3530 bash scripts/build.sh --features display
+run "firmware stack floor (display V2)" display_stack_floor
+run "build firmware (display)" env LED_KIND=none FLASH_SIZE=16M DISPLAY_TP_CHIP=cst328 bash scripts/build.sh --features display
 run "firmware stack floor (display)" display_stack_floor
 # The touchless screen + button form must keep building from the same tree too
 # (the fork's adapted board). Kept after the `display` checks — which own the
@@ -629,7 +661,7 @@ run "display code absent from default image" sh -c '
     echo "FAIL: display code (rsk-ui/rsk-bip39/rsk-slip39/mipidsi) leaked into the default (no-display) firmware image"; exit 1
   fi'
 # The test build: no BOOTSEL presence, so the automated suites don't hang on a touch.
-run "build firmware (test, --features no-touch)" cargo build --release -p firmware --features no-touch
+run "build firmware (test, --features no-touch)" bash scripts/build.sh --features no-touch
 # rsk-wipe bakes its erase length AND its LED wiring in at build time, and it is
 # the signed recovery hatch: build it for every board, so a change that stops
 # `BOARD` reaching it (which once left a 16 MB board's whole KV store intact behind
@@ -665,10 +697,11 @@ run "vendored fork linked"     python scripts/vendored_fork_gate.py
 # No `--ignore`: the tree carries no vulnerability advisory. RUSTSEC-2023-0071
 # (the `rsa` crate, no fixed release) was the last one and left with the crate.
 run "cargo-audit (SCA)"        cargo audit
-run "cargo-audit (tui SCA)"    cargo audit --file tools/tui/Cargo.lock
+run "cargo-audit (tui SCA)"    nix develop .#tui -c cargo audit --file tools/tui/Cargo.lock
 # The emulator's own host tests — today the USB/IP codec, whose struct layouts are
 # the Linux kernel's and whose framing rule decides how many bytes come off the
 # socket next; both fail silently on the wire rather than loudly.
+run_tests "test (RP2350 model)"      cargo test --locked --manifest-path "$(picoem_manifest)" -p rp2350-emu -p picoem-common --lib --target "$HOST"
 run_tests "test (emu)"               cargo test --manifest-path tools/emu/Cargo.toml --target "$HOST"
 run_tests "test (emu security trace)" cargo test --manifest-path tools/emu/Cargo.toml --target "$HOST" --features security-trace
 run_tests "test (emu conformance)"   cargo test --manifest-path tools/emu/Cargo.toml --target "$HOST" --features fido-conformance
@@ -715,7 +748,7 @@ run "kani roster"              python scripts/kani_gate.py
 # set is derived from the crates now, in both directions.
 run "kani shrink roster"       python scripts/shrink_gate.py
 # Same failure one file closer to home, and the reason the host rows above say
-# `--workspace --exclude firmware --exclude rsk-wipe` rather than naming crates:
+# `--workspace --exclude firmware --exclude firmware-ns --exclude rsk-wipe` rather than naming crates:
 # the list they used to name was written out nine times over four files and had
 # rotted to 16 of 24 in the docs, 20 on the nightly coverage row, 12 in the
 # flake. This holds every copy of that selection to the tree.

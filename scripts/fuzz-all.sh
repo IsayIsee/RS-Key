@@ -38,7 +38,7 @@ FUZZ_SECONDS="${FUZZ_SECONDS:-120}"
 # firmware-size ratchet: a target count has no build noise. A literal, not
 # `${FUZZ_TARGET_FLOOR:-52}`, because a floor the environment can lower is not a
 # floor. Lower all three copies in the commit that removes a target.
-FUZZ_TARGET_FLOOR=52
+FUZZ_TARGET_FLOOR=54
 
 # FUZZ_CONFIG=flavours builds the shipped flavours' on side — the `flavours`
 # union feature in fuzz/Cargo.toml — instead of the default image's off side.
@@ -101,10 +101,15 @@ if [ "${#mine[@]}" -eq 0 ]; then
 fi
 echo "shard ${FUZZ_SHARD}: ${#mine[@]} of ${#targets[@]} targets"
 
+# Per-target `-dict=` arguments: the same mapping the PR gate's liveness row
+# parses, one copy so the two rows cannot disagree about which file to load.
+. scripts/fuzz-dicts.sh
+
 failed=""
 for t in "${mine[@]}"; do
   echo "::group::${t} (${FUZZ_SECONDS}s)"
-  if ! cargo fuzz run ${config_args[@]+"${config_args[@]}"} "$t" -- -max_total_time="$FUZZ_SECONDS" -print_final_stats=1; then
+  read -ra dict_args <<<"$(dict_args_for "$t")"
+  if ! cargo fuzz run ${config_args[@]+"${config_args[@]}"} "$t" -- ${dict_args[@]+"${dict_args[@]}"} -max_total_time="$FUZZ_SECONDS" -print_final_stats=1; then
     failed="$failed $t"
   fi
   echo "::endgroup::"

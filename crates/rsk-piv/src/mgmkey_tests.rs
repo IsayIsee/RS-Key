@@ -30,6 +30,63 @@ fn dev() -> Device<'static> {
     }
 }
 
+#[test]
+fn a_reminted_management_key_drops_a_matching_heads_stale_pin_policy() {
+    let mut fs = new_fs();
+    files::scan_files(&dev(), &mut fs, &mut TestRng(7)).unwrap();
+    let fid = key_fid(SLOT_CARDMGM);
+    fs.force_delete(fid.get()).unwrap();
+    fs.meta_add(
+        fid.get(),
+        &[ALGO_AES192, PINPOLICY_ALWAYS, TOUCHPOLICY_NEVER],
+    )
+    .unwrap();
+    assert_eq!(
+        files::scan_files(&dev(), &mut fs, &mut TestRng(9)),
+        Ok(true)
+    );
+    let mut head = [0; 3];
+    assert_eq!(fs.meta_find(fid.get(), &mut head), Some(3));
+    assert_eq!(head, [ALGO_AES192, MGM_PIN_POLICY, TOUCHPOLICY_NEVER]);
+    assert_eq!(
+        files::mgm_read(&dev(), &mut fs).unwrap().key(),
+        &DEFAULT_MGM
+    );
+}
+
+#[test]
+fn a_tagged_management_key_with_its_matching_head_needs_no_repair_write() {
+    let refuse = Rc::new(Cell::new(false));
+    let mut fs = Fs::new(Flaky {
+        inner: RamStorage::new(),
+        refuse_meta: refuse.clone(),
+        fail_read: Rc::new(Cell::new(None)),
+        err: false,
+    });
+    fs.scan();
+    files::scan_files(&dev(), &mut fs, &mut TestRng(7)).unwrap();
+    files::mgm_put(
+        &dev(),
+        &mut fs,
+        &mut TestRng(8),
+        ALGO_AES256,
+        TOUCHPOLICY_ALWAYS,
+        &AES256_KEY,
+    )
+    .unwrap();
+    fs.meta_add(
+        key_fid(SLOT_CARDMGM).get(),
+        &[ALGO_AES256, MGM_PIN_POLICY, TOUCHPOLICY_ALWAYS],
+    )
+    .unwrap();
+    refuse.set(true);
+    assert_eq!(
+        files::scan_files(&dev(), &mut fs, &mut TestRng(9)),
+        Ok(true)
+    );
+    assert_eq!(files::mgm_read(&dev(), &mut fs).unwrap().key(), &AES256_KEY);
+}
+
 /// Whether a mutual authentication on 9B with `m`'s key under its algorithm
 /// completes.
 fn authenticates<S: Storage>(app: &mut PivApplet, fs: &mut Fs<S>, m: Mgm) -> bool {
@@ -147,7 +204,7 @@ fn a_torn_management_key_change_leaves_one_whole_key() {
         let rng = RefCell::new(TestRng(7));
         let pres = RefCell::new(Scripted { confirm: true });
         let app_on = || PivApplet::new(SERIAL, HASH, None, &rng, &pres);
-        rsk_fs::cut::sweep(
+        assert!(rsk_fs::cut::sweep_restarts(
             || {
                 let (mut fs, medium) = new_cut_fs();
                 select(&mut app_on(), &mut fs);
@@ -172,7 +229,10 @@ fn a_torn_management_key_change_leaves_one_whole_key() {
                 select(&mut app, fs);
                 change(&mut app, fs, from, to) == Sw::OK
             },
-            |fs, budget, completed, medium| {
+            |fs| {
+                let _ = files::scan_files(&dev(), fs, &mut TestRng(91));
+            },
+            |fs, budget, _second, completed, medium| {
                 let mut app = app_on();
                 select(&mut app, fs);
                 let new = touch_in_force(&mut app, fs, &pres, to);
@@ -198,7 +258,7 @@ fn a_torn_management_key_change_leaves_one_whole_key() {
                 );
                 assert_eq!(metadata(&mut app, fs), (m.algo, m.touch));
             },
-        );
+        ));
     }
 }
 
@@ -676,11 +736,75 @@ fn a_select_that_could_not_read_the_key_leaves_its_head_owed() {
     assert!(!app.files_ensured, "control: the head is owed");
     refuse.set(false);
     fail.set(Some((key_fid(SLOT_CARDMGM).get(), 0)));
-    select(&mut app, &mut fs);
+    let generation = fs.write_gen();
+    let mut out = [0xa5; 256];
+    let mut response = ResBuf::new(&mut out);
+    assert_eq!(
+        Applet::select(&mut app, false, &mut fs, &mut response),
+        Sw::MEMORY_FAILURE
+    );
+    assert!(response.as_slice().is_empty());
+    assert_eq!(out, [0xa5; 256]);
+    assert_eq!(fs.write_gen(), generation);
+    assert!(!app.files_ensured);
     assert!(
         fail.get().is_none(),
         "control: the planned read fault landed"
     );
     select(&mut app, &mut fs);
     assert!(authenticates(&mut app, &mut fs, FACTORY));
+}
+
+#[path = "mgmkey_restart_tests.rs"]
+mod restarts;
+
+#[test]
+fn a_fresh_select_preserves_a_malformed_management_key_and_retries_its_head() {
+    for (bytes, sealed) in [
+        (b"".as_slice(), false),
+        (&[0xa5; 40], false),
+        (&[0x77; 17], true),
+    ] {
+        let (backend, medium) = rsk_fs::storage::faults::ProbeStuck::new();
+        let mut fs = Fs::new(backend);
+        fs.scan();
+        files::scan_files(&dev(), &mut fs, &mut TestRng(7)).unwrap();
+        let fid = key_fid(SLOT_CARDMGM);
+        if sealed {
+            crate::seal::seal_put(&dev(), &mut fs, &mut TestRng(19), fid, bytes).unwrap();
+        } else {
+            fs.put_key(fid, rsk_fs::Sealed::wrap(bytes)).unwrap();
+        }
+        fs.meta_add(
+            fid.get(),
+            &[ALGO_AES256, MGM_PIN_POLICY, TOUCHPOLICY_ALWAYS],
+        )
+        .unwrap();
+        let before =
+            [fid.get(), rsk_fs::EF_META, EF_ATTESTATION_CERT].map(|fid| (fid, medium.value(fid)));
+        let generation = fs.write_gen();
+        let rng = RefCell::new(TestRng(23));
+        let pres = RefCell::new(Scripted { confirm: true });
+        let mut app = PivApplet::new(SERIAL, HASH, None, &rng, &pres);
+        for _ in 0..2 {
+            assert!(!select(&mut app, &mut fs).is_empty());
+            assert!(!app.files_ensured, "a malformed key still owes its head");
+            assert_eq!(fs.write_gen(), generation);
+            for (fid, value) in &before {
+                assert_eq!(medium.value(*fid), *value);
+            }
+        }
+        files::mgm_put(
+            &dev(),
+            &mut fs,
+            &mut TestRng(29),
+            FACTORY.algo,
+            FACTORY.touch,
+            FACTORY.key,
+        )
+        .unwrap();
+        select(&mut app, &mut fs);
+        assert!(app.files_ensured);
+        assert!(authenticates(&mut app, &mut fs, FACTORY));
+    }
 }

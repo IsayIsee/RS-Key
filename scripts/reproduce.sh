@@ -62,11 +62,11 @@ PHASES=(
   "emu|deep|~15 min|the on-device suites, the vendored OpenPGP and ykman suites and the diff against a frozen YubiKey 5.8.0, against tools/emu instead of a board|./scripts/emu-suites.sh"
   "image|deep|~5 min|command stacks, known-secret lifetimes and interrupted writes in the partitioned firmware ELF on the emulated RP2350|./scripts/image-suites.sh"
   "proofs-all|deep|~8 h|the weekly Kani roster: every harness in every proven crate, in the four tiers CI shards it into|./scripts/kani.sh light1 && ./scripts/kani.sh light2 && ./scripts/kani.sh light3 && ./scripts/kani.sh heavy"
-  "coverage|deep|~20 min|host-crate line coverage against the floor the weekly job holds|cargo llvm-cov --summary-only --fail-under-lines 80 --target \$HOST_TRIPLE --workspace --exclude firmware --exclude rsk-wipe"
+  "coverage|deep|~20 min|the default host line floor and MC/DC witness report|cargo llvm-cov --summary-only --fail-under-lines 80 --target \$HOST_TRIPLE --workspace --exclude firmware --exclude firmware-ns --exclude rsk-wipe && ./scripts/mcdc.sh"
   "repro|deep|~30 min|the hermetic firmware build is bit-identical on a rebuild|nix build .#firmware -o result-repro && nix build .#firmware --rebuild"
   "miri|deep|~40 min|every fuzz target's logic under Miri's UB checker|nix develop .#fuzz -c ./scripts/miri-all.sh"
   "fuzz|deep|~2 h|a timed libFuzzer run over every fuzz target, from whatever corpus this checkout has|nix develop .#fuzz -c ./scripts/fuzz-all.sh"
-  "mutants|deep|~10 h|the cargo-mutants sweep, held against the accepted survivors in scripts/mutants-accepted.txt: would any test notice if this line changed|./scripts/mutants-all.sh"
+  "mutants|deep|~10 h|the cargo-mutants sweep, held against the accepted survivors in scripts/mutants-accepted.txt: would any test notice if this line changed|./scripts/mutants-container.sh"
 )
 
 #: Tier -> the phases it runs, cheapest first. `all` is every phase this
@@ -112,6 +112,7 @@ REFUSED=(
 #: Every shell runner under scripts/ and formal/.
 CLAIM_RUNNERS=(
   "scripts/check.sh|gate|"
+  "scripts/build.sh|gate|builds and partitions the combined S/NS image used by the gate's firmware rows"
   "scripts/check-assurance.sh|assurance|"
   "scripts/gate-lib.sh|gate|"
   "scripts/docs.sh|docs|"
@@ -121,7 +122,10 @@ CLAIM_RUNNERS=(
   "scripts/image-suites.sh|image|"
   "scripts/miri-all.sh|miri|"
   "scripts/fuzz-all.sh|fuzz|"
+  "scripts/fuzz-dicts.sh|-|the per-target dictionary mapping, sourced by scripts/fuzz-all.sh and the gate's fuzz targets alive row; nothing runs it directly"
   "scripts/mutants-all.sh|mutants|"
+  "scripts/mutants-container.sh|mutants|the memory-limited Linux launcher for full and in-diff mutation runs"
+  "scripts/mutants-nextest.sh|-|the mutation runner's nextest adapter; retains Cargo doctests after library tests"
   "scripts/ci-scope.sh|gate|"
   "scripts/ci-knobs.sh|gate|"
   "scripts/complexity_gate.sh|gate|"
@@ -130,8 +134,8 @@ CLAIM_RUNNERS=(
   "scripts/fuzz-coverage.sh|-|measures the weekly job's accumulated corpus cache, which no checkout carries"
   "scripts/usbip-suites.sh|-|needs a Linux host with vhci_hcd and KVM to boot the guest that owns the USB stack"
   "scripts/usbip-guest.sh|-|the in-guest half of the same suite, invoked by it and never directly"
-  "scripts/pt.sh|-|applies a partition table to an ELF; a build step the gate's image rows invoke, not evidence of its own"
   "scripts/metrics.sh|-|advisory refactor reconnaissance, explicitly not a gate and nothing depends on its numbers"
+  "scripts/mcdc.sh|coverage|"
   "scripts/pages/build-site.sh|-|renders the published docs site for GitHub Pages; the docs phase builds and link-checks the same book"
   "scripts/reproduce.sh|-|this file: the runner the phases above are run by, and the one shape that cannot be a phase of itself — its own drift check is --self-test"
   "scripts/fork-version.sh|-|fork-only bcd bookkeeping: it judges this row's known red against an upstream ref, and no upstream checkout has the policy or the ref"
@@ -156,6 +160,7 @@ CLAIM_JOBS=(
   "deep-checks:fuzz-coverage|-|needs the accumulated corpus cache; see REFUSED"
   "deep-checks:repro|repro|"
   "deep-checks:coverage|coverage|"
+  "deep-checks:mcdc|coverage|"
   "deep-checks:kani|proofs-all|"
   "deep-checks:mutants|mutants|"
   "deep-checks:comutants|comutants|"
@@ -183,8 +188,18 @@ CLAIM_JOBS=(
 #: `Unmatched (`, on stderr, while the row it was meant to claim reads as
 #: unrecognised. Measured on the first run of this table.
 CLAIM_ROWS=(
+  "^bash scripts/build\\.sh( --features [a-z0-9,-]+)?$|gate|builds the combined S/NS image from pinned local sources without a board or signing key"
+  "^env FLASH_SIZE=16M bash scripts/build\\.sh$|gate|builds the 16 MB combined image locally"
+  "^env FLASH_SIZE=2M KVMAIN=896K bash scripts/build\\.sh$|gate|builds the documented 2 MB combined image locally"
+  "^env LED_KIND=none FLASH_SIZE=16M DISPLAY_TP_CHIP=cst328 bash scripts/build\\.sh --features display$|gate|builds the combined display V1 image locally"
+  "^env LED_KIND=none FLASH_SIZE=16M DISPLAY_TP_CHIP=cst3530 bash scripts/build\\.sh --features display$|gate|builds the combined display V2 image locally"
   "^cargo |gate|"
   "^env .*cargo |gate|"
+  "^nix develop \\.#tui -c cargo fmt --manifest-path tools/tui/|gate|the separate TUI shell provides host dependencies, with no board or secrets"
+  "^nix develop \\.#tui -c cargo clippy --manifest-path tools/tui/|gate|the separate TUI shell provides host dependencies, with no board or secrets"
+  "^nix develop \\.#tui -c cargo test --manifest-path tools/tui/|gate|the separate TUI shell provides host dependencies, with no board or secrets"
+  "^nix develop \\.#tui -c cargo audit --file tools/tui/|gate|the separate TUI shell provides host dependencies, with no board or secrets"
+  "^nix develop \\.#tui -c env RUSTDOCFLAGS=.* cargo doc --manifest-path tools/tui/|gate|the separate TUI shell provides host dependencies, with no board or secrets"
   "^python3? scripts/|gate|"
   "^python3? -m pytest scripts\\b|gate|"
   "^python3? -m pytest tools/rsk\\b|gate|"
@@ -481,7 +496,7 @@ self_test() {
     [ -n "$(rest "$entry" 2)" ] || bad "refusals: '$(field "$entry" 1)' is refused with no reason"
   done
   [ -f "$HIL_PAGE" ] || bad "refusals: the maintainer-only page $HIL_PAGE does not exist, so the refusal points nowhere"
-  print_refusals | grep -qF "$HIL_PAGE" || bad "refusals: the refusal block does not name $HIL_PAGE"
+  print_refusals | grep -F "$HIL_PAGE" >/dev/null || bad "refusals: the refusal block does not name $HIL_PAGE"
 
   if [ "$FAILS" -eq 0 ]; then
     echo "reproduce: self-test ok — $n gate rows, $(find scripts formal -name '*.sh' | grep -c .) runners, $(workflow_jobs | grep -c .) jobs, ${#PHASES[@]} phases, ${#REFUSED[@]} refusals"

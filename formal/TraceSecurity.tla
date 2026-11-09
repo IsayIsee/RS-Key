@@ -29,10 +29,11 @@ PermsFromRaw(raw) ==
       [] OTHER    -> {"unsupported-raw-permissions"}
 
 Beta(raw) ==
-    [ pinSet       |-> raw.pinRecordLen = 35,
+    [ pinSet       |-> raw.pinRecordLen # -1,
       pinRetries   |-> IF raw.pinRetriesRaw = -1
                          THEN MaxRetries ELSE raw.pinRetriesRaw,
-      alwaysUv     |-> raw.alwaysUvRecordLen = 1 /\ raw.alwaysUvRaw = 1,
+      alwaysUv     |-> IF raw.alwaysUvRecordLen = -1 THEN AlwaysUvShipped
+                         ELSE raw.alwaysUvRecordLen # 1 \/ raw.alwaysUvRaw # 0,
       grant        |-> raw.persistentGrantRecord,
       backupSealed |-> raw.backupSealedRecord,
       seed         |-> raw.seedPlainRecord \/ raw.seedEncryptedRecord,
@@ -127,7 +128,7 @@ R4bEventConsensus ==
 (* BugTokenlessIgnoresAlwaysUv there.                                       *)
 (***************************************************************************)
 
-\* CTAP 2.1 6.1.2, crates/rsk-fido/src/makecredential.rs:618-636. Two arms, and
+\* CTAP 2.1 6.1.2, crates/rsk-fido/src/makecredential.rs:620-638. Two arms, and
 \* the recording now carries both:
 \*   step 6.2/6.4 -- alwaysUv with no way to verify refuses whatever `rk` says;
 \*   step 10      -- otherwise a DISCOVERABLE credential still needs a token

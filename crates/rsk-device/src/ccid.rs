@@ -254,6 +254,9 @@ impl<'a, S: Storage, R: rsk_sdk::Rng + 'static, VP: rsk_vendor::Platform>
     /// The `Dispatcher::set_enabled` index-mask derived from the current cap mask:
     /// bit `i` set → applet `i` (in `APPLET_CAPS` order) is selectable.
     fn applet_enable_mask(&self) -> u32 {
+        if self.fs.borrow().storage_state() == rsk_fs::storage::StorageState::Recovery {
+            return 1 << 6;
+        }
         let mut mask = 0u32;
         for (i, &cap) in APPLET_CAPS.iter().enumerate() {
             if rsk_devconf::cap_enabled(self.enabled_caps, cap) {
@@ -270,6 +273,9 @@ impl<'a, S: Storage, R: rsk_sdk::Rng + 'static, VP: rsk_vendor::Platform>
     /// the FIDO-transport twin of the CCID `INS_READ_CONFIG` / OTP slot 0x13 paths,
     /// so all three report the same caps/serial/version DeviceInfo.
     pub fn ctap_mgmt(&mut self, cmd: u8, _data: &[u8]) -> Option<&[u8]> {
+        if self.fs.borrow().storage_state() == rsk_fs::storage::StorageState::Recovery {
+            return None;
+        }
         match cmd {
             CTAP_READ_CONFIG => {
                 let n = {
@@ -319,10 +325,13 @@ impl<'a, S: Storage, R: rsk_sdk::Rng + 'static, VP: rsk_vendor::Platform>
         self.resp.zeroize();
     }
 
-    /// Secure-reboot wipe of the smart-card side: every applet drops its session as
-    /// it does on a deselect (OpenPGP's session keys, PIV's witness, OATH's
-    /// validation), the dispatcher its chain and held tail, and the response buffer
-    /// its last answer. No SELECT follows a reboot to re-lock what this misses.
+    /// Lend the complete response buffer to the board's volatile SRAM wipe.
+    pub fn scrub_with(&mut self, wipe: impl FnOnce(&mut [u8])) {
+        wipe(&mut self.resp);
+    }
+
+    /// Every applet and held response can carry authorization across a reset.
+    /// Revoke them all on USB-wide reset or secure reboot, without a later SELECT.
     pub fn scrub_secrets(&mut self) {
         use zeroize::Zeroize;
         // Every field is named, so a new applet or buffer does not compile until its
@@ -354,7 +363,7 @@ impl<'a, S: Storage, R: rsk_sdk::Rng + 'static, VP: rsk_vendor::Platform>
         disp.clear_chaining();
         #[expect(
             clippy::disallowed_methods,
-            reason = "the response buffer outlives every dispatch; the secure reboot wipes it with every session"
+            reason = "the response buffer outlives dispatches; transport reset or secure reboot wipes it with every session"
         )]
         resp.zeroize();
     }
@@ -409,6 +418,16 @@ impl<'a, S: Storage, R: rsk_sdk::Rng + 'static, VP: rsk_vendor::Platform>
         self.disp.reset_card(&mut applets, &mut *fsb);
     }
 
+    /// USB-wide revocation cannot trust which applet the transport selected.
+    pub fn reset_transport_session(&mut self) {
+        self.scrub_secrets();
+    }
+
+    /// Whether this APDU only continues an answer already produced by an applet.
+    pub fn continues_response(&self, raw: &[u8]) -> bool {
+        Apdu::parse(raw).is_ok_and(|apdu| self.disp.continues_response(&apdu))
+    }
+
     /// Dispatch one CCID APDU synchronously, returning the response APDU (body +
     /// SW1 SW2), or nothing for a class a YubiKey 5.8.0 does not pass on. On-card
     /// RSA keygen is run to completion inline (see module docs); everything else
@@ -444,6 +463,7 @@ impl<'a, S: Storage, R: rsk_sdk::Rng + 'static, VP: rsk_vendor::Platform>
         // where `00 47 …` is `6982`, and `10 47 …` is accumulated, never executed.
         let fast_cap = Apdu::parse(apdu)
             .ok()
+            .filter(|_| self.fs.borrow().storage_state() == rsk_fs::storage::StorageState::Ready)
             .filter(|p| !p.is_chaining() && !p.is_secure_messaging())
             // Nor one while a chain is open: the dispatcher joins it to that chain,
             // or refuses it `6883` as a YubiKey 5.8.0 does.
@@ -506,6 +526,9 @@ impl<'a, S: Storage, R: rsk_sdk::Rng + 'static, VP: rsk_vendor::Platform>
         slot_id: u8,
         payload: &[u8; 64],
     ) -> ([u8; 64], usize, [u8; 8]) {
+        if self.fs.borrow().storage_state() == rsk_fs::storage::StorageState::Recovery {
+            return ([0; 64], 0, [0; 8]);
+        }
         // OTP disabled: the function slots (program/update/swap/challenge-response)
         // go inert, but the identify/config slots (serial, READ/WRITE CONFIG,
         // status) stay live so the host can still read DeviceInfo and re-enable OTP.
@@ -550,6 +573,9 @@ impl<'a, S: Storage, R: rsk_sdk::Rng + 'static, VP: rsk_vendor::Platform>
         slot: u8,
         ts_secs: u32,
     ) -> Option<([u8; rsk_otp::ticket::MAX_TICKET], usize, bool)> {
+        if self.fs.borrow().storage_state() == rsk_fs::storage::StorageState::Recovery {
+            return None;
+        }
         if !self.caps_enabled(rsk_devconf::CAP_OTP) {
             return None; // OTP disabled — a button press types nothing.
         }

@@ -1,8 +1,95 @@
 # OpenPGP card
 
+Build `0x0BE1` lets the background RSA prime search observe cancellation inside
+its Lucas test after a key is complete. Prime acceptance, key formats and
+authorization are unchanged; the abandoned candidate is wiped before core1 idles.
+
+Build `0x0BD6` reduces Brainpool arithmetic and counter-rotation work.
+Retry charging, durable restoration, migration and key cleanup are unchanged.
+
+Build `0x0B45` sizes the TrustZone CCID reply scratch buffer to the existing
+CCID response limit, reducing initialization and cleanup work on each APDU.
+Maximum response sizes and complete buffer cleanup are unchanged.
+
+Build `0x0B44` accelerates P-521 signatures, authentication and ECDH using
+constant-time point arithmetic and Secure SRAM field routines. P-384 uses a
+specialized field square on 32-bit targets. Existing keys need no migration;
+peer validation, deterministic signatures, PIN checks and cleanup are retained.
+
+TrustZone build `0x0ADF` further reduces the initial GET DATA `6E` response
+latency. Existing OpenPGP keys and data objects upgrade without a reset.
+
+TrustZone build `0x0ADE` reduces latency for the initial GET DATA `6E` response.
+Existing OpenPGP keys and data objects remain compatible; no reset is required.
+
+TrustZone build `0x0ADD` skips unused zero-length USB packet bookkeeping during
+CCID transfers. Session and epoch checks and complete buffer/stack cleanup remain
+unchanged. Existing keys and records upgrade without a reset.
+
+TrustZone build `0x0ADC` further reduces authenticated read latency
+while retaining full record verification and rollback protection. Existing keys
+and records remain compatible; the upgrade does not require a reset.
+
+Build `0x0AD8` also clears the complete Non-secure gateway reply buffer with
+volatile word stores, including byte edges, on normal completion and abandonment.
+The guard also clears it when a pending transport future is dropped.
+
+Build `0x0AD7` clears both complete command response buffers with aligned
+volatile word stores. Byte edges and remaining words are also cleared; every
+command retains the same full-buffer cleanup and dead-stack sweep.
+
+From build `0x0ACF`, GET DATA uses the shared backend's complete authenticated
+main directory in protected RAM. Each requested value is still freshly read and
+authenticated under a freshly derived root. The backend retains confirmed
+publication progress across errors and remounts; it does not cache plaintext.
+Full journal checks remain before mutations and directory reconstruction.
+Unrelated journal damage is detected when those journals are consumed, rather
+than on each warm GET DATA. See [shared-storage behavior](fido2.md).
+Existing objects, capacities and persistent layouts are unchanged. Occasional
+mount-time history checkpointing still adds startup work and erases when due.
+
+Build `0x0AD0` also avoids clearing unused storage scratch after warm GET DATA.
+From `0x0AD6`, a mounted read-tag miss uses full wiped scratch and seeds its
+read tag without retrying a small buffer that encountered a larger neighbor.
+Later tag hits keep bounded scratch and freshly authenticate the complete value.
+Every byte a read can fill is still cleared on success and failure; recovery
+retains full-buffer cleanup.
+
+From build `0x0B66`, signature-counter reads reuse authenticated journal
+locations after freshly checking both complete banks, including their erased
+tails. A change triggers full journal verification and recovery. Signatures
+still require durable counter publication to both banks before success;
+existing cards need no migration or reset.
+
+Build `0x0B70` also avoids replaying old journal records after PIN and signature
+counter writes. Both banks are freshly checked against the exact expected
+publication before success, including all historical bytes and erased tails.
+Value MACs, retry ordering and recovery after power loss are unchanged.
+
+Build `0x0B83` reduces repeated directory HMAC setup during the storage checks behind
+PIN updates. Attempts are still durably charged before comparison, and a
+successful PIN restores its retry count before authorization is granted.
+
+From `0x0BA8`, retry bytes use the mirrored counter journal while the PIN
+verifiers stay in their original records. Existing remaining attempts migrate
+on the first update. Earlier v2 firmware then refuses the store; reinstalling this
+build or later resumes it. No PIN or key reset is needed for the upgrade.
+
+Build `0x0BB0` combines counter header and value programming for PIN retries
+and signature counters. It preserves the `0x0BA8` format and durability checks.
+
+From build `0x0AD1`, key information reads the shared origin record once per
+response. Later responses read it again; an unreadable or unrecorded slot still
+reports imported.
+
 A full OpenPGP card 3.4 over CCID: three key slots (signature, decryption,
 authentication), works with stock GnuPG. The same slots cover commit signing,
 SSH login (via gpg-agent), and end-to-end mail/file encryption.
+
+Build `0x0ACB` accelerates P-384 ECDH decryption with constant-time Jacobian
+multiplication, retaining peer-point validation and the same shared secret.
+Build `0x0ACC` also accelerates the underlying P-384 field products on 32-bit
+boards; existing keys and signatures remain compatible.
 
 GET DATA returns `6581` if its output buffer cannot hold the complete data
 object. An undersized buffer does not produce a successful partial template.
@@ -10,12 +97,23 @@ GET DATA `7A` also returns `6581` when the signature counter is absent,
 unreadable or not exactly three bytes; it never publishes a partial counter
 template as a successful response.
 
+Boot preserves present damaged security records rather than provisioning
+factory PINs or a new DEK over them. A malformed UIF record requires touch.
+Signing refuses a malformed signature counter without returning a signature;
+attestation refuses malformed subject fields instead of certifying zero padding.
+
 Prereqs: on Linux, `pcscd` + the `scdaemon.conf` lines from
 [linux.md](../linux.md). Check the card is visible:
 
 ```sh
 gpg --card-status            # reader: RS-Key Security Key …, OpenPGP v3.4
 ```
+
+From build `0x0ABF`, card-status queries use fewer flash reads on authenticated
+storage. Each request still reads the current values from the key.
+Build `0x0AC4` also reads variable children and algorithm attributes once per
+occurrence. Their lengths come from that same authenticated read; an unreadable
+child refuses the complete response.
 
 gpg works regardless of the reader name. scdaemon identifies the card by its
 ATR and applet SELECT, not the USB identity. The default build reports the
@@ -160,6 +258,19 @@ gpg read back):
 | ECC (sign/auth) | **Ed25519**, NIST **P-256 / P-384 / P-521**, **secp256k1**, **brainpoolP256r1 / P384r1** | EdDSA on Ed25519; ECDSA on the Weierstrass curves |
 | ECC (encrypt) | **Cv25519** (X25519), NIST **P-256 / P-384 / P-521**, **secp256k1**, **brainpoolP256r1 / P384r1** | ECDH; the DEC slot only |
 | RSA | **2048 / 3072 / 4096**, plus **1024** | exponent fixed at 65537 (what gpg imports) |
+
+From build `0x0B23`, P-521 and Brainpool P-256/P-384 signing and authentication skip the unused public-key
+derivation before signing. RFC6979 nonce generation, raw signature encoding,
+PIN and touch requirements remain unchanged; existing keys need no migration.
+P-384 signing also omits the unused nonce-generator update after success; ECDH
+uses equivalent coordinate formulas with fewer field additions.
+
+From `0x0BD6`, Brainpool signing and public-key generation use constant-time
+fixed-base tables; ECDH uses Jacobian coordinates with the curve's original
+coefficient. Stored keys, deterministic signatures, peer-point validation and
+PIN/touch requirements are unchanged. Counter rotation writes complete body
+pages before publishing the checkpoint, reducing flash programs during PIN,
+HOTP and signature-counter updates without a storage migration.
 
 Changing a slot's algorithm after a key exists invalidates that slot's old
 private/public key pair. Re-select the intended attribute before generating or
@@ -412,6 +523,16 @@ verifying PW1 — even with the PIN that now works — puts the damaged copy bac
 front and the repair fails. `unblock` never verifies PW1, which is why it is the
 one that works there.
 
+ATTEST repairs missing or mismatched root public records from the surviving
+attestation private key before issuing a statement. Repeating an interrupted
+repair preserves that key. If the private key itself is absent, ATTEST creates
+a replacement root after retiring the preceding FC certificate.
+
+A restart also retries removal of a legacy DEK wrapper sealed under the public
+factory reset code after its verifier was removed. The firmware authenticates
+that orphan before deleting it; it preserves unidentified wrappers and an
+owner-set reset code. PW1/PW3 and the keys they open are unchanged.
+
 ### Factory reset (OpenPGP only)
 
 ```sh
@@ -458,4 +579,4 @@ too. An interrupted reset leaves it there rather than half-wiped; run
   `ERROR: Incorrect TLV length` on firmware **before
   `0x0759`**: the GET DATA `6E` reply was missing its constructed-DO wrapper,
   which ykman's strict parser requires (`gpg` tolerated it). Fixed in `0x0759`;
-  flash it and re-run. See [interop.md](../interop.md#known-issues).
+  flash it and re-run. See the [GET DATA reproduction](https://github.com/TheMaxMur/RS-Key/blob/main/assurance/reports/interop.md#known-issues).

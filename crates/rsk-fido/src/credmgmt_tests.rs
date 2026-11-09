@@ -25,6 +25,96 @@ impl Rng for SeqRng {
 const CDH: [u8; 32] = [0xCD; 32];
 const TOKEN: [u8; 32] = [0x99; 32];
 
+#[test]
+fn unknown_nested_management_fields_and_transports_preserve_the_owner_ids() {
+    let mut buffer = [0; 256];
+    let mut e = Encoder::new(Cursor::new(&mut buffer[..]));
+    e.map(4)
+        .unwrap()
+        .u8(1)
+        .unwrap()
+        .u8(1)
+        .unwrap()
+        .u8(2)
+        .unwrap()
+        .map(3)
+        .unwrap();
+    e.u8(2)
+        .unwrap()
+        .map(2)
+        .unwrap()
+        .str("transports")
+        .unwrap()
+        .array(2)
+        .unwrap();
+    e.str("usb")
+        .unwrap()
+        .str("nfc")
+        .unwrap()
+        .str("id")
+        .unwrap()
+        .bytes(b"credential")
+        .unwrap();
+    e.u8(3)
+        .unwrap()
+        .map(2)
+        .unwrap()
+        .str("future")
+        .unwrap()
+        .array(2)
+        .unwrap()
+        .map(0)
+        .unwrap()
+        .null()
+        .unwrap();
+    e.str("id").unwrap().bytes(b"user").unwrap();
+    e.u8(99)
+        .unwrap()
+        .array(2)
+        .unwrap()
+        .map(0)
+        .unwrap()
+        .null()
+        .unwrap();
+    let end = e.writer().position();
+    e.u8(5)
+        .unwrap()
+        .array(2)
+        .unwrap()
+        .map(0)
+        .unwrap()
+        .null()
+        .unwrap()
+        .u8(6)
+        .unwrap()
+        .null()
+        .unwrap();
+    let n = e.writer().position();
+    let req = parse(&buffer[..n]).unwrap();
+    assert_eq!(req.cred_id, Some(&b"credential"[..]));
+    assert_eq!(req.user_id, Some(&b"user"[..]));
+    assert_eq!(req.raw_subpara, &buffer[4..end]);
+    for (case, truncated) in [
+        &[0xa2, 1, 1, 5, 0x82, 0xf6][..],
+        &[0xa2, 1, 1, 2, 0xa1, 0x18, 99, 0x82, 0xf6][..],
+        &[0xa2, 1, 1, 2, 0xa1, 3, 0xa1, 0x61, b'x', 0x82, 0xf6][..],
+        &[
+            0xa2, 1, 1, 2, 0xa1, 2, 0xa1, 0x6a, b't', b'r', b'a', b'n', b's', b'p', b'o', b'r',
+            b't', b's', 0x81, 0xf6,
+        ][..],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let expected = if case == 3 {
+            CtapError::CborUnexpectedType
+        } else {
+            CtapError::InvalidCbor
+        };
+        assert!(matches!(parse(truncated), Err(error) if error == expected));
+    }
+}
+
 fn dev() -> Device<'static> {
     Device {
         serial_hash: &[0xAB; 32],
@@ -2324,7 +2414,7 @@ fn a_torn_delete_never_leaves_a_credential_without_its_rp() {
 fn a_torn_update_user_never_changes_a_credential_behind_the_store_state() {
     let before = std::cell::Cell::new(0u128);
     let cred_id = std::cell::RefCell::new(std::vec::Vec::new());
-    rsk_fs::cut::sweep(
+    assert!(!rsk_fs::cut::sweep_restarts(
         || {
             let (cut, medium) = rsk_fs::storage::faults::Cut::new();
             let mut fs = Fs::new(cut);
@@ -2353,7 +2443,10 @@ fn a_torn_update_user_never_changes_a_credential_behind_the_store_state() {
             );
             run(fs, &mut state, &req, &mut out).is_ok()
         },
-        |fs, budget, completed, medium| {
+        |fs| {
+            let _ = crate::credmgmt::settle_rp_records(fs);
+        },
+        |fs, budget, _second, completed, medium| {
             let mut state = armed(PERM_CM);
             let mut out = [0u8; 512];
             let rp_hash = sha256(b"example.com");
@@ -2388,7 +2481,7 @@ fn a_torn_update_user_never_changes_a_credential_behind_the_store_state() {
                 );
             }
         },
-    );
+    ));
 }
 
 /// Every live `EF_CRED` slot, in order.
@@ -2495,6 +2588,9 @@ mod reads;
 // needs this module's fixtures.
 #[path = "credmgmt_recovery_tests.rs"]
 mod recovery;
+
+#[path = "credmgmt_mutation_tests.rs"]
+mod mutation;
 
 /// deleteCredential and updateUserInformation name a credential by its id, and a
 /// record the flash would not serve may hold it: `NO_CREDENTIALS` there tells a
@@ -2863,3 +2959,101 @@ fn command_rng<S: Storage>(fs: &Fs<S>) -> SeqRng {
 
 #[path = "credmgmt_decisions_tests.rs"]
 mod decisions;
+
+#[path = "credential_restart_tests.rs"]
+mod credential_restarts;
+
+#[test]
+fn incomplete_slot_inventory_probes_absent_records_without_inventing_owners() {
+    let mut fs = Fs::new(rsk_fs::storage::faults::TruncatedWalk::new());
+    fs.scan();
+    let generation = fs.write_gen();
+    assert_eq!(find_resident(&mut fs, &[0x55; CRED_RESIDENT_LEN]), Ok(None));
+    assert_eq!(decrement_rp(&mut fs, &[0x66; 32]), Ok(()));
+    assert_eq!(fs.write_gen(), generation);
+}
+
+#[cfg(feature = "largeblob-ext")]
+#[test]
+fn legacy_large_blob_key_credentials_do_not_expose_the_retired_field() {
+    use crate::credential::{CredExt, credential_store};
+    let (mut fs, mut rng) = setup();
+    let rp_hash = sha256(b"example.com");
+    let seed = crate::seed::load_keydev(&dev(), &mut fs).unwrap();
+    let input = CredInput {
+        rp_id: "example.com",
+        user_id: b"legacy",
+        user_name: "alice",
+        user_display_name: "Alice",
+        use_sign_count: true,
+        rk: true,
+        created_ms: 1,
+        alg: ALG_ES256,
+        curve: i64::from(crate::consts::CURVE_P256),
+        ext: CredExt {
+            large_blob_key: true,
+            ..CredExt::default()
+        },
+    };
+    let mut boxed = [0; CRED_BOX_MAX];
+    let n = credential_create(
+        seed.expose(),
+        &dev(),
+        &input,
+        &rp_hash,
+        &[0x55; crate::credential::IV_LEN],
+        &mut boxed,
+    )
+    .unwrap();
+    let mut scratch = [0; CRED_REC_MAX];
+    assert!(
+        credential_load(seed.expose(), &boxed[..n], &rp_hash, &mut scratch)
+            .unwrap()
+            .ext
+            .large_blob_key
+    );
+    credential_store(
+        seed.expose(),
+        &dev(),
+        &mut fs,
+        &mut rng,
+        &boxed[..n],
+        &rp_hash,
+        input.rp_id,
+        input.user_id,
+        &[],
+    )
+    .unwrap();
+    let mut state = armed(PERM_CM);
+    let mut response = [0; 1024];
+    let n = run(
+        &mut fs,
+        &mut state,
+        &cm_request(0x04, Some(&subpara_rpidhash(&rp_hash)), &TOKEN),
+        &mut response,
+    )
+    .unwrap();
+    let mut decoder = Decoder::new(&response[..n]);
+    for _ in 0..decoder.map().unwrap().unwrap() {
+        assert_ne!(decoder.u8().unwrap(), 0x0B);
+        decoder.skip().unwrap();
+    }
+    assert_eq!(decoder.position(), n);
+}
+
+#[test]
+fn enumerate_credentials_refuses_a_present_but_short_rp_hash_without_writing() {
+    let (mut fs, _) = setup();
+    let mut state = armed(PERM_CM);
+    let mut parameters = vec![0xa1, 1, 0x58, 31];
+    parameters.extend([0xa5; 31]);
+    let request = cm_request(0x04, Some(&parameters), &TOKEN);
+    let generation = fs.write_gen();
+    let mut output = [0xa5; 256];
+    assert_eq!(
+        run(&mut fs, &mut state, &request, &mut output),
+        Err(CtapError::MissingParameter)
+    );
+    assert_eq!(fs.write_gen(), generation);
+    assert_eq!(output, [0xa5; 256]);
+}

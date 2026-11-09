@@ -201,6 +201,31 @@ fn rsa_generation_requests_the_selected_width_and_reports_accelerator_failure() 
 }
 
 #[test]
+fn an_rsa_progress_tick_after_the_deadline_advances_the_delivered_arc() {
+    let env = Env::new();
+    let generation = env.fs.borrow().write_gen();
+    let mut reference = env.ui(Pad::idle());
+    rsk_ui::render_piv_keygen_working(&mut reference.frame()).unwrap();
+    let initial = reference.panel.raster_hash();
+    rsk_ui::render_status_arc(
+        &mut reference.panel,
+        StatusKind::Processing,
+        rsk_ui::STATUS_ARC_START + SPIN_STEP_DEG,
+    )
+    .unwrap();
+    assert_ne!(initial, reference.panel.raster_hash());
+    let mut ui = env.ui(Pad::idle());
+    ui.hooks.rsa_late_tick_only = true;
+    assert!(env.local(&mut ui).piv_search_rsa(2048).is_none());
+    assert_eq!(ui.hooks.rsa_requests, [2048]);
+    assert!(
+        ui.panel.pixels() == reference.panel.pixels(),
+        "a late RSA search tick must deliver the next progress arc"
+    );
+    assert_eq!(env.fs.borrow().write_gen(), generation);
+}
+
+#[test]
 fn a_real_rsa_result_is_stored_only_when_a_slot_and_the_fused_key_are_available() {
     for refuse in 0..3 {
         let mut env = Env::new();
@@ -256,4 +281,30 @@ fn a_missed_chooser_row_and_failed_generation_do_not_fill_a_slot() {
     assert_eq!(env.fs.borrow().write_gen(), generation);
     assert!(!rsk_piv::info::read_slot(&mut env.fs.borrow_mut(), 0x82).present);
     assert!(!ui.asleep);
+}
+
+#[test]
+fn leaving_the_rsa_size_picker_does_not_generate_a_key() {
+    use crate::tests::{PanelSignal, SignalAfterTouches};
+    let env = Env::new();
+    let Ui {
+        panel, hooks, info, ..
+    } = env.ui(Pad::idle());
+    let mut samples = std::collections::VecDeque::from([None; 4]);
+    samples.extend([Some(pick(4)), None, None, None, None]);
+    let touch = SignalAfterTouches {
+        samples,
+        signal: std::rc::Rc::clone(&hooks.signal),
+        event: PanelSignal::HostRequest,
+        sent: false,
+    };
+    let mut ui = Ui::new(panel, touch, hooks, info, env.cells());
+    let generation = env.fs.borrow().write_gen();
+    assert_eq!(Local::new(&mut ui, env.cells()).piv_pick_algo(0x82), None);
+    let mut expected = env.ui(Pad::idle());
+    rsk_ui::render_piv_keygen_rsa_pick(&mut expected.panel, 0x82).unwrap();
+    let full = rsk_ui::Rect::new(0, 0, rsk_ui::PANEL_W, rsk_ui::PANEL_H);
+    assert_eq!(ui.panel.area_pixels(full), expected.panel.area_pixels(full));
+    assert_eq!(env.fs.borrow().write_gen(), generation);
+    assert!(!rsk_piv::info::read_slot(&mut env.fs.borrow_mut(), 0x82).present);
 }

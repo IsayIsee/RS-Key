@@ -3,6 +3,9 @@
 
 use super::*;
 
+#[path = "keys_restart_tests.rs"]
+mod restarts;
+
 #[test]
 fn seal_and_unseal_refuse_short_windows_and_keep_legacy_widths_distinct() {
     let key = [0x11; 32];
@@ -265,4 +268,55 @@ fn unusable_legacy_rsa_primes_refuse_without_resealing_the_record() {
     let mut retained = Secret::<[u8; 64]>::zeroed();
     assert_eq!(fs.read_key(EF_PK_SIG, retained.expose_mut()), Some(64));
     assert_eq!(retained.expose(), blob.expose());
+}
+
+#[path = "keys_decode_tests.rs"]
+mod decode;
+
+#[test]
+fn a_five_field_legacy_crt_without_a_rebuildable_key_is_not_migrated() {
+    struct Fill;
+    impl Rng for Fill {
+        fn fill(&mut self, out: &mut [u8]) {
+            out.fill(7);
+        }
+    }
+    let dev = Device {
+        serial_hash: &[0xab; 32],
+        serial_id: &[1; 8],
+        otp_key: None,
+        latched: false,
+    };
+    let mut fs = Fs::new(rsk_fs::storage::ram::RamStorage::new());
+    crate::init::scan_files(&dev, &mut fs, &mut Fill).unwrap();
+    let mut sess = Session::new();
+    sess.adopt_reseeded(
+        &dev.pin_derive_session(PW1_DEFAULT),
+        &dev.pin_derive_session(PW3_DEFAULT),
+    );
+    sess.has_pw3 = true;
+    let mut plain = Secret::<[u8; 160]>::zeroed();
+    plain.expose_mut()[31] = 2;
+    plain.expose_mut()[63] = 3;
+    plain.expose_mut()[159] = 1;
+    assert!(rsk_rsa::crt::crt_from_plain(plain.expose()).is_ok());
+    assert!(
+        rsk_rsa::rsa_from_pqe(
+            rsk_rsa::RSA_PUB_EXP_BE,
+            &plain.expose()[..32],
+            &plain.expose()[32..64]
+        )
+        .is_none()
+    );
+    let (mut key, mut nk) = load_dek_keys(&dev, &mut fs, &sess).unwrap();
+    rsk_crypto::aes::aes_encrypt_cfb_256(key.expose(), nk.expose(), plain.expose_mut()).unwrap();
+    key.wipe();
+    nk.wipe();
+    fs.put_key(EF_PK_SIG, Sealed::wrap(plain.expose())).unwrap();
+    let generation = fs.write_gen();
+    assert!(load_rsa_crt(&dev, &mut fs, &sess, EF_PK_SIG).is_ok());
+    assert_eq!(fs.write_gen(), generation);
+    let mut retained = Secret::<[u8; 160]>::zeroed();
+    assert_eq!(fs.read_key(EF_PK_SIG, retained.expose_mut()), Some(160));
+    assert_eq!(retained.expose(), plain.expose());
 }

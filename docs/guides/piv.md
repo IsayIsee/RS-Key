@@ -1,5 +1,9 @@
 # PIV
 
+Build `0x0BE1` lets the background RSA prime search observe cancellation inside
+its Lucas test after a key is complete. Prime acceptance, key formats and
+authorization are unchanged; the abandoned candidate is wiped before core1 idles.
+
 A PIV smart-card (NIST SP 800-73-4) over CCID: X.509 client certificates,
 S/MIME, PIV-aware OS login, SSH and `age` through PKCS#11. Driven with
 `ykman piv` or `yubico-piv-tool`; the applet also speaks the Yubico extensions
@@ -11,11 +15,25 @@ PKCS#11 / OpenSC and OS-native (macOS CryptoTokenKit, Windows) routes below
 identify the card by its applet, not the reader name, so they work on the default
 build.
 
-> **Windows note:** the card serves a default CHUID automatically — the Windows
-> PIV minidriver needs it to enumerate the certificate containers — and the
-> mandatory Card Capability Container (`5FC107`) on the same terms, so neither
-> `ykman piv objects generate chuid` nor `ykman piv objects generate ccc` is
-> required on firmware 0x098F or later.
+SELECT preserves damaged empty PIN, PUK, retry and private-key records rather
+than provisioning factory credentials over them. A missing or damaged public
+attestation certificate remains repairable from its unchanged private key.
+The first SELECT loads each existing management and attestation key once.
+Build `0x0AC8` accelerates P-384 public-key derivation with four signed fixed-base
+comb groups and specialized complete doubling. It still checks the attestation
+private key against its certificate before making the key available.
+Build `0x0ACA` also uses compact SHA-2 rounds for deterministic ECDSA nonces,
+reducing P-384 signing latency without changing signatures or key validation.
+Build `0x0ACB` accelerates P-384 ECDH with constant-time Jacobian multiplication,
+retaining peer-point validation and the same shared secret.
+Build `0x0ACC` also accelerates P-384 field arithmetic on 32-bit boards, including
+signing and the public-key derivation performed during attestation validation.
+A failed management-key read refuses that SELECT and can be retried; a
+malformed management-key seal keeps certificate access and recovery available.
+
+> **Windows.** The PIV minidriver uses the CHUID to enumerate the card's
+> containers and reads the Card Capability Container (`5FC107`) when opening
+> one. RS-Key supplies defaults for both objects.
 
 Prereqs: on Linux, `pcscd` plus the polkit rule from [linux.md](../linux.md);
 if you also use GnuPG, the `disable-ccid` line so `scdaemon` and `pcscd` stop
@@ -34,6 +52,18 @@ ykman piv info            # PIV version 5.8.0, slot + PIN/PUK/mgmt-key state
 | PUK | `12345678` | 6–8 chars; unblocks a blocked PIN |
 | Management key | `010203040506070801020304050607080102030405060708` | AES-192, the well-known YubiKey 5.7-era default |
 | PIN / PUK retries | 3 / 3 | resets to full on each correct entry |
+
+Build `0x0B83` reduces repeated directory HMAC setup in the storage checks behind PIN
+updates. Each attempt still becomes durable before comparison; successful
+verification restores the counter before granting authorization.
+
+From `0x0BA8`, PIN and PUK retry updates use the mirrored counter journal.
+Existing PINs and remaining attempts are preserved during the first update.
+After this migration, earlier v2 firmware opens only recovery mode; reinstalling
+`0x0BA8` or later resumes the existing store without resetting the key.
+
+Build `0x0BB0` combines counter header and value programming to shorten PIN
+updates. Retry ordering and the existing `0x0BA8` storage format are unchanged.
 
 Change all three before real use:
 
@@ -389,7 +419,7 @@ The card shows up as a standard PIV token; nothing here is RS-Key-specific.
 
 - **Windows / macOS native** smart-card stacks pick the PIV applet up as-is;
   macOS CryptoTokenKit binds its `pivtoken.appex` to the reader
-  ([interop.md](../interop.md#piv)).
+  ([PIV interop results](https://github.com/TheMaxMur/RS-Key/blob/main/assurance/reports/interop.md#piv)).
 
 ## At rest
 

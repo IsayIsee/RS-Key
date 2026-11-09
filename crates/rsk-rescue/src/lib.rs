@@ -8,9 +8,11 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod boot_status;
 pub mod keydev;
 pub mod otp_lock;
 pub mod rollback;
+pub mod seal;
 
 use core::cell::RefCell;
 
@@ -36,6 +38,7 @@ const INS_OTP_LOCK: u8 = 0x1B;
 const INS_WRITE: u8 = 0x1C;
 const INS_READ: u8 = 0x1E;
 const INS_REBOOT_BOOTSEL: u8 = 0x1F;
+const INS_STORAGE: u8 = 0x20;
 
 /// OTP_LOCK payload guard: the irreversible page-58 lock fires only for this
 /// exact data, so a stray or fuzzed APDU on INS 0x1B can never trigger it.
@@ -70,6 +73,10 @@ pub trait Platform {
     /// `otp_lock::PRE_OTP_*` bits; `None` when they ran without the fused key and
     /// so checked nothing. [`otp_lock`]'s page-58 burn waits for `Some(0)`.
     fn pre_otp_left(&self) -> Option<u16>;
+    /// Result of the boot-only automatic page-58 seal, without performing I/O.
+    fn auto_seal_status(&self) -> seal::Status {
+        seal::Status::Unchecked
+    }
     /// Burn the page-58 access lock and fuse latch ([`otp_lock::PAGE58_LATCH_VALUE`]
     /// into [`otp_lock::PAGE58_LOCK1_ROW`], over a blank row or an older build's
     /// lock). The implementation fixes both the row and the value, so a caller can
@@ -350,6 +357,28 @@ impl<'a> RescueApplet<'a> {
                 res.extend(&left.unwrap_or(otp_lock::PRE_OTP_UNCHECKED).to_be_bytes());
                 Sw::OK
             }
+            0x08 => {
+                if apdu.p2 != 0 {
+                    return Sw::INCORRECT_P1P2;
+                }
+                let ready = fs.storage_state() == rsk_fs::storage::StorageState::Ready;
+                res.extend(&[2, u8::from(ready)]);
+                Sw::OK
+            }
+            0x09 => {
+                if apdu.p2 != 0 {
+                    return Sw::INCORRECT_P1P2;
+                }
+                let platform = self.platform.borrow();
+                res.extend(&[1, platform.auto_seal_status() as u8]);
+                res.extend(
+                    &platform
+                        .pre_otp_left()
+                        .unwrap_or(otp_lock::PRE_OTP_UNCHECKED)
+                        .to_be_bytes(),
+                );
+                Sw::OK
+            }
             _ => Sw::INCORRECT_P1P2,
         }
     }
@@ -395,7 +424,7 @@ impl<'a> RescueApplet<'a> {
     /// page would only hide nothing while blinding BOOTSEL); and it waits for a
     /// boot that left nothing under the pre-burn key ([`Platform::pre_otp_left`]).
     /// Idempotent: a row already holding the latch returns OK; a subset of it (an
-    /// older build's lock, a torn burn) is completed under the same guards; a bit
+    /// older build's lock, a torn burn) is attempted under the same guards; a bit
     /// outside it is refused rather than clobbered. See [`otp_lock`].
     fn lock_page58(&mut self, apdu: &Apdu) -> Sw {
         if apdu.data != OTP_LOCK_MAGIC {
@@ -499,7 +528,53 @@ impl<S: Storage> Applet<Fs<S>> for RescueApplet<'_> {
         if apdu.cla != 0x80 {
             return Sw::CLA_NOT_SUPPORTED;
         }
+        if fs.storage_state() == rsk_fs::storage::StorageState::Recovery
+            && !(apdu.ins == INS_STORAGE
+                || apdu.ins == INS_REBOOT_BOOTSEL
+                || apdu.ins == INS_READ
+                    && matches!(apdu.p1, 0x03 | 0x04 | 0x06 | 0x07 | 0x08 | 0x09))
+        {
+            return Sw::MEMORY_FAILURE;
+        }
         match apdu.ins {
+            INS_STORAGE => {
+                use rsk_fs::storage::{StorageAction, StorageState};
+                let (action, magic, title) = match apdu.p1 {
+                    0 => (
+                        StorageAction::Initialize,
+                        b"INITV2".as_slice(),
+                        "Initialize empty storage?",
+                    ),
+                    1 => (
+                        StorageAction::ImportLegacy,
+                        b"IMPORTV2".as_slice(),
+                        "Import legacy storage?",
+                    ),
+                    _ => return Sw::INCORRECT_P1P2,
+                };
+                if apdu.p2 != 0 {
+                    return Sw::INCORRECT_P1P2;
+                }
+                if apdu.data != magic {
+                    return Sw::DATA_INVALID;
+                }
+                if fs.storage_state() != StorageState::Recovery {
+                    return Sw::CONDITIONS_NOT_SATISFIED;
+                }
+                if !self.require_presence(Confirm::titled(title)) {
+                    return Sw::CONDITIONS_NOT_SATISFIED;
+                }
+                let mut epoch = [0; 16];
+                self.rng.borrow_mut().fill(&mut epoch);
+                match fs.administer_storage(action, epoch) {
+                    Ok(()) => {
+                        self.platform.borrow_mut().request_reboot(false);
+                        Sw::OK
+                    }
+                    Err(rsk_sdk::error::Error::Blocked) => Sw::CONDITIONS_NOT_SATISFIED,
+                    Err(_) => Sw::MEMORY_FAILURE,
+                }
+            }
             INS_KEYDEV_SIGN => self.keydev_sign(apdu, fs, res),
             INS_OTP_LOCK => self.otp_lock(apdu),
             INS_WRITE => self.write(apdu, fs),

@@ -113,15 +113,15 @@ pub struct Fs<S: Storage> {
     /// which memoises the answer, so a false-absent is impossible either way. See
     /// [`known_absent`](Self::known_absent) and [`scan`](Self::scan).
     decided: [u8; FID_PRESENT_BYTES],
-    /// Monotonic counter bumped on every content-changing `put`/`delete`. A caller
+    /// Monotonic counter bumped on `put`/`delete` and an uncertain failed write. A caller
     /// caching a derived view of the store (e.g. the credMgmt slot→rpIdHash index)
     /// snapshots it and rebuilds when it moves, so no mutation path can leave that
     /// cache stale. In-RAM only (resets to 0 each boot); `u32` never realistically
     /// wraps between two reads of a mutation-free session.
     write_gen: u32,
     /// Set by [`scan`](Self::scan) when the boot enumeration was cut short, so the
-    /// FIDs it never reached are unknown rather than absent. Only
-    /// [`present_slots`](Self::present_slots) reads it: the per-key probes fall
+    /// FIDs it never reached are unknown rather than absent. The slot bitmap and
+    /// capacity admission read it: the per-key probes fall
     /// through to the backend on an undecided FID and are sound already, but the
     /// slot bitmap answers from RAM alone and has no such fallback. Distinct from
     /// "nothing decided yet" — a fresh `Fs` that has not scanned has an empty
@@ -150,7 +150,7 @@ pub struct Fs<S: Storage> {
 }
 
 impl<S: Storage> Fs<S> {
-    pub fn new(storage: S) -> Self {
+    pub const fn new(storage: S) -> Self {
         Fs {
             storage,
             dynamic: Vec::new(),
@@ -163,7 +163,7 @@ impl<S: Storage> Fs<S> {
     }
 
     /// The store's mutation generation — bumped by every content-changing
-    /// `put`/`delete`. Snapshot it beside a cached derived view and rebuild when it
+    /// `put`/`delete`, including an uncertain failed write. Rebuild a derived view when it
     /// changes (see [`write_gen`](Self#structfield.write_gen)).
     pub fn write_gen(&self) -> u32 {
         self.write_gen
@@ -187,6 +187,36 @@ impl<S: Storage> Fs<S> {
     /// reboot).
     pub fn into_storage(self) -> S {
         self.storage
+    }
+
+    pub fn storage_state(&self) -> crate::storage::StorageState {
+        self.storage.state()
+    }
+
+    pub fn storage_root_closed(&self) -> bool {
+        self.storage.root_closed()
+    }
+
+    /// Mount may change authority; discard every derived absence before recovery.
+    pub fn mount_storage(&mut self) -> Result<()> {
+        self.present.fill(0);
+        self.decided.fill(0);
+        self.scan_truncated = true;
+        self.dynamic.clear();
+        self.storage.mount()
+    }
+
+    /// Administration changes authority; invalidate every derived absence first.
+    pub fn administer_storage(
+        &mut self,
+        action: crate::storage::StorageAction,
+        epoch: [u8; 16],
+    ) -> Result<()> {
+        self.present.fill(0);
+        self.decided.fill(0);
+        self.scan_truncated = true;
+        self.dynamic.clear();
+        self.storage.administer(action, epoch)
     }
 
     /// Raw present bit (does NOT consult `decided`). Authoritative only for a
@@ -284,7 +314,8 @@ impl<S: Storage> Fs<S> {
             // scrub filler is written by `Storage::compact` straight through the
             // backend. Counting the filler as a dynamic file is what cost a live key
             // its registration at the cap (audit run-36).
-            if fid == EF_META || fid == EF_SCRUB_FILLER {
+            if fid == EF_META || fid == EF_SCRUB_FILLER || crate::STORE_INTERNAL_FIDS.contains(&fid)
+            {
                 return;
             }
             if !dynamic.contains(&fid) {
@@ -378,6 +409,36 @@ impl<S: Storage> Fs<S> {
         Ok(self.try_size(fid)?.is_some_and(|n| n > 0))
     }
 
+    /// Whether `fid` holds data ON THE MEDIUM, ignoring the present-cache.
+    ///
+    /// [`try_has_data`](Self::try_has_data) answers from `known_absent`, so a FID the
+    /// cache has just been told absent — [`delete`](Self::delete) marks it absent the
+    /// moment the backend `remove` returns — reads as gone without the backend being
+    /// asked at all. That is sound only while the removal landed. A backend whose
+    /// `remove` reports `Ok` without applying it leaves the value live under a cache
+    /// that says otherwise, and [`crate::request_rescrub`] is where that lie matters:
+    /// it re-arms the at-rest lap by deleting [`crate::EF_HARDENED`] and then
+    /// re-reading it, so a swallowed tombstone answered from the cache re-arms
+    /// nothing — the marker stands over the record the lap was owed, and the next
+    /// boot skips because it is present. This probe goes straight to `storage`,
+    /// keeping [`Storage::last_error`]'s discipline (a failed probe is `Err`, never
+    /// `Ok(false)`), and records the medium's answer so the cache stops lying.
+    pub(crate) fn try_medium_has_data(&mut self, fid: u16) -> Result<bool> {
+        let r = self.storage.size(fid);
+        Ok(self.settle(fid, r)?.is_some_and(|n| n > 0))
+    }
+
+    /// Whether a record exists, including a malformed empty security record.
+    /// A zero-length record is not authority to initialize a gate or secret.
+    pub fn try_exists(&mut self, fid: u16) -> Result<bool> {
+        Ok(self.try_size(fid)?.is_some())
+    }
+
+    /// [`try_exists`](Self::try_exists), with read failures collapsed to false.
+    pub fn exists(&mut self, fid: u16) -> bool {
+        self.try_exists(fid).unwrap_or(false)
+    }
+
     /// Invoke `f` once per live key in the backend, in a single storage pass.
     /// Use this instead of probing a fixed FID range with `read`: a `read` of an
     /// *absent* key rescans the whole flash, so probing 256 slots is O(256·items)
@@ -428,7 +489,11 @@ impl<S: Storage> Fs<S> {
     /// remaining-credential estimate, which must not promise slots a PIV or OATH
     /// fill has already consumed.
     pub fn free_dynamic(&self) -> usize {
-        MAX_DYNAMIC_FILES - self.dynamic.len()
+        if self.scan_truncated {
+            0
+        } else {
+            MAX_DYNAMIC_FILES - self.dynamic.len()
+        }
     }
 
     /// Physically scrub superseded records from the backing store (a full
@@ -539,6 +604,12 @@ impl<S: Storage> Fs<S> {
         if data.len() > S::MAX_VALUE {
             return Err(Error::WrongLength);
         }
+        if self.scan_truncated {
+            self.scan();
+            if self.scan_truncated {
+                return Err(Error::MemoryFatal);
+            }
+        }
         // A new dynamic file that would overflow the set is rejected *before* the
         // flash write: registering only after committing would strand the value
         // on flash — readable yet unregistered — and leave `scan` to re-drop it
@@ -547,7 +618,7 @@ impl<S: Storage> Fs<S> {
         if register && self.dynamic.is_full() {
             return Err(Error::NoMemory);
         }
-        self.storage.write(fid, data)?;
+        self.write_record(fid, data)?;
         self.mark_present(fid);
         self.write_gen = self.write_gen.wrapping_add(1);
         if register {
@@ -741,6 +812,22 @@ impl<S: Storage> Fs<S> {
         self.put(fid.get(), data)
     }
 
+    /// Read a sealed counter belonging to this key slot's current incarnation.
+    pub fn read_bound_counter(&mut self, fid: KeyFid, out: &mut [u8]) -> Result<Option<usize>> {
+        self.storage.read_bound_counter(fid.get(), out)
+    }
+
+    /// Publish a counter without replacing its sealed credential, when supported.
+    pub fn write_bound_counter(&mut self, fid: KeyFid, sealed: Sealed) -> Result<bool> {
+        let written = self
+            .storage
+            .write_bound_counter(fid.get(), sealed.as_bytes())?;
+        if written {
+            self.write_gen = self.write_gen.wrapping_add(1);
+        }
+        Ok(written)
+    }
+
     /// Copy a counter record into `buf`; its full length, or `None` if absent (or
     /// unreadable — see [`try_read`](Self::try_read)).
     pub fn read_counter(&mut self, fid: CounterFid, buf: &mut [u8]) -> Option<usize> {
@@ -844,7 +931,7 @@ impl<S: Storage> Fs<S> {
         // bytes free (rebuild_meta bounds its output by the slice length).
         let limit = META_MAX.saturating_sub(reserve);
         let w = rebuild_meta(&scratch[..n], fid, Some(data), &mut out[..limit])?;
-        self.storage.write(EF_META, &out[..w])?;
+        self.write_record(EF_META, &out[..w])?;
         self.mark_present(EF_META);
         Ok(())
     }
@@ -885,8 +972,28 @@ impl<S: Storage> Fs<S> {
             self.mark_absent(EF_META);
             Ok(())
         } else {
-            self.storage.write(EF_META, &out[..w]) // EF_META stays present
+            self.write_record(EF_META, &out[..w]) // EF_META stays present
         }
+    }
+
+    fn write_record(&mut self, fid: u16, data: &[u8]) -> Result<()> {
+        if let Err(error) = self.storage.write(fid, data) {
+            // A failed readback may follow a committed write. Rebuild the cache
+            // and dynamic budget instead of retaining a pre-write absence.
+            self.write_gen = self.write_gen.wrapping_add(1);
+            self.scan();
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Boot can change authority; invalidate every derived absence before migration.
+    pub fn boot_storage(&mut self, epoch: [u8; 16]) -> Result<()> {
+        self.present.fill(0);
+        self.decided.fill(0);
+        self.scan_truncated = true;
+        self.dynamic.clear();
+        self.storage.boot(epoch)
     }
 }
 
@@ -953,3 +1060,7 @@ mod store_steps;
 #[cfg(test)]
 #[path = "store_domain_tests.rs"]
 mod store_domain;
+
+#[cfg(test)]
+#[path = "oracle_independence_tests.rs"]
+mod oracle_independence;

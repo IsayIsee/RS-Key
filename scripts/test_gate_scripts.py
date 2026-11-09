@@ -58,6 +58,43 @@ import gate_lines
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 HERE = pathlib.Path(__file__).resolve().parent
 
+
+@pytest.mark.parametrize("block,digest,signature,earlier,error", [
+    ("ignored", "verified", "verified", "", None),
+    ("image", "verified", "verified", "", "first metadata block"),
+    ("ignored", "incorrect", "verified", "", "hash or signature did not verify"),
+    ("ignored", "verified", "incorrect", "", "hash or signature did not verify"),
+    ("ignored", "verified", "absent", "", "hash or signature did not verify"),
+    ("ignored", "incorrect", "verified", "hash", "hash or signature did not verify"),
+    ("ignored", "verified", "incorrect", "signature", "hash or signature did not verify"),
+])
+def test_seal_row_checks_the_reopened_image(tmp_path, block, digest, signature, earlier, error):
+    text = (HERE / "check.sh").read_text()
+    name = "release_image_retires_its_unsigned_image_def"
+    function = re.search(rf"^{name}\(\) \{{\n.*?^\}}", text, re.M | re.S)
+    row = re.search(rf'^run "[^"]+" {name}$', text, re.M)
+    assert function and row
+    info = f"Metadata Block 1\n  block type: {block}\n"
+    if earlier:
+        info += f"  {earlier}: verified\n"
+    info += f"Metadata Block 2\n  hash: {digest}\n  signature: {signature}\n"
+    script = '\n'.join([
+        "set -euo pipefail",
+        f'source "{HERE / "gate-lib.sh"}"',
+        "GATE_TMP=()",
+        'trap \'rm -rf -- "${GATE_TMP[@]}"\' EXIT',
+        "openssl() { :; }",
+        'picotool() { if [ "$1" = info ]; then printf "%s" "$SEALED_INFO"; fi; }',
+        function[0], row[0],
+    ])
+    done = subprocess.run(["bash", "-c", script], cwd=ROOT, capture_output=True, text=True,
+                          env={**os.environ, "SEALED_INFO": info, "XDG_CACHE_HOME": str(tmp_path)})
+    if error is None:
+        assert done.returncode == 0, done.stderr
+    else:
+        assert done.returncode != 0 and error in done.stderr, done.stdout + done.stderr
+
+
 #: A gate script: run by `check.sh`, owed a mutation table. `gate_lines.py` is a
 #: shared helper with no rule of its own, and the two `gate_*.py` spellings that
 #: predate the convention are named here rather than pattern-matched, so the
@@ -71,6 +108,7 @@ GATES = sorted(p.name for p in HERE.glob("*_gate.py") if not p.name.startswith("
 #: `kani.sh` are additionally not `check.sh` rows at all, so a rule that assumed
 #: they were would be satisfied by the comments that name them.
 NAMED = {
+    "build.sh": ("test_trustzone_build.py", "check.sh"),
     "../formal/run-tlc.sh": ("test_run_tlc.py", "../.github/workflows/deep-checks.yml"),
     # The config generator: `config_gen_gate.py` is only as good as the script it
     # re-runs, and nothing else in `scripts/` names it — that guard IS its runner.
@@ -99,9 +137,10 @@ NAMED = {
     # `UNROSTERED`, and the one of that shape with a table of its own, so it
     # belongs here rather than in the carve-out that forbids one.
     "reproduce.sh": ("test_reproduce.py", "check.sh"),
-    # The accepted-survivors baseline made the weekly mutants row a guard. It is
-    # no gate row, so its runner is the workflow, like `run-tlc.sh`'s.
-    "mutants-all.sh": ("test_mutants_all.py", "../.github/workflows/deep-checks.yml"),
+    # The container is the workflow entry point and owns the bounded runner.
+    "mutants-all.sh": ("test_mutants_all.py", "mutants-container.sh"),
+    "mutants-container.sh": ("test_mutants_all.py", "../.github/workflows/deep-checks.yml"),
+    "mutants-nextest.sh": ("test_mutants_all.py", "mutants-all.sh"),
 }
 #: The board-only scripts under `tests/` that have a host table here, as
 #: **(script, its table)**. They are not guards and no `check.sh` row runs them —
@@ -296,7 +335,7 @@ def test_ci_runs_both_runners():
     advisory mutants over each pull request's lines. Read out of the `run:` scalars,
     so a step name or a comment naming one is not a run."""
     wanted = {"ci.yml": ("./scripts/check.sh", "./scripts/check-assurance.sh",
-                         "./scripts/mutants-all.sh --in-diff"),
+                         "./scripts/mutants-container.sh --in-diff"),
               "deep-checks.yml": ("./scripts/check-assurance.sh",)}
     for workflow, commands in wanted.items():
         text = (ROOT / ".github/workflows" / workflow).read_text()
@@ -323,10 +362,8 @@ def test_every_gate_reports_a_summary_when_it_is_happy():
 #: reason of all — "a `run` row with no mutation table" — and are on [`NAMED`]
 #: now. What is left is the two shapes a table here is not the answer to: a
 #: script that is not a guard, and a guard whose table is INSIDE it, driven by
-#: the row itself. `pt.sh` and `gate-lib.sh` are the two that are not guards.
+#: the row itself. `gate-lib.sh` is shared runner plumbing rather than a guard.
 UNROSTERED = {
-    "pt.sh": "not a guard and not a `run` row: the elf and store rows invoke it"
-             " to apply a partition table, and it asserts nothing",
     "gate-lib.sh": "not a guard and not a row: both runners source it for `run`,"
                    " the signal traps and the pytest base, which the per-checkout"
                    " base cases below evaluate",
@@ -334,6 +371,9 @@ UNROSTERED = {
                    " here — `check.sh` runs its `--self-test`, so the table is"
                    " inside the script and the row IS the drive",
     "ci-knobs.sh": "the same: a `--self-test` row",
+    "fuzz-dicts.sh": "not a guard and not a row: `check.sh` and `fuzz-all.sh`"
+                     " source it for the per-target `-dict=` mapping, which is a"
+                     " table rather than an assertion",
 }
 
 #: A `scripts/…` path as a `check.sh` row spells it, with or without `python`.
@@ -457,6 +497,8 @@ def test_a_finding_reaches_the_row_as_a_non_zero_exit(name, monkeypatch, capsys)
     arity = audit_arity(name)
     finding = f"SYNTHETIC-EXIT-PROBE for {name}"
     answer = ([finding], *FILLER[1:arity]) if arity > 1 else [finding]
+    if name == "elf_gate.py":
+        answer = ([finding], "synthetic image summary")
     monkeypatch.setattr(module, "audit", lambda *a, **k: answer)
     assert exit_code(name, module) != 0, f"{name} prints a finding and exits 0"
     printed = capsys.readouterr()

@@ -4,6 +4,22 @@
 use super::*;
 
 #[test]
+fn abort_requires_slot_zero_an_empty_body_and_zero_reserved_fields() {
+    let valid = msg(CCID_ABORT, 0xa6, &[]);
+    assert_eq!(abort_sequence(&valid), Some(0xa6));
+    for offset in 0..HEADER {
+        if offset == 6 {
+            continue;
+        }
+        let mut bad = valid.clone();
+        bad[offset] ^= 1;
+        assert_eq!(abort_sequence(&bad), None, "offset {offset}");
+    }
+    assert_eq!(abort_sequence(&valid[..HEADER - 1]), None);
+    assert_eq!(abort_sequence(&msg(CCID_ABORT, 0xa6, &[1])), None);
+}
+
+#[test]
 fn a_handler_without_a_pinpad_rejects_secure_without_writing_a_reply() {
     struct NoPinpad;
     impl ApduHandler for NoPinpad {
@@ -320,4 +336,37 @@ fn secure_message_located() {
     let (a, b) = secure_apdu(&m).expect("secure range");
     assert_eq!(&m[a..b], &abdata);
     assert!(secure_apdu(&msg(CCID_XFR_BLOCK, 9, &abdata)).is_none());
+}
+
+/// The refusal's `bStatus` is `STATUS_FAILED | slot status` — the failed bit is
+/// OR-ed in, never toggled. A slot whose status already carries bit 6 (the
+/// `bmCommandStatus = failed` bit) must keep it: an XOR would clear exactly the bit
+/// the host keys the failed command on.
+#[test]
+fn a_short_xfr_refusal_keeps_a_failed_bit_the_slot_already_reports() {
+    let m = msg(CCID_XFR_BLOCK, 9, &[0x40, 0xA4]);
+    let mut out = [0u8; 64];
+    assert_eq!(refuse_short_xfr(&m, STATUS_FAILED, &mut out), Some(HEADER));
+    assert_eq!(out[7], STATUS_FAILED, "the failed bit was cleared");
+    assert_eq!(out[8], ERR_BAD_DWLENGTH);
+}
+
+/// A reply buffer exactly one CCID header long holds a header-only answer, so
+/// `process_message` must answer in it rather than treat it as too small —
+/// `first_chunk_mut::<HEADER>()` writes the whole header either way.
+#[test]
+fn an_exactly_header_sized_reply_buffer_is_answered() {
+    let mut status = STATUS_ACTIVE;
+    let mut out = [0xA5u8; HEADER];
+    let n = process_message(
+        &msg(CCID_SLOT_STATUS, 7, &[]),
+        ATR_RSKEY,
+        &mut status,
+        &mut out,
+    );
+    assert_eq!(n, HEADER);
+    assert_eq!(
+        out,
+        [CCID_SLOT_STATUS_RET, 0, 0, 0, 0, 0, 7, STATUS_ACTIVE, 0, 0]
+    );
 }

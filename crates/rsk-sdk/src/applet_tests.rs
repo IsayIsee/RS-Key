@@ -7,15 +7,23 @@ use super::*;
 fn response_truncate_never_extends_or_overwrites_the_buffer() {
     let mut bytes = [0xa5; 8];
     let mut response = ResBuf::new(&mut bytes);
+    assert!(response.is_empty());
     assert!(response.extend(b"abcd"));
+    assert!(!response.is_empty());
     response.truncate(8);
     assert_eq!(response.as_slice(), b"abcd");
     response.truncate(2);
     assert_eq!(response.as_slice(), b"ab");
+    assert!(!response.is_empty());
+    response.truncate(0);
+    assert!(response.is_empty());
 }
 
 #[path = "applet_registry_tests.rs"]
 mod registry;
+
+#[path = "applet_mutation_tests.rs"]
+mod mutation;
 
 struct Echo {
     selected: bool,
@@ -172,6 +180,7 @@ fn command_chaining_reassembles() {
     assert_eq!(disp.process(&sel, &mut applets, &mut (), &mut res), Sw::OK);
 
     // Two chaining segments (CLA bit 0x10) are acknowledged with no body…
+    assert!(!disp.chain_open());
     assert_eq!(
         disp.process(
             &[0x10, 0x10, 0, 0, 0x02, 0xAA, 0xBB],
@@ -182,6 +191,7 @@ fn command_chaining_reassembles() {
         Sw::OK
     );
     assert!(res.is_empty());
+    assert!(disp.chain_open());
     assert_eq!(
         disp.process(
             &[0x10, 0x10, 0, 0, 0x02, 0xCC, 0xDD],
@@ -202,6 +212,7 @@ fn command_chaining_reassembles() {
         Sw::OK
     );
     assert_eq!(res.as_slice(), &[0xAA, 0xBB, 0xCC, 0xDD, 0xEE]);
+    assert!(!disp.chain_open());
 }
 
 #[test]
@@ -1566,4 +1577,74 @@ fn with_no_applet_selected_even_an_sm_class_is_an_unknown_instruction() {
         Sw::INS_NOT_SUPPORTED,
         "one disabled since is none"
     );
+}
+
+#[test]
+#[should_panic(expected = "a response made outside an open chain")]
+fn a_response_cannot_bypass_an_open_command_chain() {
+    let mut echo = Echo { selected: false };
+    let mut applets: [&mut dyn Applet<()>; 1] = [&mut echo];
+    let mut disp = Dispatcher::new();
+    let mut out = [0; 64];
+    let mut res = ResBuf::new(&mut out);
+    let mut select = vec![0, 0xA4, 4, 0, 8];
+    select.extend_from_slice(&[0xA0, 0, 0, 6, 0x47, 0x2F, 0, 1]);
+    assert_eq!(
+        disp.process(&select, &mut applets, &mut (), &mut res),
+        Sw::OK
+    );
+    res.clear();
+    assert_eq!(
+        disp.process(&[0x10, 0x10, 0, 0, 1, 7], &mut applets, &mut (), &mut res),
+        Sw::OK
+    );
+    assert!(disp.chain_open());
+    disp.chain_response(Sw::OK, 64, true, &mut res);
+}
+
+#[test]
+fn disabling_an_applet_during_a_chain_refuses_and_discards_the_accumulated_body() {
+    let mut echo = Echo { selected: false };
+    let mut applets: [&mut dyn Applet<()>; 1] = [&mut echo];
+    let mut dispatcher = Dispatcher::new();
+    let mut output = [0; 64];
+    let mut response = ResBuf::new(&mut output);
+    let select = [0, 0xa4, 4, 0, 8, 0xa0, 0, 0, 6, 0x47, 0x2f, 0, 1];
+    assert_eq!(
+        dispatcher.process(&select, &mut applets, &mut (), &mut response),
+        Sw::OK
+    );
+    assert_eq!(
+        dispatcher.process(
+            &[0x10, 0x10, 0, 0, 2, 0xaa, 0xbb],
+            &mut applets,
+            &mut (),
+            &mut response
+        ),
+        Sw::OK
+    );
+    assert!(dispatcher.chain_open());
+    dispatcher.set_enabled(0);
+    assert_eq!(
+        dispatcher.process(
+            &[0, 0x10, 0, 0, 1, 0xcc],
+            &mut applets,
+            &mut (),
+            &mut response
+        ),
+        Sw::INS_NOT_SUPPORTED
+    );
+    assert!(response.is_empty());
+    assert!(!dispatcher.chain_open());
+    dispatcher.set_enabled(u32::MAX);
+    assert_eq!(
+        dispatcher.process(
+            &[0, 0x10, 0, 0, 1, 0xdd],
+            &mut applets,
+            &mut (),
+            &mut response
+        ),
+        Sw::OK
+    );
+    assert_eq!(response.as_slice(), &[0xdd]);
 }

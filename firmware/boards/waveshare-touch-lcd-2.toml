@@ -63,7 +63,7 @@ tp_rst_shared = true
 # pin-to-edge rule instead. The mount differs between panels, so re-measure on a
 # replacement: a range merely off shows as taps landing tens of pixels away at
 # the edges, not as a dead touch pad.
-touch_ic = "cst816d"
+tp_chip = "cst816d"
 touch_x_min = 25
 touch_x_max = 223
 touch_y_min = 16

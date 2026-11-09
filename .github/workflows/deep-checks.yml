@@ -29,12 +29,12 @@
 #   repro — `nix build .#firmware` twice (`--rebuild` diffs every output
 #          byte): proves the hermetic image is bit-reproducible and publishes
 #          the canonical sha256 for this flake.lock (docs/build.md).
-#   coverage — `cargo llvm-cov` line coverage over the host crates, floored:
-#          a regression alarm on the host-testable surface (the embedded
-#          firmware image is not host-measurable). scripts/metrics.sh is the
-#          separate, un-gated refactor-reconnaissance tool.
+#   coverage — host line coverage with an 80% floor, plus condition-outcome
+#          reports. The daily run measures the default profile.
 #
 # WEEKLY (Sunday)
+#   coverage — condition-outcome reports for every declared host profile.
+#   mcdc — Supercov witness pairs for selected host security decisions.
 #   kani — every #[kani::proof] harness, one runner per tier: the three `light*`
 #          shards and `heavy`, which together are the `all` roster of
 #          `scripts/kani.sh` (docs/testing.md). The fast tier of that same script runs
@@ -88,7 +88,8 @@
 #   nix develop -c ./scripts/mutants-all.sh   (MUTANTS_SHARD=2/12 for one shard)
 #   nix develop -c python scripts/comutate.py run
 #   nix develop -c ./scripts/check-assurance.sh
-#   nix develop -c cargo llvm-cov --summary-only --fail-under-lines 80 --target <host> --workspace --exclude firmware --exclude rsk-wipe
+#   nix develop -c cargo llvm-cov --summary-only --fail-under-lines 80 --target <host> --workspace --exclude firmware --exclude firmware-ns --exclude rsk-wipe
+#   nix develop -c ./scripts/mcdc.sh
 
 name: deep-checks
 
@@ -110,11 +111,13 @@ on:
         "nix/firmware.nix",
         "scripts/fuzz-coverage.sh",
         "scripts/fuzz-all.sh",
+        "scripts/mcdc.sh",
         "scripts/miri-all.sh",
         "fuzz/Cargo.toml",
         "scripts/mutants-all.sh",
         "scripts/comutate.py",
         "scripts/kani.sh",
+        "third_party/mcdc-supercov-*.patch",
         "formal/**",
       ]
 
@@ -229,7 +232,7 @@ jobs:
       # of the dimension — it must arrive labelled.
       - name: upload crash artifacts
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fuzz-artifacts-${{ github.run_id }}-s${{ matrix.shard }}-${{ matrix.config }}
           path: fuzz/artifacts/
@@ -310,7 +313,7 @@ jobs:
 
       - name: upload the raw coverage and per-target HTML reports
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fuzz-coverage-${{ github.run_id }}-${{ matrix.config }}
           path: |
@@ -381,19 +384,13 @@ jobs:
           key: coverage-${{ runner.os }}-${{ matrix.profile }}-${{ hashFiles('Cargo.lock', 'flake.lock') }}
           restore-keys: coverage-${{ runner.os }}-${{ matrix.profile }}-
 
-      # Host crates only — the embedded firmware image is not host-measurable, so
-      # its coverage is 0 by construction. firmware and rsk-wipe are the two
-      # workspace members that are not under crates/ and the two that are
-      # thumbv8m-only, so the exclusion is the whole of it; scripts/roster_gate.py
-      # holds this row and the header's copy of it to that pair. The 80% floor is
-      # a regression alarm, not a target: 85.0% line over the host crates
-      # (aarch64-apple-darwin), so a real drop fails and noise does not.
+      # Keep the embedded-only packages outside the host line-coverage floor.
       - name: llvm-cov — host-crate line coverage, floored at 80%
         if: matrix.profile == 'default'
         run: |
           nix develop -c cargo llvm-cov --summary-only --fail-under-lines 80 \
             --target x86_64-unknown-linux-gnu \
-            --workspace --exclude firmware --exclude rsk-wipe
+            --workspace --exclude firmware --exclude firmware-ns --exclude rsk-wipe
 
       - name: condition coverage and raw evidence for the shipping profile
         run: nix develop .#fuzz -c ./scripts/metrics.sh --coverage
@@ -403,10 +400,37 @@ jobs:
 
       - name: retain profile logs, feature closure and raw coverage
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unit-coverage-${{ github.run_id }}-${{ matrix.profile }}
           path: target/coverage-profiles/${{ github.run_id }}-${{ matrix.profile }}
+          if-no-files-found: error
+
+  mcdc:
+    if: github.event.schedule != '17 5 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+
+      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+
+      - name: Measure MC/DC on host security decisions
+        run: nix develop -c ./scripts/mcdc.sh
+
+      - name: Retain MC/DC logs and evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mcdc-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/mcdc.*/
           if-no-files-found: error
 
   kani:
@@ -490,17 +514,16 @@ jobs:
       # The denominator is `strategy.job-total` and not a second hand-kept 12 —
       # two numbers that must agree is how the shard space silently loses a slice.
       - name: mutants — would a test notice if this line changed?
-        run: nix develop -c ./scripts/mutants-all.sh
+        run: nix develop -c ./scripts/mutants-container.sh
         env:
           MUTANTS_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
-          MUTANTS_JOBS: "3"
           HOST_TARGET: x86_64-unknown-linux-gnu
 
       # What seeding and triage start from: the survivors the baseline does not
       # hold, already in its format, beside the tool's own outcome lists.
       - name: upload this shard's survivors
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mutants-${{ github.run_id }}-s${{ matrix.shard }}
           path: |
@@ -643,7 +666,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: formal-logs-${{ github.run_id }}-${{ matrix.shard }}

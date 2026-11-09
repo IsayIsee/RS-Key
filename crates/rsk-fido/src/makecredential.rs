@@ -565,7 +565,9 @@ fn rp_eligible_for_vendor_ea<S: Storage>(fs: &mut Fs<S>, rp_id_hash: &[u8; 32]) 
     let n = fs.read(EF_EA_RPIDS, &mut buf).unwrap_or(0);
     buf.get(..n)
         .unwrap_or(&buf)
-        .chunks_exact(32)
+        .as_chunks::<32>()
+        .0
+        .iter()
         .any(|h| h == rp_id_hash)
 }
 
@@ -583,7 +585,7 @@ fn enforce_pin<S: Storage, R: Rng>(
 ) -> Result<UvOutcome, CtapError> {
     // A probe the flash could not serve must not read as "no PIN configured": that
     // is the arm that makes a discoverable credential on user presence alone.
-    let pin_set = ctx.fs.try_has_data(EF_PIN).map_err(|_| CtapError::Other)?;
+    let pin_set = ctx.fs.try_exists(EF_PIN).map_err(|_| CtapError::Other)?;
     match req.pin_uv_auth_param {
         // Zero-length probe: a selection gesture — wait for a touch, then report
         // the PIN state. With no button configured this confirms instantly. CTAP 2.1
@@ -1402,7 +1404,7 @@ fn rp_min_pin_len<S: Storage>(fs: &mut Fs<S>, rp_id_hash: &[u8; 32]) -> u8 {
     // A record too short to hold the `[len, force]` head lists no rp.
     let listed = buf
         .get(2..n)
-        .is_some_and(|rps| rps.chunks_exact(32).any(|h| h == rp_id_hash));
+        .is_some_and(|rps| rps.as_chunks::<32>().0.iter().any(|h| h == rp_id_hash));
     if listed { buf[0] } else { 0 }
 }
 

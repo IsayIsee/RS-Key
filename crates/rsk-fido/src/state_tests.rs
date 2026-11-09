@@ -204,6 +204,8 @@ fn warm_boot_survives_reset_but_session_state_does_not() {
     st.paut.permissions = PERM_ACFG;
     st.begin_using_token(true, 0);
     st.establish_mse_for_test([0x11; 32], [0x04; 65]);
+    assert!(st.mse_live());
+    assert_eq!(st.mse_key_for_test(), Some([0x11; 32]));
     st.cm.rp_total = 4;
     st.gna.active = true;
     st.restore_pin_lock(LOCKED);
@@ -321,6 +323,22 @@ fn an_idle_cursor_expires_on_its_own_timer() {
 }
 
 #[test]
+fn a_direct_large_blob_transfer_expires_in_every_compiled_profile() {
+    let mut state = FidoState::new();
+    state.lba.expected_length = 32;
+    state.lba.expected_next_offset = 16;
+    state.lba.last_fragment_ms = 1_000;
+    state.lba.temp.fill(0xA5);
+    state.expire_stale_sequences(1_000 + STATEFUL_WALK_IDLE_MS - 1);
+    assert_eq!(state.lba.expected_length, 32);
+    assert_eq!(state.lba.expected_next_offset, 16);
+    state.expire_stale_sequences(1_000 + STATEFUL_WALK_IDLE_MS);
+    assert_eq!(state.lba.expected_length, 0);
+    assert_eq!(state.lba.expected_next_offset, 0);
+    assert!(state.lba.temp.iter().all(|&byte| byte == 0xA5));
+}
+
+#[test]
 fn the_generated_relation_refuses_an_out_of_domain_pre_state() {
     let pre = AState {
         permission_mc: true,
@@ -333,3 +351,34 @@ fn the_generated_relation_refuses_an_out_of_domain_pre_state() {
         AState::default(),
     ));
 }
+
+std::thread_local! {
+    static DROP_WIPED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+pub(super) fn observe_drop(ephemeral: &[u8; 32], token: &[u8; 32]) {
+    DROP_WIPED.with(|observed| {
+        if observed.get().is_some() {
+            observed.set(Some(*ephemeral == [0; 32] && *token == [0; 32]));
+        }
+    });
+}
+
+#[test]
+fn dropping_fido_state_wipes_both_session_secrets_before_their_lifetimes_end() {
+    let mut state = FidoState::new();
+    state.ephemeral.fill(0x5a);
+    state.paut.token.fill(0xa5);
+    DROP_WIPED.with(|observed| observed.set(Some(false)));
+    drop(state);
+    DROP_WIPED.with(|observed| {
+        assert_eq!(
+            observed.replace(None),
+            Some(true),
+            "session secrets survived Drop"
+        );
+    });
+}
+
+#[path = "state_projection_tests.rs"]
+mod projection;

@@ -26,7 +26,7 @@ const RESP_CAP: usize = rsk_usb::ctaphid::CTAP_MAX_MESSAGE;
 // largeBlobs ceiling) is derived from the same literal and rides on this too.
 // `cfg(not(kani))` for the reason its sibling in `rsk-usb` carries: this is about
 // the SHIPPED width, and `CTAP_MAX_MESSAGE` deliberately shrinks to two
-// continuation frames under Kani (ctaphid.rs:228), where CBMC runs out of memory
+// continuation frames under Kani (ctaphid.rs:230), where CBMC runs out of memory
 // at the real one. Unguarded it does not fail a proof — it stops `rsk-device`
 // COMPILING, so every harness in the crate goes with it.
 #[cfg(not(kani))]
@@ -38,9 +38,9 @@ const _: () = assert!(rsk_fido::consts::MAX_MSG_SIZE as usize == RESP_CAP);
 #[cfg(feature = "security-trace")]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SecurityTraceSnapshot {
-    pub pin_record_len: Option<u8>,
+    pub pin_record_len: Option<usize>,
     pub pin_retries_raw: Option<u8>,
-    pub always_uv_record_len: Option<u8>,
+    pub always_uv_record_len: Option<usize>,
     pub always_uv_raw: Option<u8>,
     pub persistent_grant_record: bool,
     pub backup_sealed_record: bool,
@@ -159,6 +159,11 @@ impl<'a, S: Storage, R: rsk_sdk::Rng + 'static, VP: rsk_vendor::Platform>
         self.resp.zeroize();
     }
 
+    /// Lend the complete response buffer to the board's volatile SRAM wipe.
+    pub fn scrub_with(&mut self, wipe: impl FnOnce(&mut [u8])) {
+        wipe(&mut self.resp);
+    }
+
     /// Secure-reboot wipe: the response buffer, the vendor dispatcher's chain and
     /// held tail, and the cross-message FIDO auth state — `reset` zeroizes the
     /// PIN/UV token, session key and ephemeral ECDH scalar via their `Drop` impls.
@@ -190,6 +195,13 @@ impl<'a, S: Storage, R: rsk_sdk::Rng + 'static, VP: rsk_vendor::Platform>
         resp.zeroize();
         fido_state.borrow_mut().reset();
     }
+
+    /// A transport reset drops authorization without granting a new per-boot PIN budget.
+    pub fn reset_transport_session(&mut self) {
+        let lock = self.fido_state.borrow().pin_lock();
+        self.scrub_secrets();
+        self.fido_state.borrow_mut().restore_pin_lock(lock);
+    }
 }
 
 // Synchronous dispatch called by the worker (`crate::worker`) on the thread
@@ -206,10 +218,10 @@ impl<S: Storage, R: rsk_sdk::Rng + 'static, VP: rsk_vendor::Platform> AppletHand
         };
 
         let mut fs = self.fs.borrow_mut();
-        let pin_size = fs.size(EF_PIN).and_then(|n| u8::try_from(n).ok());
+        let pin_size = fs.size(EF_PIN);
         let pin_retries = rsk_fido::clientpin::pin_retries_left(&mut fs);
         let mut always_uv = [0u8; 1];
-        let always_uv_size = fs.size(EF_ALWAYS_UV).and_then(|n| u8::try_from(n).ok());
+        let always_uv_size = fs.size(EF_ALWAYS_UV);
         let always_uv_raw = match fs.read(EF_ALWAYS_UV, &mut always_uv) {
             Some(1) => Some(always_uv[0]),
             _ => None,
@@ -227,9 +239,9 @@ impl<S: Storage, R: rsk_sdk::Rng + 'static, VP: rsk_vendor::Platform> AppletHand
             always_uv_record_len: always_uv_size,
             always_uv_raw,
             persistent_grant_record: fs.has_key(EF_PAUTHTOKEN),
-            backup_sealed_record: fs.has_data(EF_BACKUP_SEALED),
-            seed_plain_record: fs.has_key(EF_KEY_DEV),
-            seed_encrypted_record: fs.has_key(EF_KEY_DEV_ENC),
+            backup_sealed_record: fs.exists(EF_BACKUP_SEALED),
+            seed_plain_record: fs.exists(EF_KEY_DEV.get()),
+            seed_encrypted_record: fs.exists(EF_KEY_DEV_ENC.get()),
             credential_slots_raw: credentials.iter().filter(|present| **present).count() as u16,
             rp_slots_raw: rps.iter().filter(|present| **present).count() as u16,
             token_in_use_raw: st.paut.in_use,
@@ -260,7 +272,7 @@ impl<S: Storage, R: rsk_sdk::Rng + 'static, VP: rsk_vendor::Platform> AppletHand
         self.fido_state
             .borrow_mut()
             .abstract_token(rsk_fido::TokenPersistentView {
-                pin_set: fs.has_data(EF_PIN),
+                pin_set: fs.exists(EF_PIN),
                 persistent_grant: fs.has_key(EF_PAUTHTOKEN),
             })
     }
@@ -288,6 +300,10 @@ impl<S: Storage, R: rsk_sdk::Rng + 'static, VP: rsk_vendor::Platform> AppletHand
     }
 
     pub fn handle_msg(&mut self, apdu: &[u8], now_ms: u64) -> &[u8] {
+        if self.fs.borrow().storage_state() == rsk_fs::storage::StorageState::Recovery {
+            self.resp[..2].copy_from_slice(&rsk_sdk::Sw::MEMORY_FAILURE.to_bytes());
+            return &self.resp[..2];
+        }
         // U2F (CTAP1) has no SELECT over CTAPHID: route its INS straight to the
         // FIDO applet when nothing else is selected, in U2F HID's own framing. A
         // vendor AID SELECT takes the dispatcher path below.
@@ -341,6 +357,10 @@ impl<S: Storage, R: rsk_sdk::Rng + 'static, VP: rsk_vendor::Platform> AppletHand
     /// reset window a host has to hit runs from the moment the device could answer
     /// at all. The transport owns that clock, so it supplies it.
     pub fn handle_cbor(&mut self, cid: u32, data: &[u8], now_ms: u64) -> &[u8] {
+        if self.fs.borrow().storage_state() == rsk_fs::storage::StorageState::Recovery {
+            self.resp[0] = rsk_fido::CtapError::Other.as_u8();
+            return &self.resp[..1];
+        }
         // The trusted display re-keyed or rejected the clientPIN, or wiped the device,
         // since the last command: end every session credential the PIN authorized before
         // this one can use it. Set on the display task, taken by whichever transport runs first.

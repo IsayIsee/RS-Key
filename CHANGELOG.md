@@ -38,14 +38,766 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
 
 ## [Unreleased]
 
+- Serve the PIV Card Capability Container by default for Windows key-container
+  opens, while preserving a provisioned container. Support the CST3530 touch
+  controller on the Waveshare V2 display board (bcdDevice 0x0BE2).
+- Recognize the RS-Key PC/SC reader by its USB serial when Linux pcscd uses the
+  driver's friendly name (CLI and TUI).
+
+- Run display firmware images with `rsk-emu --image --display`: capture ST7789
+  pixels from PIO, deliver CST328 touch reports over I2C1, and show the panel in
+  SDL. Add headless image-time tap input and a display-image laboratory for
+  consent, cancellation and the device, FIDO and CCID PIN paths.
+
+- Cancel the background RSA prime candidate at Lucas progress boundaries once
+  the key is complete (bcdDevice 0x0BE1). Retain the Miller-Rabin and extra-strong
+  Lucas acceptance checks and wipe the abandoned candidate before core1 idles.
+  This bounds the unfinished Lucas sequence without delaying the key response.
+
+- Initialize the storage backend, filesystem and USB message buffers in static
+  memory instead of returning large values through constructor stack frames
+  (bcdDevice 0x0BE0). Bind the storage key source once before boot admission.
+  Resolve counter banks into caller-owned results and group SHA-256 expansion
+  and rounds to bound the unoptimized core1 stack. Build applet handlers on the
+  worker's first poll and share the wiped Non-secure reply buffer
+  under the existing exchange mutex. Reuse CTAPHID reply await sites and avoid
+  temporary ML-DSA polynomial-vector copies during key expansion and signing.
+  Reuse dead signing scratch while preserving byte-exact signatures. The
+  constant initializers raise the approved image budget from 952 to 1024 KiB;
+  the Secure and Non-secure stack floors are unchanged. Boards with at most
+  2 MiB flash construct the backend at runtime to preserve their code space
+  without moving either storage partition.
+
+- Abort partial CTAPHID reassembly when the USB session changes, before wiping
+  its buffer (bcdDevice 0x0BDF). A new channel can start immediately and a stale
+  continuation no longer produces a response in the new session.
+
+- Give each synthetic PIV-history emulator boot fresh TCP listener ports,
+  including boots in the next seed. ARM-image replay no longer stops at its
+  first reboot when an inspection socket remains in `TIME_WAIT`.
+
+- Expand hostile Non-secure image checks to peripheral grants, DMA channels and
+  atomic register aliases, with live NS RAM controls (bcdDevice 0x0BDE).
+  Identify SecureFault addresses separately from bus faults, compare complete
+  SRAM8/9 code/padding with the ELF, and exercise RSA session events and
+  authorized fatal-fault recovery with disposable images.
+
+- Add hostile NS USBCTRL write and DMA register probes alongside the read probe
+  (bcdDevice 0x0BDD; test coverage, no applet behavior change). Check the
+  actual LDR/STR instruction in the NS ELF, the access fault and terminal
+  USB/DPRAM cleanup.
+
+- Run the hostile Non-secure USBCTRL read and fatal USB/DPRAM fence check in
+  the image suite. Keep hostile, gateway-probe and ordinary build settings
+  separate even when probe variables are inherited from the shell.
+
+- Exercise TrustZone worker gateway range and selector probes in the image
+  suite (bcdDevice 0x0BDC; test coverage, no applet behavior change), with
+  valid-buffer controls and an explicit completion diagnostic. Test probes
+  remain absent from ordinary firmware.
+
+- Move the firmware entry point to `scripts/build.sh` (bcdDevice 0x0BDB;
+  build refactor, no applet behavior change). It inherits exported
+  environment variables, combines `FEATURES` with Cargo feature arguments,
+  forwards common Cargo options to all three TrustZone stages and supports
+  custom output directories without mixing Secure and Non-secure artifacts.
+
+- Fix picotool's ECDSA DER/RAW conversion for leading-zero scalars in the pinned
+  Nix tool. Signing now verifies the bytes written to the image; the gate also
+  reopens the sealed ELF and requires a verified hash and signature.
+
+- Make TrustZone mandatory for every authenticator build (bcdDevice 0x0BDA):
+  remove the monolithic firmware and legacy Nix package, refuse bare Cargo
+  builds, and halt the import-library ELF before initialization without NS.
+  Build and image checks now consume the combined image and independent NS ELF.
+
+### bcdDevice → 0x0BD9: refreshed build environment
+
+- Refresh the Nix inputs and use Rust 1.99.1, with matching LLVM tools for the
+  coverage package's own test suite.
+- Align the legacy, Secure and wipe `.text` sections to their actual input
+  alignment after the boot block, fixing the linker warning reported in #136.
+- Preserve Secure SRAM placement and XIP cache groups with Rust v0 symbols.
+- Regenerate IBM Plex tables from the updated font and rasterizer packages;
+  glyph metrics and table sizes are unchanged.
+- Keep the picoem model and its TrustZone changes in the external fork, pinned
+  by Cargo Git revision. Image suites and model checks remain in the RS-Key gate.
+
+### bcdDevice → 0x0BD8: TrustZone by default and complete debug hardening
+
+- Standard Nix packages, CI artifacts and local build recipes now use the
+  combined Secure/Non-secure image. Firmware features and documented environment
+  knobs reach both Secure links; NS receives its `strict-config` transport policy.
+- CLI 0.3.53 hardens both `DEBUG_DISABLE` and `SECURE_DEBUG_DISABLE`, verifies
+  all eight CRIT1 copies, resumes partial writes and refuses to lock incomplete
+  hardening. CLI and firmware status decode physical OTP copies and require
+  complete debug and page-lock copies before reporting `LOCKED`.
+- CI and image suites run on pushes to `develop` as well as `main` and PRs.
+  The TUI development command and native libraries live in `nix develop .#tui`;
+  the full gate retains its TUI checks in that environment.
+
+- **bcdDevice → 0x0BD7: automatic OTP sealing.** Boot validates page-58 keys and chaff,
+  migrates device-sealed records, completes a fresh flash scrub, then permanently
+  closes BOOTSEL/non-secure key access and the pre-OTP migration arms. This also
+  runs on upgrades of already fused but unlocked devices, including legacy
+  `0x3C3C3C` locks. PIN-dependent migration delays sealing; invalid or incomplete
+  provisioning refuses it. TrustZone performs this in Secure code before
+  starting Non-secure transports. A scrubbed restart refreshes the latch bindings.
+  All access-lock copies are verified before the Secure read-only latch is burnt.
+  A torn latch whose majority already closes Secure writes is reported separately;
+  ROM cannot complete its remaining bits, and boot does not repeatedly try.
+  If that old tear left BOOTSEL/Non-secure access open, root reads and migration
+  are blocked in recovery instead of treating the device as sealed.
+- **CLI 0.3.52:** `rsk otp burn` independently reads back keys and chaff, then
+  reboots into automatic sealing. It no longer trusts picotool's exit status
+  alone. `rsk otp status` reports completion or the action still needed, and
+  discovers Linux readers by the rescue protocol. `lock-page58` remains only
+  for servicing older firmware.
+
+- **bcdDevice → 0x0BD6:** accelerate Brainpool signing and public-key generation
+  with constant-time fixed-base tables, and ECDH with Jacobian mixed addition.
+  Preserve deterministic signatures, scalar and peer validation, and stored keys.
+  Pack counter snapshots into body pages before checkpoint publication, reducing
+  repeated flash programs during PIN/HOTP rotation. Stored bytes, capacity,
+  full-bank authentication, mirrored acknowledgment and rollback floors are unchanged.
+  Use the complete doubling formula in the secp256k1 comb and group hot
+  secp256k1 callees within one XIP cache way.
+  Reuse mixed addition for the public P-521 ECDH table, removing a duplicate
+  full-projective formula; keep the complete doubling formula outside the hot
+  fixed-base selection loop. Keep the Ed25519 loop and shared field arithmetic
+  on disjoint XIP cache indices. Skip two always-zero leading radix-16 digits
+  in P-521 ECDH and execute the checked storage reader from existing Secure RX SRAM.
+  Group the P-384 comb with its hot field callees.
+  Keep X25519's constant-time barrier and public ladder multiplier in its code
+  group. Precompute only the public `NO-OTP` HMAC pad states, preserving fresh
+  OTP reads and the fused-key path. Poll USB writes directly without an extra
+  async adapter; USB reset handling, cleanup and retry bounds are unchanged.
+
+- **bcdDevice → 0x0BB6:** derive U2F and attestation public points only when
+  needed, using the existing constant-time P-256 comb. Authentication and
+  attestation signing no longer calculate an unused public key. Credential
+  formats, signatures, presence checks and counter publication are unchanged.
+
+- **bcdDevice → 0x0BB0:** append each counter record's header and value together,
+  and end raw-bank write chunks at physical page boundaries, reducing repeated
+  flash programming during PIN retry and HOTP updates. The
+  record encoding, MAC checks, mirrored publication and rollback floors are
+  unchanged. Existing `0x0BA8` stores remain compatible in both directions.
+
+- **bcdDevice → 0x0BA8:** move PIN retry updates and encrypted HOTP moving
+  factors into the mirrored counter journal. Verifier-bearing PIN records and
+  HOTP credentials bind counters to their main publication generation; public
+  PIV/OpenPGP retry records are authoritative in the counter journal.
+  Existing records migrate on their first update;
+  replacement and deletion cannot inherit an older owner's counter. Retry
+  charging still precedes comparison, and both counter copies precede success.
+  The counter journal now retains an authenticated live rollback floor across
+  errors, as the main journal does. Earlier v2 firmware refuses the extended store
+  after migration; reinstalling this build resumes it without a reset.
+  P-384 field addition, subtraction and doubling stay out of line on 32-bit
+  targets, improving P-384 latency without changing arithmetic. TrustZone keeps
+  P-256 point addition and field inversion beside its multiplication loop in
+  Secure SRAM, avoiding the measured P-256 layout regression.
+
+- **bcdDevice → 0x0B83:** reuse command-local HMAC setup within complete
+  directory passes, reducing PIN retry and HOTP update
+  work. Every value is still read and authenticated at the same points; root
+  observations, rollback floors, publication order and persistent formats are
+  unchanged. No keyed state is kept between storage operations. P-256 ECDH
+  uses the same multiplication in Secure SRAM; P-256/P-384 decoding stays in
+  separate frames without changing point validation.
+
+- **bcdDevice → 0x0B70:** close main-journal and counter appends by freshly
+  checking both complete banks against the authenticated prefix and exact new
+  records, without replaying every older record's MAC. Compact SHA prefix state
+  stays in protected RAM; its reread partial block is authenticated before use.
+  PIN retry writes, HOTP advances and OpenPGP signatures retain both durable
+  publications, full payload checks, rollback floors and power-cut recovery.
+  Existing records need no migration; cold mounts and compaction still replay.
+  GET RESPONSE tails reuse the public OTP-status mirror from the producing
+  command; new APDUs and OTP operations still refresh it.
+
+- **bcdDevice → 0x0B66:** reuse authenticated counter locations after
+  fresh full-bank fingerprint and erased-tail checks; keep complete value MACs,
+  changed-bank recovery, and both durable publications. Unpublished-value cleanup
+  skips bodies of already-published files during its read-only walk and avoids
+  duplicate validation when it changed nothing. Keep ordinary lookup futures
+  separate, optimize the store for speed, and group the hot X25519 loop within
+  one XIP cache way. Enable the existing constant-time Ed25519 base-point tables.
+  Existing storage formats,
+  capacities, root checks, and rollback policy are unchanged.
+
+- **bcdDevice → 0x0B55:** Reuse the verified main-journal append position
+  after checking both complete physical journals and the mounted authority.
+  A completed write retains its authenticated mount for the next read.
+  PIN retry and OATH HOTP updates avoid redundant history scans; publication,
+  payload checks, recovery, persistent formats and retry ordering are unchanged.
+
+- Correct the cross-applet fuzz oracle's OATH authorization and credential
+  lifecycle model, including code removal, command chaining and DELETE's BER
+  fields. Production authorization and persistent formats are unchanged.
+
+- **bcdDevice → 0x0B46:** Consolidate the accepted TrustZone firmware and
+  correlated storage-fault test support on develop. The build identity advances;
+  device behavior, persistent formats and authentication remain unchanged.
+
+- **bcdDevice → 0x0B45:** Size the TrustZone CCID reply scratch buffer for
+  the existing CCID response limit, avoiding FIDO-sized initialization and
+  cleanup on APDU exchanges. Maximum responses, session checks and complete
+  buffer cleanup remain unchanged.
+
+- **bcdDevice → 0x0B44:** Use four signed comb groups for P-521 public-key
+  derivation and nonce commitments, including deterministic OpenPGP signatures
+  and authentication. P-521 agreement uses constant-time Jacobian formulas;
+  TrustZone executes the existing field products from read-only Secure SRAM8/9.
+  P-384 field squaring on 32-bit targets computes symmetric cross products once,
+  with fixed operation counts and the same canonical Montgomery result.
+  Scalar and peer-point validation, RFC6979 retries, authentication, rollback
+  checks and complete secret cleanup retain their existing contracts. Existing
+  keys need no migration; stack, heap and buffer capacities are retained.
+
+- **bcdDevice → 0x0B23:** Avoid deriving an unused public key on each
+  OpenPGP P-521 or Brainpool P-256/P-384 signature. The deterministic RFC6979 signer, scalar validation,
+  signature encoding and secret cleanup retain their existing contracts.
+  P-384 signing omits the RFC6979 state update after an accepted nonce; rejected
+  candidates still follow the same retry sequence. P-384 ECDH uses equivalent
+  bilinear Z-coordinate formulas to reduce field additions.
+  TrustZone places repeated AES-GCM blocks, EC selection and field arithmetic,
+  RSA integer operations, heap cleanup, record verification and single-message
+  SHA-256 in
+  read-only Secure SRAM. P-256 carries the protected borrow between words
+  without intermediate mask conversions and keeps the correction inline.
+  P-521's 17-word integer subtraction on 32-bit targets also carries the
+  protected borrow directly; other integer widths keep the upstream word loop. P-256 field squaring uses a symmetric product
+  kernel with fixed eight-word cross terms and the same Montgomery reduction.
+  Authentication checks are unchanged.
+
+- **bcdDevice → 0x0B0F:** Update `crypto-bigint` from 0.7.5 to 0.7.6
+  across the firmware, emulator, TUI and fuzz lockfiles. This addresses
+  RUSTSEC-2026-0387, including secret-dependent branches in arithmetic intended
+  to be constant-time. TUI 0.3.19 uses P-256 0.14 for its ECDH and identity
+  verification paths, removing its remaining vulnerable 0.5.5 dependency.
+  No advisory exception is added.
+
+- **bcdDevice → 0x0B05:** Keep shared memory-copy and clearing helpers in
+  read-only Secure SRAM alongside the TrustZone verifier. Persistent formats,
+  authentication checks and secret wiping remain unchanged.
+
+- **bcdDevice → 0x0AFF:** Reuse HMAC key pads within each authenticated
+  counter-bank scan and keep the public SHA-256 initial vector in Secure
+  read-only SRAM. Every record, sequence and erased tail is still checked.
+  HMAC pads are reused only within a scan; existing Secret drops and Secure
+  stack sweeps still cover keyed state. Storage formats and replica recovery
+  remain unchanged.
+
+- **bcdDevice → 0x0AF7; TUI → 0.3.18:** Update `ctutils` to 0.4.5 in all
+  four Rust workspaces to address RUSTSEC-2026-0385: compiler optimization of
+  constant-time mask generation and 128-bit comparisons on 32-bit targets.
+  Existing keys and persistent records remain compatible without a reset.
+
+- **bcdDevice → 0x0ADF:** Reduce TrustZone CCID continuation and initial OpenPGP
+  response latency with a bounded retry of busy Bulk IN writes. Each retry keeps
+  the USB lifecycle, fault and epoch checks; full packet cleanup completes before
+  notifying Non-secure. Storage authentication and rollback checks are unchanged.
+
+- **bcdDevice → 0x0ADE:** Use the shared aligned SRAM wipe for the complete
+  64-byte Secure gateway packet and the Non-secure endpoint/control IN packets.
+  Full cleanup on normal and error exits, future cancellation, epoch checks,
+  control abandonment and serialization ordering are retained.
+
+- **bcdDevice → 0x0ADD:** Skip unused zero-length USB packet bookkeeping in
+  TrustZone CCID transfers. Session and epoch checks, complete buffer/stack
+  cleanup, active ZLP retirement and CCID capacity are unchanged. Existing keys
+  and records remain compatible without a reset.
+
+- **bcdDevice → 0x0ADC:** Reduce shared SHA-256 and authenticated getInfo/OpenPGP
+  read latency by unrolling schedule expansion and avoiding a redundant schedule
+  copy. The complete schedule and chaining state remain wiped through `Secret`;
+  full hashes/MACs, fresh Root reads, rollback floors and cleanup before
+  publication are unchanged. Existing records upgrade without a reset.
+
+- **bcdDevice → 0x0ADB:** Reduce authenticated getInfo and OpenPGP latency with
+  fully unrolled software SHA-256 rounds, Secure RX SRAM placement of the
+  existing HKDF/DRBG helpers, and a full dead-stack sweep in 32-word groups.
+  Complete hashes/MACs, fresh Root reads, rollback floors, DRBG Generate/reseed
+  boundaries and cleanup before publication stay unchanged. Existing records
+  remain compatible without a reset.
+
+- **bcdDevice → 0x0ADA:** Run the shared SHA-256 compression/finalization and HMAC template functions
+  from Secure RX SRAM in the TrustZone build to reduce getInfo and OpenPGP
+  read latency. Existing records, full hashes and MACs, fresh Root checks,
+  rollback floors and complete buffer/stack cleanup are unchanged.
+
+- **bcdDevice → 0x0AD9:** Accelerate the shared storage verifier, FIDO getInfo
+  and OpenPGP reads with an eight-round software SHA-256 core. Full record
+  hashing, MAC inputs, fresh Root checks and rollback floors stay unchanged;
+  chaining state and the working schedule are wiped through `Secret`.
+
+- **bcdDevice → 0x0AD8:** Clear the complete Non-secure gateway reply buffer
+  with aligned volatile word stores. Every reply, abandoned session and dropped
+  pending future keeps the same full-buffer cleanup before ticket release.
+
+
+- **bcdDevice → 0x0AD7:** Clear both complete command response buffers with
+  aligned volatile word stores and byte edges. The full array extents, cleanup
+  on each command and dead-stack sweep before reply publication are preserved.
+
+
+- **bcdDevice → 0x0AD6:** Use the full wiped scratch for a Main read-tag miss,
+  so a larger neighboring value does not force a second lookup and repeated
+  authentication. A successful first lookup seeds its read tag immediately.
+  Tag hits retain bounded scratch; fresh root, binding, complete value proofs
+  and the mounted version floor are unchanged.
+
+- **bcdDevice → 0x0AD5:** Reuse authenticated Main read metadata without
+  repeating HKDF and the binding and record MAC checks on each warm lookup.
+  A warm tag hit reads OTP and verifies a full 32-byte software HMAC over the
+  exact mounted version and, for present files, the entry and complete value
+  digest. Cold reads and tag misses retain the original binding and record proofs.
+  Only metadata and tags survive a read. Main clears these hints before mutation
+  and on read errors while retaining the version floor. Persistent formats and
+  capacities remain unchanged.
+
+- **bcdDevice → 0x0AD4:** Reduce Non-secure backup USB polling from every
+  millisecond to every 16 ms, leaving more CPU time for authenticated storage
+  reads. Secure progress interrupts still wake waiters immediately; missed
+  notifications can add up to 15 ms per wait. Root, payload and USB-epoch
+  checks and Secure stack cleanup are unchanged.
+
+- **bcdDevice → 0x0AD3:** Prepare the Main read HMAC key once for the mounted
+  authority and requested record checks. The context exists only within that
+  backend read; each later read freshly derives its root and verifies both MACs.
+
+- **bcdDevice → 0x0AD2:** Wake Non-secure USB tasks on Secure USB and worker
+  progress instead of waiting for each polling interval. A one-millisecond
+  fallback remains. Publish replies and completed resets only after command
+  futures return and the Secure dead-stack sweep finishes; gateway span, ticket
+  and USB-epoch checks remain unchanged.
+
+- **bcdDevice → 0x0AD1:** Read the OpenPGP key-origin record once when building
+  key information, instead of once per present signing, decryption and
+  authentication key. Each response reads afresh; absent, short, invalid or
+  unreadable origins still report imported. Attestation-key behavior is unchanged.
+
+- **bcdDevice → 0x0AD0:** Shorten warm authenticated reads by lending flash only
+  the aligned scratch span required for the requested value. That whole span is
+  wiped on every exit, including partial I/O failures; cold reads and recovery
+  keep the full scratch cleanup. Fresh root, mounted-directory binding and full
+  payload authentication remain mandatory. Formats and capacities are unchanged.
+
+- **bcdDevice → 0x0ACF:** Reuse the complete authenticated main directory in
+  protected RAM between storage reads. Each read freshly derives its root and
+  authenticates the complete requested payload against its mounted version;
+  absence comes from the complete directory. Journal scans remain mandatory
+  before mutations and when rebuilding the directory. Retain exact publication
+  progress across errors and remounts to refuse live rollback and substitution.
+  Unrelated journal damage is detected when those journals are consumed, rather
+  than on every warm read. Persistent formats and capacities are unchanged.
+
+- **bcdDevice → 0x0ACE:** Check erased journal tails directly from the flash stream
+  instead of copying them through SRAM. Each backend read retains fresh checks
+  of both complete banks, their tails, the root and each complete payload MAC;
+  Every FIFO word and final transfer progress remain checked. QSPI mode checks
+  and the 100 ms wait bound keep their existing 4 KiB transfer boundaries.
+
+- **bcdDevice → 0x0ACD:** Shorten shared storage reads after long update histories: at mount, checkpoint
+  authenticated main journals when obsolete history can release at least half a
+  bank. Live files, counters, sequence and record formats are preserved. This
+  maintenance adds erases and startup work when due; every read still freshly
+  checks both complete banks, erased tails, root and full payload MAC.
+
+- Accelerate P-384 field products on 32-bit targets with a modulus-specific,
+  constant-time Montgomery CIOS kernel. ECDH, ECDSA commitments and public-key
+  derivation retain canonical results, point validation and secret cleanup.
+  Existing credentials and flash records are unchanged. bcdDevice `0x0ACC`.
+
+- Accelerate P-384 ECDH with Jacobian doubling and mixed addition. Signed
+  windows retain fixed work, full table selection and masked equality,
+  opposite-point and identity handling. Peer validation, errors and shared
+  secrets are unchanged. bcdDevice `0x0ACB`.
+
+- Use compact software SHA-2 rounds for the firmware's RustCrypto 0.11
+  dependency paths, reducing P-384 deterministic-signature latency and code
+  size on Cortex-M33. Nonces, signatures and validation remain unchanged.
+  bcdDevice `0x0ACA`.
+
+- Use command-free continuous Quad reads on the allowlisted Puya flash, at the
+  existing clock rate. A single-word priming transaction precedes a full probe;
+  failed probes release enhanced read mode, restore QMI and verify the old mode.
+  Fresh bank, erased-tail and record authentication checks are unchanged.
+  bcdDevice `0x0AC9`.
+
+- Halve P-384 comb doublings again with four centered signed groups and a
+  public correction point. Table decoding still validates every point; selection
+  and sign application use fixed work for every scalar. bcdDevice `0x0AC8`.
+
+- Reduce P-384 public-key and ECDSA commitment work with two fixed-base comb
+  groups and the curve library's complete doubling formula. Fixed loop counts,
+  full constant-time table selection, coordinate validation and sealed-key /
+  certificate checks remain in place. This shortens the first PIV SELECT and
+  its delay to queued commands. bcdDevice `0x0AC7`.
+
+- Feed complete SHA-256 blocks with straight-line word writes and peripheral
+  byte swapping in the shared flash backend. Eager readiness, error and timeout
+  checks still run before and after each block; full fresh bank, tail, root and
+  payload checks are unchanged. Records remain compatible. bcdDevice `0x0AC6`.
+
+- Batch fresh page-state probes across adjacent page boundaries in the shared
+  storage backend. Both bytes are bounds-checked before uncached reads; successor
+  and wrap checks remain fresh. Both whole journal banks, erased tails, the root
+  and full payload MAC are still checked on each backend read. No record format
+  or capacity changes. bcdDevice `0x0AC5`.
+
+- Read each variable OpenPGP GET DATA child once, using the authenticated read's
+  returned length instead of separate existence and size probes. An unreadable
+  child refuses the complete template. Fresh storage checks and record formats
+  are unchanged. bcdDevice `0x0AC4`.
+
+- Reduce CPU overhead in shared flash reads: poll FIFO readiness without
+  counting words, and read one-byte page-state probes through the translated
+  uncached XIP window. Bounds, stream completion and stall checks, fresh bank
+  and root checks, and full payload authentication are retained. Record formats
+  are unchanged. bcdDevice `0x0AC3`.
+
+- Reduce shared storage-read latency by checking the peer journal bank before
+  the selected bank when reusing its parsed directory. Each backend read still
+  checks both whole banks, erased tails, the fresh root and the full payload
+  MAC. Cold resolution and record formats are unchanged. bcdDevice `0x0AC2`.
+
+- Reduce authenticated storage-read latency with a simpler checked XIP FIFO
+  loop. Load each existing PIV management and attestation key once during the
+  first SELECT, retaining fresh backend checks and the existing sealed formats.
+  A failed management-key read now explicitly refuses SELECT; malformed seals
+  still leave certificate access and recovery available. bcdDevice `0x0AC1`.
+
+- Accelerate shared storage reads on matching Waveshare RP2350-One boards with
+  volatile Quad Enable and checked Quad SPI timing. Park core1 in SRAM before
+  changing the read mode, preserve protection bits, and retain every fresh bank,
+  tail, root and payload check. Existing records remain compatible.
+  bcdDevice `0x0AC0`.
+
+- Avoid duplicate OpenPGP status, fingerprint and timestamp reads on
+  authenticated storage. Each value still receives its normal fresh storage
+  checks; records and response formats remain compatible. bcdDevice `0x0ABF`.
+
+- Accelerate FIDO getInfo with RP2350 hardware SHA-256, checked CPU flash
+  streaming and one command-local persistent-token load. Restore the TrustZone
+  HID interval to 1 ms. Keep fresh checks of both banks, erased tails, payload
+  authentication and recovery; existing flash records remain compatible.
+  bcdDevice `0x0ABE`.
+
+- Fix multi-second FIDO getInfo latency on RP2350: reuse the parsed storage
+  directory only after freshly checking both journal banks, keep payload and
+  page-recovery checks, and use compact SHA-256 on the device to fit the XIP
+  cache. Existing flash records remain compatible. bcdDevice `0x0ABD`.
+
+- Fix display-image cold boot in the emulator: latch PIO TXSTALL on actual
+  empty pulls, complete I2C NACKs and route UART1/SPI1/I2C1 at their RP2350
+  addresses.
+
+- Bound image-laboratory CTAP requests by device time with a separate host
+  watchdog, retain transport timing and refuse USB keepalive gaps over 500 ms.
+  Native test clients keep their existing deadline.
+
+- Integrate the current develop storage recovery and host-test contracts
+  with the TrustZone transport build. Preserve Secure USB lifecycle
+  ownership and bank-aware stack measurements.
+  bcdDevice `0x0ABB` → `0x0ABC`.
+
+- Image laboratory measurements track Secure and Non-secure core0 main stacks
+  separately and check both bounds. A TrustZone image no longer fails `begin`
+  because its active Non-secure stack is outside the Secure ELF allocation.
+
+- TrustZone preserves an acknowledged USB configuration across the next SETUP and revokes authorization when HAL first observes a reset or suspend after the raw register snapshot (`bcdDevice 0x0ABB`).
+
+- TrustZone OTP HID status follows Secure applet updates and CCID SELECT, so YubiKit observes the current program sequence and slot flags (`bcdDevice 0x0AB0`).
+
+- TrustZone retires an unconsumed CCID terminating ZLP when the host starts its next command, preserving 3072-byte transfers and the endpoint data toggle (`bcdDevice 0x0AAF`).
+
+- TrustZone USB lifecycle revocation is Secure-only: delayed Non-secure reset callbacks no longer erase a new APDU session, and CCID ABORT state is scoped to the Secure USB epoch (`bcdDevice 0x0AAE`).
+
+- TrustZone no-touch builds keep the timeout-import lint expectation only for headless, non-display configurations; builds with LED services now pass strict clippy (`bcdDevice 0x0AAD`, no runtime behavior change).
+
+- TrustZone S/NS builds share the root Cargo workspace, dependency pins and lockfile; NS remains excluded from host-only rows and is compiled by the device gate (`bcdDevice 0x0AAC`).
+
+- TrustZone bcdDevice 0x0AAB: production boot keeps Secure touch, LED and display
+  tasks, including display CCID PIN entry. One generated S/NS/NSC layout follows
+  2/4/16 MiB profiles without moving KV bounds. The combined touch image includes
+  its partition table and has an offline unsigned Nix builder. Startup validates
+  NS vectors and clears register state; fatal S faults fence gateways and USB.
+
+- TrustZone bcdDevice 0x0AAA: Non-secure USB descriptors now use a bounded public
+  Secure boot snapshot (effective VID/PID, strings, version, interface mask and
+  ATR), including persisted PHY overrides. Synthetic getInfo delay and gateway
+  startup probes are explicit test switches; NS no longer parses Secure main.rs.
+
+- TrustZone (bcdDevice 0x0AA9): explicitly grant bus resources before NS entry,
+  lock Secure DMA channels, configure both Secure MPUs and the NS MPU, and
+  isolate RAM-resident code. Preserve the HAL boot2 flash path through a bounded
+  Secure stack execution window with NS interrupts masked.
+
+- TrustZone (bcdDevice 0x0AA8): keep USB controller, DPRAM, lifecycle observation
+  and EP0 execution in Secure; expose bounded packet operations to Non-secure
+  transports. Bind every response fragment to its request epoch and stop a
+  CTAPHID response at the first disabled endpoint.
+
+- Image emulation: preserve outer lazy-FPU state across a nested basic IRQ
+  return; report invalid EXC_RETURN in CFSR.INVPC, without falsely setting
+  UNDEFINSTR for every UsageFault.
+
+- TrustZone prototype USB-wide reset drops every applet's volatile authorization,
+  selection, chained/held replies and queued OTP output; preserves the FIDO
+  per-boot PIN failure budget. ICC reset remains transport-specific.
+  Firmware bcdDevice `0x0AA7`.
+
+- Enforce DMA channel and interrupt security, logical-address MPU rules and
+  DMA-master bus filters in the image model. Reject processor-local accesses
+  and privilege escalation through controller self-access, chaining and DREQs;
+  report bus errors without contaminating CPU fault state.
+
+- Bank the image emulator's SIO FIFOs, spinlocks, doorbells and interrupt lines
+  by security state; enforce GPIO masks and core-local peripheral ownership,
+  including the GPIO coprocessor and threaded handoff.
+
+- Apply RP2350 ACCESSCTRL master and privilege filters to emulator CPU accesses,
+  including instruction fetches and mounted MMIO. Model controller locks,
+  password writes, restricted Non-secure grants and Secure-only Boot RAM;
+  ROM hooks cannot bypass these filters.
+
+- Keep the emulator's Secure special-register banks inaccessible to Non-secure
+  MRS/MSR aliases. Validate exception returns and Secure stack signatures before
+  restoring state; preserve valid Secure/Non-secure interrupt returns. Run the
+  vendored CPU model tests in the existing quality gate.
+
+- Make the image emulator enforce CPU Secure/Non-secure memory attribution,
+  checked NSC entry, MPU permissions and SecureFault status. Cache hits and ROM
+  hooks cannot bypass fetch checks. The two picoem libraries and pinned A4 ROM
+  are kept locally so a clean checkout builds the tested model.
+
+- TrustZone: record the production trust boundary and Secure USB reset observer
+  decision in one documentation page, and share the transport/worker ABI through
+  `rsk-usb` instead of including a source file across firmware directories.
+  Refactor: request/reply values and command behavior are unchanged.
+  bcdDevice `0x0AA5` → `0x0AA6`.
+
+- Add an experimental TrustZone transport build: USB/CTAPHID/CCID/OTP framing
+  runs Non-secure while the existing worker and applets remain Secure. A
+  three-second synchronous getInfo workload exercises keepalive scheduling.
+  Image tests also verify RSA-2048 and ML-DSA-44/65/87 operations with keepalive
+  timestamps taken at USB completion.
+  The first prototype is a 4 MiB no-touch test image without display support.
+  bcdDevice `0x0AA3` → `0x0AA4`.
+
+- Keep TrustZone transport replies scoped to their request and USB session.
+  Processing CTAPHID_CANCEL and two-phase CCID ABORT discard the old response;
+  USB reset/disconnect clear applet authorization before accepting new work,
+  preserving the per-boot FIDO PIN failure budget. bcdDevice `0x0AA4` → `0x0AA5`.
+
+- Extend the storage-fault doubles and stateful fuzz seeds: `Silent`'s refused
+  read-back, a second cut during recovery, the credential/config/PIV/reset and
+  authenticated-store seeds, and the cross-applet OATH record-lifecycle oracle.
+  Behaviour is unchanged; the build counter advances because the test-util code
+  lives in `crates/rsk-fs/src/storage.rs`, which is shipped code.
+  bcdDevice `0x0AA7` → `0x0AA8`.
+
+- Complete the bounded USB oracle requirement matrix for confirmed profiles:
+  command-specific grammar, field/length/numeric/string boundaries, populated
+  private references, authorization/cursor lifetimes, native CCID/USB faults,
+  keyboard/button/pinpad input, applet reset isolation and cross-interface
+  cancellation, quotas, shared configuration and processing. Reconcile uncertain
+  writes through whole old/new/partial-state and private-key witnesses, retain
+  genuinely unknown outcomes, and halt mutations after failed recovery. Add
+  offline public foreign-reference proofs, seeded state histories and fresh
+  semantic-recipe minimization that preserves the original failure. Separate
+  warmups and witnessed session populations; omit latency ratios for mismatched
+  contexts or results. Scenario revision 3 requires fresh comparable captures.
+  Independent fault peers test the actual runner paths. Physical captures are
+  unperformed, external model-specific catalogs remain unknown, and Trezor's
+  wallet remains outside the recorder's allowed surface.
+
+- Add the host-only USB oracle recorder under `tests/interop`: durable raw
+  CTAPHID/APDU captures, per-request monotonic timing, independently checked
+  FIDO/U2F, OATH/OTP, PIV and OpenPGP fixtures, explicit Trezor FIDO-only routing,
+  offline comparison and partial matrix coverage reporting. Include offline
+  catalog expansion, structural refusal/recovery cases, witnessed OATH/FIDO/card
+  state transitions, raw report faults, cross-writer configuration-lock checks,
+  MSE/audit cryptography, and separate permissions for PIN/config changes and
+  applet reset. Expand the remaining numbered families into executable lifecycle,
+  slot/algorithm/policy, optional-extension, keyboard/pinpad, transport and
+  cross-applet scenarios. Include bounded PIN failure cycles, cryptographic
+  seed/identity witnesses, reset isolation, explicit reconnection binding and
+  cleanup failures that retain the original failed verdict. All 182 numbered
+  families have catalog entries; tags do not certify complete variation coverage.
+  Physical verification and model-specific external vendor catalogs remain pending.
+
+- Measure the host tools in their own workspaces (Phase 6): the Python CLI's
+  invalid-argument exit and its two JSON streams (`status --json`,
+  `inventory list --json`), and process-level contract tests for `tools/tui`'s
+  one-shot flags and `tools/emu`'s argument and bind refusals. The totals are
+  host-tool measurements, not folded into the firmware core percentage.
+  `rsk` → `0.3.51`, `rsk-tui` → `0.3.17`; `rsk-emu` keeps its version.
+
+- Add the test-only torn-write storage double (`faults::Torn`) and its read-back
+  oracle. Behaviour is unchanged: the module is `cfg(test-util)`, but the row
+  counts builds and `storage.rs` is shipped code.
+  bcdDevice `0x0AA6` → `0x0AA7`.
+
+- Fix the at-rest scrub re-arm's marker probe to ask the medium rather than the
+  present-cache, and fail OTP-PIN VERIFY closed when the re-arm cannot be shown
+  to have landed. `request_rescrub` deletes `EF_HARDENED` and re-reads it, but
+  `delete` marks the marker absent from its own present bit, so the
+  cache-satisfied probe answered "gone" without asking the backend; a medium
+  whose `remove` reported `Ok` without applying it left the marker live under a
+  standing `Ok(Rearmed)`, and the next boot's lap skipped. The new
+  `Fs::try_medium_has_data` reads the marker past `known_absent` and keeps the
+  `Storage::last_error` discipline; a swallowed tombstone now returns
+  `MemoryFatal` and latches `Fs::rescrub_refused`, and `cmd_verify_otp_pin`
+  answers `MEMORY_FAILURE` rather than succeeding with the record un-upgraded,
+  matching `cmd_change_otp_pin`.
+  bcdDevice `0x0AA5` → `0x0AA6`.
+
+- Revert the medium-probing at-rest re-arm fix. The marker probe is again
+  answered from the present cache, so a backend that reports a successful
+  `remove` without applying it can still leave `EF_HARDENED` live behind an
+  `Ok(Rearmed)`; the finding and its reproduction stay recorded as an open item
+  in the testing roadmap. Behavior matches `0x0AA4`; the build counter advances
+  because the reverted change could reach the image.
+  bcdDevice `0x0AA4` → `0x0AA5`.
+
+- Pin the OpenPGP pending mutation controls: counter lanes and persisted origin
+  order, the maximum AES/RSA sealed-record edges, the session-drop wipe
+  observer, exact-size AES PSO, the default algorithm attribute and the BER
+  long-form ECDH walk. Firmware behavior is unchanged; the build counter
+  advances for changes within a production crate's gated region and a
+  visibility-only helper export, as required by the existing bcd gate.
+  bcdDevice `0x0AA3` → `0x0AA4`.
+
+- Keep resident FIDO discovery's first assertion and continuation queue in the
+  same order, including equal creation times and more matches than the queue
+  holds. Each reported credential is returned once; the bounded queue retains
+  the newest matches. Storage and queue capacities are unchanged.
+  bcdDevice `0x0AA2` → `0x0AA3`.
+
+- Run mutation tests in one Docker container capped at 4 GiB with no swap,
+  one mutant and one test at a time. Native mutation entry points refuse an
+  unbounded environment. Nextest terminates ordinary tests after 20 seconds;
+  measured display and storage matrices retain explicit bounded exceptions.
+  Test processes also inherit a 1 GiB address-space limit, and doctests have
+  a separate 60-second timeout.
+
+- Extend host mutation oracles for applet state, protocol boundaries, display
+  flows, raw-record/provider contracts, journal and counter boundaries,
+  authority preservation after peer verification, and flash readback progress.
+  bcdDevice `0x0AA1` → `0x0AA2`: the build
+  gate requires a counter bump for inline test hooks and test helper exports;
+  these hooks are compiled only by host tests, with firmware behavior preserved.
+
+- Align the store's flash staging buffer to the flash write unit. `rsk-store`
+  wrote to flash through an align-1 `[u8; _]`, which only lands 4-byte aligned
+  by how the compiler happened to place the stack; the RP2350 ROM program (`and
+  the vendored NOR mock`) require a word-aligned buffer. A new `FlashBuf` type
+  makes the staging pointer aligned, and every buffer handed to
+  `NorFlash::write` goes through it. Found by driving the storage fuzz targets
+  under Miri. bcdDevice `0x0AA0` → `0x0AA1`: the build gate counts the change as
+  a build change; no observable firmware behaviour change.
+
+- Critical mutation verification: add independent ML-KEM ACVP and legacy PIN-KDF
+  vectors, OpenSSL-checked ML-DSA boundary candidates, one-shot crypto fault
+  probes, and live-field checks of secret destructors. Restore behavioral
+  witnesses for torn grant removal and OATH authorization, and repair the
+  local clientPIN budget defect injected by co-refutation.
+  bcdDevice `0x0A9F` → `0x0AA0`: the build gate counts inline test probes as a build change; no
+  firmware behaviour change.
+
+- Current host-profile coverage: exercise authenticated storage v2 APIs and
+  reachable parser, applet, display and test-util paths across the declared
+  feature profiles. One-shot test hooks exercise rare U2F key-construction and
+  PIV RSA-generation failures. bcdDevice `0x0A9E` → `0x0A9F`: the build gate
+  counts the inline test hooks as a build change; no firmware behaviour change.
+
+- Preserve legacy storage upgrades when an SDK UF2 left the RP2350-E10
+  `0xEF` padding block at the end of a smaller flash chip. Accept only the exact
+  256-byte suffix in an otherwise erased counter sector; expose that suffix
+  as erased only to the read-only legacy counter view. Authenticated v2 reads
+  and all other occupied/corrupt page refusals keep their existing meaning.
+  bcdDevice `0x0A9D` → `0x0A9E`.
+
+- Initialize blank storage and migrate readable legacy storage automatically
+  during boot, without a CLI command or physical confirmation. Resume interrupted
+  imports before exposing applets; existing v2 witnesses select authenticated
+  recovery, and read faults or incompatible legacy page markers refuse mutation.
+  The image upgrade harness asserts ready storage without issuing setup APDUs.
+  bcdDevice `0x0A9C` → `0x0A9D`.
+
+- Add authenticated storage v2 over the existing payload partition, with mirrored
+  counters, exact-candidate recovery and full-value integrity before decoding.
+  Lost expected records fail closed instead of becoming a first boot or an older
+  CRC-valid record. Unknown media exposes attended CCID rescue setup;
+  `rsk storage initialize` and `import-legacy` establish or migrate authority.
+  Preserve backups before upgrading; activated stores need v2-aware firmware.
+  File/value limits and partition offsets remain unchanged. The smaller mirrored
+  counter area increases programming and erase costs; measured workload figures
+  and remaining freshness limits are in `docs/limitations.md`.
+  bcdDevice → `0x0A9C`; rsk CLI → `0.3.50`.
+
 ### Changed
 
 - **`bcdDevice` follows upstream's line again.** The fork's own number (0x098F)
-  rejoins `develop` at 0x09D7 and is taken from upstream on each merge instead of
-  being incremented here — a build's own identity is its `-isk.N` tag, since a
-  frozen counter no longer tells two fork builds apart. (bcdDevice 0x09D7.)
+  rejoins `develop` and is taken from upstream on each merge instead of being
+  incremented here — a build's own identity is its `-isk.N` tag, since a frozen
+  counter no longer tells two fork builds apart. (bcdDevice 0x0BE2.)
 
 ### Fixed
+
+- OATH keeps damaged access-code and OTP-PIN records configured. Empty or
+  truncated owner records cannot reopen the applet, expose password-safe
+  entries or be replaced through SET PIN. VALIDATE rejects an algorithm-only
+  access code with a public empty HMAC key. bcdDevice → `0x0A9A`.
+
+- OpenPGP boot preserves present empty verifiers, DEKs and security settings.
+  Damaged UIF records require touch, malformed signature counters cannot be
+  restarted, and ATTEST refuses malformed subject fields instead of certifying
+  zero padding. An unrelated signature counter does not block DEC/AUT
+  attestation. bcdDevice → `0x0A99`.
+
+- PIV SELECT preserves present empty PIN, PUK, retry and private-key records.
+  It cannot replace damaged owner material with factory credentials or a new
+  attestation identity. Public F9 certificate repair still uses its original
+  private key. bcdDevice → `0x0A98`.
+
+- FIDO treats an existing empty security record as damaged material, rather
+  than an unset PIN, seed, lock or irreversible backup marker. Unauthenticated
+  SET PIN cannot replace a truncated owner verifier, seed boot cannot mint over
+  an empty identity record, and a damaged backup marker keeps export closed.
+  Malformed global counters cannot restart at zero, and a damaged alwaysUv
+  override keeps verification required and cannot be toggled from a fallback.
+  Non-empty data queries retain their existing meaning. bcdDevice → `0x0A97`.
+
+- Storage checks the bytes programmed and the complete erased NOR window before
+  accepting success. Dropped or partial mutations and failed readback propagate
+  as storage failures, including during tombstones, migration and scrub. An
+  uncertain write rebuilds Fs presence/capacity and invalidates derived caches;
+  an incomplete scan grants no new capacity until a complete retry. Persistent
+  records remain compatible. bcdDevice → `0x0A96`.
+
+- FIDO resident credential replacement resets its signature counter after the
+  replacement record commits. A power cut cannot leave the preceding credential
+  with a rolled-back counter. A partially committed replacement may retain the
+  preceding high counter until an owner retry; completed replacement starts at 1.
+  Existing credential and counter record layouts are unchanged.
+  bcdDevice → `0x0A95`.
+
+- OpenPGP ATTEST repairs an incomplete or mismatched attestation public key and
+  FC certificate from the surviving private key. Replacement retires the preceding
+  FC before its new key lands, so a repeated interruption cannot make a complete
+  root name another signer. Existing current and legacy key seals remain readable.
+  bcdDevice → `0x0A94`.
+
+- OpenPGP boot cleanup retries deletion of an obsolete public-reset-code DEK
+  wrapper after an interruption removed its verifier first. Cleanup authenticates
+  the orphan under the public default; unidentified wrappers and live reset codes
+  are preserved. Existing PW1/PW3 key material keeps its format and identity.
+  bcdDevice → `0x0A93`.
 
 - OpenPGP GET DATA refuses an undersized construction buffer instead of
   panicking on an empty buffer or reporting a partially written template as
@@ -96,11 +848,17 @@ tag: the USB `bcdDevice` build counter (bumped on every behavior change), and
 
 ### Changed
 
+- Verification trace capture preserves full stored-record widths. Firmware
+  behavior is unchanged; the build counter advances for changes within a
+  production crate's gated region, as required by the existing bcd gate.
+  bcdDevice → `0x0A9B`.
+
 - Trusted-display host controls share named boot, poll, notice and wake-release
   delays with the firmware. The existing durations are unchanged.
   bcdDevice → `0x0A92`.
 
 ### Added
+
 
 - A Linux MSC image runner reads BOOTSEL's FAT16 files with `usb-storage`
   active, checks coexistence with PICOBOOT and reloads a complete UF2 through
@@ -5316,7 +6074,7 @@ the release carries the flag, the decision stays yours
   that violate `-003` and `-004` are `BugMetaAddDropsOnFault` and
   `BugMetaDeleteDropsOnFault`, both **faulted EF_META reads**; `Reboot` sets
   `metaAbsent' = FALSE`, so a power cycle structurally cannot reach the false
-  absence `-004` forbids; and `crates/rsk-store/src/lib.rs:236` states outright
+  absence `-004` forbids; and `crates/rsk-store/src/lib.rs:238` states outright
   that a read fault is *"which a NOR power cut never produces (a torn write yields
   deterministic bytes, not a read error)"*. Their `why` now says that, names
   `TM-HOST-POWER-CUT` as the clause it is **not**, and pins the sentence it rests
@@ -7309,7 +8067,7 @@ the release carries the flag, the decision stays yours
   marker-still-there arm would have reported as a healthy device.
 
   **No `tests/*.py` repro exists and none is claimed.** `rsk_fs::run_at_rest_lap`
-  has exactly one caller, `firmware/src/main.rs:633`, gated on `mkek.is_some()`;
+  has exactly one caller, `firmware/src/main.rs:634`, gated on `mkek.is_some()`;
   `tools/emu` never calls it and builds its device with `otp_key: None`, so on the
   emulator `EF_HARDENED` is never latched and its RAM medium refuses nothing. A
   board would need a `FAKE_MKEK` build *and* a persistently refusing
@@ -7735,7 +8493,7 @@ the release carries the flag, the decision stays yours
 - **The boot pass re-keys pre-OTP records too, and standing before the at-rest lap
   is not the same as standing before the lap that latched.** 0x09BD swept thirteen
   lazy re-keys onto "re-arm first, and write only if the re-arm landed"; the eight
-  calls at `firmware/src/main.rs:610-617` were left out on the reading that the lap
+  calls at `firmware/src/main.rs:611-618` were left out on the reading that the lap
   at the foot of their own block covers whatever they supersede. It covers only the
   boot they run on. `run_at_rest_lap` latches `EF_HARDENED` once per device and
   gates on it and nothing else, so a boot that silently skipped a record — every
@@ -7806,7 +8564,7 @@ the release carries the flag, the decision stays yours
 
 - **OATH's boot pass was the sixth member of the boot-migration class, and it
   carries the two arms the other five did.** `rsk_oath::migrate_seal` runs at
-  `firmware/src/main.rs:613`, ahead of `run_at_rest_lap`, and standing ahead of
+  `firmware/src/main.rs:614`, ahead of `run_at_rest_lap`, and standing ahead of
   the lap is not the same as standing ahead of every lap — `rsk-fs`'s own doc now
   says so. `reseal_if_plaintext` re-seals a credential (or the SET CODE key) that
   opens only under `dev.without_otp()`, i.e. under `HKDF("NO-OTP", serial_hash)`,
@@ -12419,7 +13177,7 @@ several sites of a rule the codebase had already decided once and swept incomple
   mode `Development` — so it matches what the reader is looking at rather than a
   provisioned key or the `VIDPID=Yubikey5` flavor.
 - **[Telesma](https://github.com/go-ctap/app) is tracked in the interop matrix as
-  `⏳ untested`** — the first row to use a mark [interop.md](docs/interop.md) has had
+  `⏳ untested`** — the first row to use a mark the [interop report](assurance/reports/interop.md) has had
   in its legend from the start. It is a desktop CTAP workbench over
   [`go-ctap/ctap`](https://github.com/go-ctap/ctap), an independent CTAP 2.0–2.3
   client stack, and that is the reason it is worth a row: every FIDO cell in that
@@ -14427,7 +15185,7 @@ strict-config`) remains the complete answer.
   that legitimately differ. Host-testable engine (`python -m pytest
   tests/interop/test_diff.py`). A first macOS run against a YubiKey 5C NFC found
   85 identical / 76 expected-divergence / 1 unexpected field (see
-  [docs/interop.md](docs/interop.md) → "Differential against a real YubiKey").
+  [Differential against a real YubiKey](assurance/reports/interop.md#differential-against-a-real-yubikey)).
 
 ### Changed
 
@@ -16104,7 +16862,7 @@ family that keeps the "enterprise" features in the open tree.
 
 - 39 fuzz targets, Kani proofs, a Miri pass, power-cut torture, bit-reproducible
   `nix build` images (per platform, per `flake.lock`), and a hardware-verified
-  interop matrix ([docs/interop.md](docs/interop.md)).
+  interop matrix ([interop report](assurance/reports/interop.md)).
 
 ### Release artifacts
 

@@ -8,6 +8,9 @@ use crate::tests::{
     settings_row,
 };
 
+#[path = "status_draw_failure_tests.rs"]
+mod draw_failure;
+
 fn home(status: StatusKind, pin_set: bool, passkeys: u16) -> Screen {
     Screen::Home(HomeView {
         status,
@@ -21,13 +24,16 @@ fn home(status: StatusKind, pin_set: bool, passkeys: u16) -> Screen {
 fn status_loop_respects_a_shared_borrow_quiet_handoff_sleep_and_button_wake() {
     use core::future::Future;
     let env = Env::new();
-    let ui = RefCell::new(env.ui(Pad::idle()));
+    let mut view = env.ui(Pad::idle());
+    view.onboarding = false;
+    let ui = RefCell::new(view);
     let mut future = std::pin::pin!(status_loop(&ui, env.cells()));
     let mut context = core::task::Context::from_waker(std::task::Waker::noop());
     assert!(future.as_mut().poll(&mut context).is_pending());
     std::thread::sleep(std::time::Duration::from_millis(STATUS_BOOT_DELAY_MS + 20));
     assert!(future.as_mut().poll(&mut context).is_pending());
     assert!(ui.borrow().panel.writes > 0);
+    assert_eq!(ui.borrow().shown, Some(home(StatusKind::Idle, false, 0)));
     {
         let held = ui.borrow();
         let writes = held.panel.writes;
@@ -47,8 +53,13 @@ fn status_loop_respects_a_shared_borrow_quiet_handoff_sleep_and_button_wake() {
     std::thread::sleep(std::time::Duration::from_millis(STATUS_TICK_MS + 20));
     assert!(future.as_mut().poll(&mut context).is_pending());
     assert_eq!(ui.borrow().panel.writes, writes);
+    SLEEP_TIMEOUT_MS.store(2000, Ordering::Relaxed);
+    backdate(2001);
+    backdate_local(2001);
+    std::thread::sleep(std::time::Duration::from_millis(STATUS_TICK_MS + 20));
+    assert!(future.as_mut().poll(&mut context).is_pending());
+    assert!(ui.borrow().asleep, "ambient quiet cannot postpone sleep");
     AMBIENT_QUIET_UNTIL_MS.store(0, Ordering::Relaxed);
-    ui.borrow_mut().enter_sleep();
     let writes = ui.borrow().panel.writes;
     std::thread::sleep(std::time::Duration::from_millis(STATUS_TICK_MS + 20));
     assert!(future.as_mut().poll(&mut context).is_pending());
@@ -131,6 +142,17 @@ fn journal_events_map_onto_their_display_class() {
     assert_eq!(audit_kind(j::EV_PIN_LOCKOUT), K::Denied);
     assert_eq!(audit_kind(j::EV_RESET), K::Reset);
     assert_eq!(audit_kind(j::EV_BACKUP_EXPORT), K::Backup);
+    for event in [j::EV_LOCK_ENGAGE, j::EV_LOCK_RELEASE] {
+        assert_eq!(audit_kind(event), K::Lock);
+    }
+    for event in [
+        j::EV_CFG_MIN_PIN,
+        j::EV_CFG_EA,
+        j::EV_CFG_ALWAYS_UV,
+        j::EV_AUDIT_CFG,
+    ] {
+        assert_eq!(audit_kind(event), K::Config);
+    }
     // An event a newer firmware wrote must still list, unclassified rather than lost.
     assert_eq!(audit_kind(u8::MAX), K::Other);
 }
@@ -170,6 +192,22 @@ fn a_sleep_step_that_cannot_move_is_not_a_change() {
 }
 
 #[test]
+fn sleep_menu_steps_preserve_the_millisecond_unit() {
+    let _env = Env::new();
+    SLEEP_TIMEOUT_MS.store(30_000, Ordering::Relaxed);
+    assert!(adjust_sleep(1));
+    assert_eq!(SLEEP_TIMEOUT_MS.load(Ordering::Relaxed), 60_000);
+    assert!(adjust_sleep(-1));
+    assert_eq!(SLEEP_TIMEOUT_MS.load(Ordering::Relaxed), 30_000);
+    SLEEP_TIMEOUT_MS.store(300_000, Ordering::Relaxed);
+    assert!(adjust_sleep(1));
+    assert_eq!(SLEEP_TIMEOUT_MS.load(Ordering::Relaxed), 0);
+    assert!(!adjust_sleep(1));
+    assert!(adjust_sleep(-1));
+    assert_eq!(SLEEP_TIMEOUT_MS.load(Ordering::Relaxed), 300_000);
+}
+
+#[test]
 fn an_unchanged_ambient_screen_is_not_repainted() {
     // The idle frame is the hot path: a repaint per 100 ms tick is SPI traffic the
     // panel does not need and a flicker the user would see.
@@ -182,10 +220,15 @@ fn an_unchanged_ambient_screen_is_not_repainted() {
     assert_eq!(ui.shown, Some(home(StatusKind::Idle, false, 0)));
     let frames = ui.panel.frames;
     let damage = ui.panel.damage_presentations;
+    let pixels = ui.panel.pixels().to_vec();
     env.local(&mut ui)
         .ambient_repaint(2, &mut spin, &mut breathe);
     assert_eq!(ui.panel.frames, frames);
     assert_eq!(ui.panel.damage_presentations, damage);
+    assert!(
+        ui.panel.pixels() == pixels.as_slice(),
+        "the idle ambient frame changed pixels"
+    );
 }
 
 #[test]
@@ -216,6 +259,15 @@ fn a_status_glyph_change_repaints_without_disarming_the_panel() {
         )
     );
     assert!(ui.touch_armed, "…but the surface under the finger did not");
+    let before = ui.panel.pixels().to_vec();
+    let frames = ui.panel.frames;
+    env.local(&mut ui)
+        .ambient_repaint(3, &mut spin, &mut breathe);
+    assert!(
+        ui.panel.pixels() != before.as_slice(),
+        "an unchanged busy card still animates"
+    );
+    assert_eq!(ui.panel.frames, frames);
 }
 
 #[test]

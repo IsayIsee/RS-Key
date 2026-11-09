@@ -15,7 +15,16 @@ fn flash_rows_match_the_public_theme_colors() {
     ] {
         let row = row(color.into_storage()).unwrap();
         let expected = color.into_storage().to_be_bytes();
-        assert!(row.chunks_exact(2).all(|pixel| pixel == expected));
+        assert_eq!(
+            row.as_chunks::<2>().0.iter().len(),
+            usize::from(crate::PANEL_W)
+        );
+        assert!(
+            row.as_chunks::<2>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == expected)
+        );
     }
 }
 
@@ -43,8 +52,10 @@ fn runtime_template_building_matches_panel_quantization_and_wire_byte_order() {
         assert_eq!(color, expected);
         assert!(
             build(color)
-                .chunks_exact(2)
-                .all(|pixel| pixel == expected.to_be_bytes())
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == expected.to_be_bytes())
         );
     }
 }

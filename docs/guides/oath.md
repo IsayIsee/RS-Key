@@ -5,6 +5,10 @@ on-card, over Yubico's YKOATH protocol (CCID). The HMAC secret is written once
 and never leaves the chip again: every code is derived inside the firmware and
 only the digits come back. Up to **255 accounts**.
 
+An existing empty access-code or OTP-PIN record keeps its authentication
+gate closed. It cannot open the password safe or authorize a replacement PIN.
+An access-code record without secret key material cannot validate a session.
+
 Clients are the stock Yubico tooling: `ykman oath` on the command line and the
 **Yubico Authenticator** desktop/mobile app over USB. There is no `rsk oath`
 subcommand; OATH is driven entirely through those. Both `ykman oath` and the
@@ -76,6 +80,35 @@ are *not* computed there and show a placeholder instead:
   touch account leak a code without the button.
 - **HOTP accounts** are never computed in bulk either (it would silently burn
   the counter). Name them to step the counter once.
+
+Build `0x0B55` reduces repeated storage checks during HOTP updates. Existing
+accounts and counters need no reset or migration; each counter advance still
+becomes durable before its code is returned.
+
+Build `0x0B66` also reduces shared-backend cleanup work during HOTP advances
+and PIN updates. It skips historical bodies of published files during the
+read-only orphan walk, while authenticating every published value before
+cleanup or garbage collection. Both durable publications remain required.
+
+Build `0x0B70` replaces the closing history replay with a fresh check of both
+complete banks against the exact expected append. HOTP still returns its code
+only after both publications are durable; payload authentication, erased-tail
+checks and power-loss recovery retain their existing contracts.
+
+Build `0x0B83` reduces repeated directory HMAC setup during HOTP's storage update.
+All payload checks and durable publications remain; existing accounts need no
+migration or reset.
+
+From `0x0BA8`, HOTP advances a separately encrypted counter in the mirrored
+journal instead of rewriting the credential. Existing counters migrate on
+their next use; rename preserves the current counter, while replacing or
+deleting an account starts a new owner. OATH PIN retries use the same journal.
+After migration, earlier v2 firmware refuses the store. Reinstall this build or
+later to resume it without resetting accounts.
+
+Build `0x0BB0` combines counter header and value programming to shorten HOTP
+updates. Both copies remain durable before a code is returned; the `0x0BA8`
+format and existing accounts need no further migration.
 
 The **Yubico Authenticator** GUI shows all TOTP codes live and re-derives them
 each period. Touch and HOTP entries get a tap-to-reveal button instead.
@@ -224,7 +257,7 @@ wipe the whole key instead, see `rsk offboard`.
   changes no code, because HMAC pads its key with zeros anyway.
 - OATH interop (add → list → calculate → delete, plus TOTP crypto-verified
   against RFC vectors, via both `ykman oath` and Yubico Authenticator) is
-  tracked in [interop.md](../interop.md#oath--otp).
+  tracked in the [OATH interop results](https://github.com/TheMaxMur/RS-Key/blob/main/assurance/reports/interop.md#oath--otp).
 
 ## Troubleshooting
 

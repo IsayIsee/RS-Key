@@ -1580,8 +1580,8 @@ fn static_and_dynamic_fill_colors_write_the_same_big_endian_pixel_pattern() {
         let mut out = [0x55; BAND_BYTES + 6];
         fill_color(&mut out, color);
         let expected = color.into_storage().to_be_bytes();
-        for bytes in out.chunks_exact(2) {
-            assert_eq!(bytes, expected);
+        for bytes in out.as_chunks::<2>().0.iter() {
+            assert_eq!(*bytes, expected);
         }
     }
 }
@@ -1717,4 +1717,51 @@ fn a_direct_pixel_encoder_splits_at_the_panel_width() {
     assert_eq!(commands[0].color, Rgb565::RED);
     assert_eq!(commands[1].color, Rgb565::RED);
     assert_eq!(scene.error(), None);
+}
+
+#[path = "scene_run_tests.rs"]
+mod runs;
+
+#[path = "scene_encoder_tests.rs"]
+mod encoder;
+
+#[path = "scene_clip_tests.rs"]
+mod clips;
+
+#[path = "scene_damage_tests.rs"]
+mod damage;
+
+#[path = "scene_band_tests.rs"]
+mod bands;
+
+#[path = "scene_codec_tests.rs"]
+mod codec;
+
+#[path = "scene_frame_tests.rs"]
+mod frames;
+
+#[test]
+#[should_panic(expected = "scene must be finalized before presentation")]
+fn an_unfinalized_scene_has_no_presentable_records() {
+    Scene::default()
+        .record_damage_rects(&mut [Rect::new(0, 0, 0, 0); DAMAGE_RECT_CAPACITY])
+        .unwrap();
+}
+
+#[test]
+#[should_panic(expected = "scene must be finalized before presentation")]
+fn an_unfinalized_scene_has_no_tile_tag() {
+    Scene::default().tile_tag(0, 0);
+}
+
+#[test]
+#[should_panic(expected = "scene must be finalized before presentation")]
+fn an_unfinalized_scene_cannot_rasterize_a_band() {
+    Scene::default().raster_band(Rect::new(0, 0, 1, 1), 0, 1, &mut [0; 2]);
+}
+
+#[test]
+#[should_panic(expected = "index < usize::from(self.checkpoint_len)")]
+fn seeking_an_unencoded_checkpoint_is_refused_before_indexing() {
+    Scene::default().raster_seek(0, 0, 1, u32::from(BAND_H));
 }

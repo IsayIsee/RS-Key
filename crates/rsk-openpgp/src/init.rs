@@ -2,7 +2,7 @@
 // Copyright (C) 2026 RS-Key contributors
 
 //! Applet initialisation: creates the absent EFs (DEK, PIN verifiers, default
-//! working DOs). Idempotent — every write is guarded by an emptiness check —
+//! working DOs). Idempotent — every write is guarded by a presence check —
 //! and run once at boot.
 
 use rsk_crypto::{Device, PinKdf};
@@ -45,7 +45,7 @@ fn put<S: Storage>(fs: &mut Fs<S>, fid: u16, data: &[u8]) -> Result<(), Error> {
 /// both — so one faulted `EF_PW1` probe put `PW1_DEFAULT` back over the owner's
 /// verifier and handed `123456` the PW1 security status.
 fn provisioned<S: Storage>(fs: &mut Fs<S>, fid: u16) -> Result<bool, Error> {
-    fs.try_has_data(fid).map_err(|_| Error::Storage)
+    fs.try_exists(fid).map_err(|_| Error::Storage)
 }
 
 /// [`provisioned`] for the repairs that need the bytes as well.
@@ -182,6 +182,34 @@ fn neutralize_default_reset_code<S: Storage>(dev: &Device, fs: &mut Fs<S>) -> Re
     // RC verifier record is [len, 0x01, verifier(32)].
     let stored = match read_file(fs, EF_RC, &mut rec)? {
         Some(n) if n >= 34 && rec[0] != 0 => &rec[2..34],
+        None => {
+            // The missing verifier alone cannot identify an obsolete wrapper.
+            // Authenticate it under the public code before deleting it; unread
+            // or unidentified copies remain available for owner recovery.
+            let mut blob = rsk_secret::Secret::<[u8; DEK_FILE_SIZE]>::zeroed();
+            if let Ok(Some(DEK_FILE_SIZE)) = fs.try_read_key(EF_DEK_RC, blob.expose_mut())
+                && blob.expose()[0] == DEK_FORMAT_V3
+            {
+                for arm in [*dev, dev.without_otp()] {
+                    let session = arm.pin_derive_session(PW3_DEFAULT);
+                    let mut dek = rsk_secret::Secret::<[u8; DEK_SIZE]>::zeroed();
+                    if arm
+                        .decrypt_with_aad(
+                            session.expose(),
+                            &blob.expose()[1..],
+                            PinKdf::V2,
+                            dek.expose_mut(),
+                        )
+                        .is_ok()
+                    {
+                        let _attempted = rsk_fs::attempt_rescrub(fs);
+                        let _ = fs.delete_key(EF_DEK_RC);
+                        break;
+                    }
+                }
+            }
+            return Ok(());
+        }
         _ => return Ok(()),
     };
     let is_default = rsk_crypto::ct_eq(stored, dev.pin_derive_verifier(PW3_DEFAULT).expose())

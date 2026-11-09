@@ -47,6 +47,55 @@ fn the_piv_menu_materializes_defaults_and_runs_each_subflow() {
 }
 
 #[test]
+fn each_piv_pin_menu_action_changes_only_its_selected_reference() {
+    for selection in 0..3 {
+        let env = Env::new();
+        provision(&env);
+        if selection == 2 {
+            for _ in 0..3 {
+                assert_ne!(verify(&env, PinRef::Pin, NEW_PIN), rsk_sdk::Sw::OK);
+            }
+        }
+        let current = if selection == 0 {
+            PinRef::Pin
+        } else {
+            PinRef::Puk
+        };
+        let mut taps = vec![center(rsk_ui::row_rect(
+            rsk_ui::PIV_KEYGEN_PICK_TOP,
+            selection,
+        ))];
+        taps.extend(pin_entry(default(current)));
+        taps.extend(pin_entry(NEW_PIN));
+        taps.extend(pin_entry(NEW_PIN));
+        taps.extend([
+            nowhere(),
+            center(rsk_ui::TITLE_BACK_RECT),
+            center(rsk_ui::TITLE_BACK_RECT),
+        ]);
+        let mut ui = env.ui(Pad::taps(&taps));
+        ui.hooks.presence_ms = 5000;
+        env.local(&mut ui).run_piv_pins();
+        let changed = if selection == 1 {
+            PinRef::Puk
+        } else {
+            PinRef::Pin
+        };
+        let other = if selection == 1 {
+            PinRef::Pin
+        } else {
+            PinRef::Puk
+        };
+        assert_eq!(
+            rsk_piv::reference_retries_left(&mut env.fs.borrow_mut(), changed),
+            Some(3)
+        );
+        assert_eq!(verify(&env, changed, NEW_PIN), rsk_sdk::Sw::OK);
+        assert_eq!(verify(&env, other, default(other)), rsk_sdk::Sw::OK);
+    }
+}
+
+#[test]
 fn the_piv_menu_yields_on_host_requests_and_power() {
     for power in [false, true] {
         let env = Env::new();
@@ -174,6 +223,19 @@ fn the_puk_unblocks_the_pin_and_restores_the_retry_budget() {
     let mut ui = env.ui(Pad::taps(&taps));
     ui.hooks.presence_ms = 3000;
     env.local(&mut ui).run_unblock_piv_pin();
+    let mut reference = env.ui(Pad::idle());
+    rsk_ui::render_success(
+        &mut env.local(&mut reference).frame(),
+        SuccessKind::Approved,
+        false,
+    )
+    .unwrap();
+    assert!(
+        ui.panel
+            .frame_hashes
+            .contains(&reference.panel.raster_hash()),
+        "a completed unblock must show its success"
+    );
     assert_eq!(
         rsk_piv::reference_retries_left(&mut env.fs.borrow_mut(), PinRef::Pin),
         Some(3)
@@ -284,9 +346,16 @@ fn an_unread_fused_key_or_refused_write_cannot_protect_the_management_key() {
     ));
     let mut ui = env.ui(Pad::script(&samples));
     let generation = env.fs.borrow().write_gen();
+    let fids = [
+        files::key_fid(files::SLOT_CARDMGM).get(),
+        files::EF_PIVMAN_DATA,
+        rsk_fs::EF_META,
+    ];
+    let before = fids.map(|fid| medium.value(fid));
     medium.arm(0);
     Local::new(&mut ui, env.cells()).run_protect_mgm_key();
-    assert_eq!(env.fs.borrow().write_gen(), generation);
+    assert_ne!(env.fs.borrow().write_gen(), generation);
+    assert_eq!(fids.map(|fid| medium.value(fid)), before);
     assert_eq!(ui.hooks.pin_changed, 0);
 }
 
@@ -338,4 +407,76 @@ fn the_piv_menu_can_cancel_without_a_device_key_and_sleep_inside_a_pin_subflow()
     Local::new(&mut ui, env.cells()).run_piv_pins();
     assert!(ui.asleep);
     assert_eq!(env.fs.borrow().write_gen(), generation);
+}
+
+std::thread_local! {
+    static LATE_FUSED_READS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+fn one_fused_read(output: &mut [u8; 32]) -> bool {
+    LATE_FUSED_READS.with(|reads| {
+        let count = reads.get();
+        reads.set(count + 1);
+        if count == 0 {
+            output.fill(0x66);
+            true
+        } else {
+            false
+        }
+    })
+}
+
+#[test]
+fn a_late_fused_read_failure_abandons_piv_change_and_unblock() {
+    for unblock in [false, true] {
+        let mut env = Env::new();
+        let key = [0x66; 32];
+        let mut fused_device = dev();
+        fused_device.otp_key = Some(&key);
+        fused_device.latched = true;
+        files::scan_files(
+            &fused_device,
+            &mut env.fs.borrow_mut(),
+            &mut *env.rng.borrow_mut(),
+        )
+        .unwrap();
+        env.keys.mkek_source = Some(FusedKey::latched(one_fused_read));
+        LATE_FUSED_READS.with(|reads| reads.set(0));
+        let mut taps = pin_entry(if unblock {
+            default(PinRef::Puk)
+        } else {
+            default(PinRef::Pin)
+        });
+        taps.extend(pin_entry(NEW_PIN));
+        taps.extend(pin_entry(NEW_PIN));
+        let mut ui = env.ui(Pad::taps(&taps));
+        ui.hooks.presence_ms = 3000;
+        let mut before = [0; 256];
+        let length = env
+            .fs
+            .borrow_mut()
+            .read(files::EF_PIN, &mut before)
+            .unwrap();
+        if unblock {
+            env.local(&mut ui).run_unblock_piv_pin();
+        } else {
+            env.local(&mut ui).run_change_piv_ref(PinRef::Pin);
+        }
+        assert_eq!(LATE_FUSED_READS.with(core::cell::Cell::get), 2);
+        let mut after = [0; 256];
+        assert_eq!(
+            env.fs.borrow_mut().read(files::EF_PIN, &mut after),
+            Some(length)
+        );
+        assert_eq!(&after[..length], &before[..length]);
+        assert_eq!(
+            rsk_piv::verify_reference(
+                &fused_device,
+                &mut env.fs.borrow_mut(),
+                PinRef::Pin,
+                rsk_piv::pad_pin(default(PinRef::Pin)).unwrap().expose()
+            ),
+            rsk_sdk::Sw::OK
+        );
+    }
 }

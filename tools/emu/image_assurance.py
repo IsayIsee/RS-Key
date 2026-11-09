@@ -19,6 +19,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,7 +27,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 import emu  # noqa: E402
 
 emu.install()
-from ctaphid import ctaphid_init, decode, enc, send_cbor  # noqa: E402
+from ctaphid import ctaphid_init, decode, enc, read, send_cbor, write  # noqa: E402
 import image_operations  # noqa: E402
 
 OATH = bytes.fromhex("a0000005272101")
@@ -40,6 +41,9 @@ PW3 = b"87654321"
 SEED = "1234567890abcdef" * 4
 # Interrupt entry can vary the sampled maximum by a few hundred bytes.
 STACK_JITTER = 1024
+CTAP_IMAGE_TIMEOUT_NS = 120_000_000_000
+CTAP_HOST_TIMEOUT_S = 1200
+USB_MAX_GAP_NS = 500_000_000
 
 
 def port():
@@ -52,8 +56,46 @@ def fields(reply):
     return dict(item.split("=", 1) for item in reply.split() if "=" in item)
 
 
+def scratch_code(image):
+    listing = subprocess.check_output(["arm-none-eabi-nm", "-n", str(image)], text=True)
+    names = ("__rsk_scratch_exec_start", "__rsk_scratch_exec_end")
+    symbols = {line.split()[-1]: int(line.split()[0], 16) for line in listing.splitlines()
+               if line.endswith(names)}
+    if not symbols:
+        return None  # Historical images predate the scratch code island.
+    start, end = (symbols[name] for name in names)
+    assert 0x20080100 <= start < end <= 0x20082000, "scratch code leaves SRAM8/9"
+    with tempfile.TemporaryDirectory(prefix="rskey-scratch-load-") as folder:
+        output = Path(folder) / "scratch.bin"
+        subprocess.run(["arm-none-eabi-objcopy", "-O", "binary",
+            "--only-section=.rsk_scratch_exec", str(image), str(output)], check=True)
+        expected = output.read_bytes()
+    assert len(expected) == end - start, "scratch load bytes do not cover the complete destination"
+    return start, expected
+
+
+class ImageDeadline:
+    def __init__(self, dev):
+        self.dev = dev
+        self.wall_start = time.monotonic()
+        state = fields(dev.inspect("status"))
+        self.power_ups = int(state["power_ups"])
+        self.start = self.previous = int(state["emulated_ns"])
+
+    def check(self):
+        assert time.monotonic() - self.wall_start < CTAP_HOST_TIMEOUT_S, "CTAP host watchdog expired"
+        state = fields(self.dev.inspect("status"))
+        assert state["dead"] == "false", "image faulted during CTAP"
+        assert int(state["power_ups"]) == self.power_ups, "image rebooted during CTAP"
+        now = int(state["emulated_ns"])
+        assert now >= self.previous, "image clock moved backwards during CTAP"
+        self.previous = now
+        assert now - self.start < CTAP_IMAGE_TIMEOUT_NS, "CTAP image deadline expired"
+        assert time.monotonic() - self.wall_start < CTAP_HOST_TIMEOUT_S, "CTAP host watchdog expired"
+
+
 class Device:
-    def __init__(self, binary, image, store, directory, label, usbip=None, rom=None):
+    def __init__(self, binary, image, store, directory, label, usbip=None, rom=None, display=False, taps_port=None, headless=True):
         self.fido_port, self.ccid_port, self.inspect_port = port(), port(), port()
         self.log_path = directory / f"{label}.log"
         self.log = self.log_path.open("w")
@@ -61,26 +103,49 @@ class Device:
                 "--fido-port", str(self.fido_port), "--ccid-port", str(self.ccid_port)]
         if image:
             args += ["--image", str(image), "--inspect-port", str(self.inspect_port)]
+            if display:
+                args += ["--display"]
+                if headless:
+                    args += ["--headless"]
+            if taps_port:
+                args += ["--taps-port", str(taps_port)]
             if rom:
                 args += ["--rom", str(rom)]
         if usbip:
             args += ["--usbip", f"127.0.0.1:{usbip}"]
         self.process = subprocess.Popen(args, stdout=self.log, stderr=self.log)
         self.image = image
+        self.scratch = None
         self.card = None
         self.hid = None
         try:
+            self.scratch = scratch_code(image) if image else None
             self.wait_ready()
+            self.check_scratch_code()
             os.environ[emu.ENV_ADDR] = f"127.0.0.1:{self.fido_port}"
             os.environ[emu.ENV_CCID_ADDR] = f"127.0.0.1:{self.ccid_port}"
             self.card = emu.EmuCard()
             self.card.connect()
+            self.check_storage_ready()
             self.hid = emu.EmuHid()
             self.hid.open_path()
             self.cid = ctaphid_init(self.hid)
         except BaseException:
             self.close()
             raise
+
+    def check_storage_ready(self):
+        self.select(bytes.fromhex("a0583fc19b7e4f21"))
+        body, hi, lo = self.card.transmit(bytes.fromhex("801e080000"))
+        if (hi, lo) == (0x6A, 0x86):
+            return  # Historical release images predate storage v2.
+        assert (hi, lo) == (0x90, 0) and bytes(body) == b"\x02\x01", "automatic storage boot failed"
+
+    def check_scratch_code(self):
+        if self.image and self.scratch:
+            start, expected = self.scratch
+            actual = bytes.fromhex(self.inspect(f"read {start:x} {len(expected)}"))
+            assert actual == expected, "scratch code/padding differs from the exact ELF load bytes"
 
     def inspect(self, command):
         with socket.create_connection(("127.0.0.1", self.inspect_port), timeout=30) as sock:
@@ -149,7 +214,19 @@ class Device:
         self.card.connect()
 
     def ctap(self, command, body=None, expected=0):
-        answer = send_cbor(self.hid, self.cid, bytes([command]) + (enc(body) if body is not None else b""))
+        payload = bytes([command]) + (enc(body) if body is not None else b"")
+        if self.image:
+            deadline = ImageDeadline(self)
+            self.inspect("transport-begin")
+            answer = send_cbor(self.hid, self.cid, payload, check_deadline=deadline.check)
+            timing = {key: int(value) for key, value in fields(self.inspect("transport-end")).items()}
+            timing["command"] = command
+            timing["wall_elapsed_s"] = round(time.monotonic() - deadline.wall_start, 3)
+            if getattr(self, "ctap_timings", None) is not None:
+                self.ctap_timings.append(timing)
+            assert timing["max_gap_ns"] <= USB_MAX_GAP_NS, "CTAP starved USB on the image clock"
+        else:
+            answer = send_cbor(self.hid, self.cid, payload)
         assert answer[0] == expected, f"CTAP {command}: status {answer[0]:02x}, expected {expected:02x}"
         if expected:
             assert len(answer) == 1, "CTAP refusal returned a partial response"
@@ -157,13 +234,27 @@ class Device:
 
     def measured(self, label, operation, report):
         self.inspect("begin")
+        self.ctap_timings = []
+        failed = False
         try:
             result = operation()
+        except BaseException:
+            failed = True
+            raise
         finally:
-            measurement = fields(self.inspect("end"))
-            report[label] = {k: int(v) for k, v in measurement.items()}
-        for core in range(2):
-            assert int(measurement[f"core{core}_min"]) >= int(measurement[f"core{core}_low"]), label
+            if self.ctap_timings:
+                report[f"{label}_ctap"] = self.ctap_timings
+            self.ctap_timings = None
+            try:
+                measurement = fields(self.inspect("end"))
+                report[label] = {k: int(v) for k, v in measurement.items()}
+            except Exception as error:
+                if not failed:
+                    raise
+                report[f"{label}_measurement_error"] = str(error)
+        names = ["core0", "core1"] + (["ns0"] if "ns0_min" in measurement else [])
+        for name in names:
+            assert int(measurement[f"{name}_min"]) >= int(measurement[f"{name}_low"]), label
         return result
 
 
@@ -172,6 +263,7 @@ def device(*args, **kwargs):
     item = Device(*args, **kwargs)
     try:
         yield item
+        item.check_scratch_code()
     finally:
         item.close()
 
@@ -241,8 +333,8 @@ def residue(dev):
     time.sleep(0.05)
     assert_no_residue(dev)
     planted = KEY[:16]
-    # SRAM9 is outside the firmware linker RAM, without touching live frames.
-    address = "20081000"
+    # The SRAM8 prefix is outside both data and executable linker sections.
+    address = image_operations.CONTROL_ADDRESS
     dev.inspect(f"plant {address} {planted.hex()}")
     try:
         try:
@@ -277,7 +369,7 @@ def upgrade(args, work, report):
         assertion(new, cred, public)
         new.select(OPENPGP)
         new.apdu(bytes([0, 0x20, 0, 0x83, len(PW3)]) + PW3)
-    report["upgrade"] = "OATH key, resident FIDO signing key and changed OpenPGP PIN survived"
+    report["upgrade"] = "OATH key, resident FIDO signing key and changed OpenPGP PIN survived automatic migration"
     if args.incompatible_image:
         broken = work / "incompatible.flash"
         copy_store(store, broken)
@@ -383,10 +475,66 @@ def cuts(args, work, report):
     report["replacement_programmed_bytes"] = total
 
 
+def import_stage_halts(args, work, report):
+    """The import ELF must not start the valid NS left by the combined image.
+    Control through the basic CLI: bypassing the length branch fails with
+    "import image started the stale NS transport"; the intact branch passes."""
+    store = work / "import-stage.flash"
+    shutil.copyfile(work / "basic.flash", store)
+    inspector = port()
+    with (work / "import-stage.log").open("w") as log:
+        process = subprocess.Popen([
+            str(args.emulator), "--image", str(args.import_image), "--store", str(store),
+            "--seed", SEED, "--fido-port", str(port()), "--ccid-port", str(port()),
+            "--inspect-port", str(inspector),
+        ], stdout=log, stderr=log)
+        try:
+            def inspect(command):
+                with socket.create_connection(("127.0.0.1", inspector), timeout=10) as sock:
+                    sock.sendall(command.encode() + b"\n")
+                    reply = sock.makefile("r").readline().strip()
+                assert reply.startswith("ok "), reply
+                return reply[3:]
+
+            deadline = time.monotonic() + 60
+            while True:
+                assert process.poll() is None, "import image emulator exited"
+                assert time.monotonic() < deadline, "import image never reached its explicit halt"
+                try:
+                    where = inspect("where")
+                    state = fields(inspect("status"))
+                    assert state["ready"] == "false", "import image started the stale NS transport"
+                    assert state["dead"] == "false", "import image faulted instead of halting"
+                except OSError:
+                    time.sleep(0.02)
+                    continue
+                if "halt_incomplete_image" in where:
+                    break
+                time.sleep(0.02)
+            state = fields(inspect("status"))
+            assert state["ready"] == state["dead"] == state["bootloader"] == "false", state
+            assert int(state["programmed_bytes"]) == 0, "import link touched persistent state"
+            report["import_stage"] = {"where": where, "status": state}
+        finally:
+            process.kill()
+            process.wait()
+
+
+def gateway_probes(dev):
+    command, payload = 0xFE, b"gateways"
+    write(dev.hid, dev.cid + bytes([command, 0, len(payload)]) + payload)
+    response = read(dev.hid)
+    assert response[:7] == dev.cid + bytes([command, 0, 4]), "gateway probe diagnostic missing"
+    assert response[7:11] == b"\x01\x00\x00\x00", "gateway startup probes did not complete"
+    assert isinstance(dev.ctap(4), dict), "getInfo failed after gateway probes"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--emulator", type=Path, required=True)
     parser.add_argument("--image", type=Path, required=True, help="partitioned current no-touch ELF")
+    parser.add_argument("--import-image", type=Path, help="Secure import-library ELF without NS")
+    parser.add_argument("--gateway-image", type=Path, help="combined no-touch ELF with test-gateway-probes")
     parser.add_argument("--release-image", type=Path, help="partitioned v0.4.11 no-touch ELF")
     parser.add_argument("--incompatible-image", type=Path, help="scratch ELF with OATH FID base changed")
     parser.add_argument("--stack-regression", type=Path, help="scratch ELF with increased ML-DSA stack use")
@@ -394,13 +542,13 @@ def main():
     parser.add_argument("--only", choices=["basic", "stack", "operations", "upgrade", "cuts", "all"], default="all")
     args = parser.parse_args()
     args.work.mkdir(parents=True, exist_ok=False)
-    for name in ("emulator", "image", "release_image", "incompatible_image", "stack_regression"):
+    for name in ("emulator", "image", "import_image", "gateway_image", "release_image", "incompatible_image", "stack_regression"):
         value = getattr(args, name)
         if value:
             setattr(args, name, value.resolve(strict=True))
     report = {"emulator": hashlib.sha256(args.emulator.read_bytes()).hexdigest(),
               "images": {name: hashlib.sha256(getattr(args, name).read_bytes()).hexdigest()
-                         for name in ("image", "release_image", "incompatible_image", "stack_regression")
+                         for name in ("image", "import_image", "gateway_image", "release_image", "incompatible_image", "stack_regression")
                          if getattr(args, name)}}
     if args.stack_regression:
         assert report["images"]["image"] != report["images"]["stack_regression"], "stack mutant ELF is identical to baseline"
@@ -411,6 +559,10 @@ def main():
                 with device(args.emulator, elf, args.work / f"{label}.store", args.work, label) as dev:
                     image_operations.run(dev, report[label])
         if args.only in ("all", "basic"):
+            if args.gateway_image:
+                with device(args.emulator, args.gateway_image, args.work / "gateway.flash", args.work, "gateway") as image:
+                    gateway_probes(image)
+                    report["gateway_probes"] = "startup refusals and valid NS RAM controls completed; getInfo passed"
             with device(args.emulator, None, args.work / "native.store", args.work, "native") as native:
                 expected = transcript(native)
             with device(args.emulator, args.image, args.work / "basic.flash", args.work, "basic") as image:
@@ -420,6 +572,8 @@ def main():
                 image.measured("oath_calculate", lambda: calculate(image), report)
                 residue(image)
                 report["residue"] = "known OATH key and HMAC pads absent; SRAM planted leak found and cleared"
+            if args.import_image:
+                import_stage_halts(args, args.work, report)
         if args.only in ("all", "stack"):
             for label, elf in (("stack", args.image), ("stack_regression", args.stack_regression)):
                 if not elf:

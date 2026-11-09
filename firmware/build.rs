@@ -15,6 +15,7 @@ use std::path::PathBuf;
 /// encodes. A `FLASH_SIZE` equal to this (with the default `KVMAIN`) writes that
 /// file byte-for-byte.
 const DEFAULT_FLASH_SIZE: u32 = 4 * 1024 * 1024;
+const SMALL_FLASH_SIZE: u32 = 2 * 1024 * 1024;
 
 /// Default KVMAIN — the rsk-fs main partition (creds/keys/DOs) the checked-in
 /// `memory.x` encodes. `KVMAIN` overrides it (shrink it to free code space on a
@@ -28,7 +29,7 @@ const DEFAULT_KVMAIN: u32 = 1408 * 1024;
 const KVCNT_LEN: u32 = 128 * 1024;
 
 /// Smallest code region the flash/KVMAIN split may leave. The shipping image is
-/// ~900 KiB; anything under this can't link, so [`assert_layout_fits`] rejects the
+/// about 1 MiB; anything under this can't link, so [`assert_layout_fits`] rejects the
 /// split here with a fix hint instead of leaving a cryptic linker overflow.
 const MIN_CODE: u32 = 1024 * 1024;
 
@@ -72,6 +73,7 @@ struct BoardConfig {
     display_bl_pwm_slice: Option<u8>,
     display_bl_pwm_channel: Option<u8>,
     display_tp_rst: Option<u8>,
+    display_tp_chip: Option<String>,
     display_wake_pin: Option<u8>,
     display_wake_active_high: Option<bool>,
     display_i2c_freq_hz: Option<u32>,
@@ -87,7 +89,6 @@ struct BoardConfig {
     display_i2c_scl: Option<u8>,
     display_tp_rst_shared: Option<bool>,
     display_panel_init: Option<u8>,
-    display_touch_ic: Option<String>,
     display_touch_x_min: Option<u16>,
     display_touch_x_max: Option<u16>,
     display_touch_y_min: Option<u16>,
@@ -134,6 +135,7 @@ fn parse_toml(raw: &str) -> BoardConfig {
         display_bl_pwm_slice: None,
         display_bl_pwm_channel: None,
         display_tp_rst: None,
+        display_tp_chip: None,
         display_wake_pin: None,
         display_wake_active_high: None,
         display_i2c_freq_hz: None,
@@ -149,7 +151,6 @@ fn parse_toml(raw: &str) -> BoardConfig {
         display_i2c_scl: None,
         display_tp_rst_shared: None,
         display_panel_init: None,
-        display_touch_ic: None,
         display_touch_x_min: None,
         display_touch_x_max: None,
         display_touch_y_min: None,
@@ -251,6 +252,7 @@ fn parse_toml(raw: &str) -> BoardConfig {
                 });
             }
             ("display", "tp_rst") => c.display_tp_rst = Some(u8(v)),
+            ("display", "tp_chip") => c.display_tp_chip = Some(u(v).to_string()),
             // `"none"` = no wake button (touch-only wake). A number selects a GPIO;
             // the key being absent leaves `WAKE_PIN` at its GPIO25 default.
             ("display", "wake_pin") => match u(v) {
@@ -296,14 +298,6 @@ fn parse_toml(raw: &str) -> BoardConfig {
             // say and announces a real report here, so the driver believes a reading
             // only when this line has pulsed. Absent on the 2.8", which wires none.
             ("display", "touch_irq") => c.display_touch_irq = Some(u8(v)),
-            // The touch controller: `cst328` (the 2.8") or `cst816d` (the 2").
-            // The two share no register layout — 16-bit addresses against
-            // single-byte ones — so the firmware picks a driver with this.
-            ("display", "touch_ic") => match u(v) {
-                "cst328" => c.display_touch_ic = Some("cst328".into()),
-                "cst816d" => c.display_touch_ic = Some("cst816d".into()),
-                other => panic!("touch_ic: {other:?} (expected cst328 or cst816d)"),
-            },
             // The calibrated touch range: the raw coordinates the controller
             // reports at the glass's edges. Omitted on a board whose controller
             // is configured at the panel resolution (the 2.8"'s CST328).
@@ -322,7 +316,11 @@ fn parse_toml(raw: &str) -> BoardConfig {
 /// out-of-range pin would otherwise reach a register with no pad behind it.
 const MAX_GPIO: u8 = 29;
 
+#[path = "trustzone/build.rs"]
+mod trustzone_build;
+
 fn main() {
+    trustzone_build::validate_stage();
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
     println!("cargo:rerun-if-env-changed=BOARD");
     let board = read_board();
@@ -409,14 +407,25 @@ fn main() {
     // for any other FLASH_SIZE or KVMAIN we splice a recomputed MEMORY block
     // (code = usable_flash − KVMAIN − KVCNT) into it and keep the rest verbatim.
     let flash_size = resolve_flash_size();
+    println!("cargo:rustc-check-cfg=cfg(rsk_small_flash)");
+    if flash_size <= SMALL_FLASH_SIZE {
+        println!("cargo:rustc-cfg=rsk_small_flash");
+    }
     let kvmain_len = resolve_kvmain_len();
     assert_layout_fits(flash_size, kvmain_len);
     let template = std::fs::read_to_string("memory.x").expect("read memory.x");
-    let memory_x = if flash_size == DEFAULT_FLASH_SIZE && kvmain_len == DEFAULT_KVMAIN {
+    let mut memory_x = if flash_size == DEFAULT_FLASH_SIZE && kvmain_len == DEFAULT_KVMAIN {
         template
     } else {
         splice_memory_block(&template, flash_size, kvmain_len)
     };
+    println!("cargo:rustc-check-cfg=cfg(rsk_tz_test_delay)");
+    println!("cargo:rerun-if-env-changed=RSK_TZ_TEST_DELAY");
+    if env::var("RSK_TZ_TEST_DELAY").as_deref() == Ok("1") {
+        println!("cargo:rustc-cfg=rsk_tz_test_delay");
+    }
+    let main_start = usable_flash(flash_size) - kvmain_len - KVCNT_LEN;
+    trustzone_build::configure(&out, &mut memory_x, main_start, flash_size);
     File::create(out.join("memory.x"))
         .unwrap()
         .write_all(memory_x.as_bytes())
@@ -427,6 +436,8 @@ fn main() {
     println!("cargo:rustc-env=PK_FLASH_SIZE={flash_size}");
     println!("cargo:rerun-if-env-changed=FLASH_SIZE");
     println!("cargo:rustc-env=PK_KVMAIN_LEN={kvmain_len}");
+    println!("cargo:rustc-env=PK_KVMAIN_START={main_start}");
+    println!("cargo:rustc-env=PK_KVCNT_START={}", main_start + kvmain_len);
     println!("cargo:rerun-if-env-changed=KVMAIN");
 
     let (vid, pid, manufacturer, product) = resolve_identity();
@@ -676,13 +687,6 @@ fn main() {
         );
         disp!("PK_DISPLAY_TOUCH_IRQ", v);
     }
-    disp!(
-        "PK_DISPLAY_TOUCH_IC",
-        match disp_cfg.and_then(|b| b.display_touch_ic.as_deref()) {
-            Some("cst816d") => 1,
-            _ => 0,
-        }
-    );
     // The calibrated touch range, all four together or none at all: boards that
     // do not declare one leave 0xFFFF, the sentinel `main.rs` reads as "the
     // controller already reports panel pixels".
@@ -757,6 +761,23 @@ fn main() {
             println!("cargo:rustc-env=PK_DISPLAY_WIN_Y={v}");
         }
     }
+    // The touch controller, selected at compile time: the two Waveshare revisions
+    // of the 2.8" carry a CST328/CST3530, and this fork's 2" a CST816D. Their
+    // register maps share nothing, so each driver arm is `cfg`-checked in.
+    {
+        let chip = env::var("DISPLAY_TP_CHIP")
+            .ok()
+            .or_else(|| disp_cfg.and_then(|b| b.display_tp_chip.clone()))
+            .unwrap_or_else(|| "cst328".to_string());
+        match chip.as_str() {
+            "cst328" | "cst816d" | "cst3530" => {}
+            other => panic!("DISPLAY_TP_CHIP: {other:?} (want cst328, cst816d or cst3530)"),
+        }
+        println!("cargo:rustc-cfg=display_tp=\"{chip}\"");
+        println!(
+            "cargo:rustc-check-cfg=cfg(display_tp, values(\"cst328\", \"cst816d\", \"cst3530\"))"
+        );
+    }
 
     // Display knobs flow from `board.toml`/env var into PK_DISPLAY_*; any change
     // lets `env!("PK_DISPLAY_*")` go stale and bake the wrong pins into the
@@ -779,7 +800,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_I2C_SCL");
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_TP_RST_SHARED");
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_PANEL_INIT");
-    println!("cargo:rerun-if-env-changed=PK_DISPLAY_TOUCH_IC");
+    println!("cargo:rerun-if-env-changed=DISPLAY_TP_CHIP");
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_TOUCH_X_MIN");
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_TOUCH_X_MAX");
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_TOUCH_Y_MIN");

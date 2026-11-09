@@ -252,7 +252,7 @@ impl Queued {
     /// leave every modal closing the moment it opened.
     fn release(&self, job: &Job) {
         if let Some(n) = self.slot(job) {
-            let _ = n.fetch_update(Ordering::Release, Ordering::Acquire, |n| {
+            let _ = n.try_update(Ordering::Release, Ordering::Acquire, |n| {
                 Some(n.saturating_sub(1))
             });
         }
@@ -359,7 +359,7 @@ pub fn run(
     lines: Option<Receiver<String>>,
     taps: Option<crate::taps::TapPad>,
 ) {
-    let store = match crate::store::open(cfg.store.clone(), cfg.power_cut) {
+    let store = match crate::store::open(cfg.store.clone(), cfg.power_cut, &cfg.serial) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("emu: cannot mount the flash image: {e}");
@@ -500,6 +500,9 @@ async fn serve<PR: rsk_sdk::UserPresence + 'static>(
     // down the OpenPGP DOs, without which SELECT succeeds over an empty PW-status DO.
     let boot_block = || {
         let mut fsb = rescan(fs);
+        if fsb.storage_state() == rsk_fs::storage::StorageState::Recovery {
+            return Ok(());
+        }
         let mut rngb = rng.borrow_mut();
         let _ = rsk_fido::seed::migrate_keydev_boot(&dev(), &mut fsb);
         rsk_rescue::keydev::migrate_kbase(&dev(), &mut fsb, &mut *rngb);

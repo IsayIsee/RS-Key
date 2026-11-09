@@ -33,14 +33,14 @@ subset, one is already C, and three are not code a C compiler could accept.
 
 | Candidate | Where | Size | Portable to a verified C subset? |
 |---|---|---|---|
-| gate / transition functions | the ten concrete gates `docs/authorization-slice.md` lists, over `crates/rsk-fido/src/state.rs` | 853 lines in `state.rs` alone | **No.** Half are generic over two traits (`<S: Storage, R: Rng>`); the other half take a Rust struct by reference, whose layout Rust owns |
+| gate / transition functions | the ten concrete gates `docs/authorization-slice.md` lists, over `crates/rsk-fido/src/state.rs` | 856 lines in `state.rs` alone | **No.** Half are generic over two traits (`<S: Storage, R: Rng>`); the other half take a Rust struct by reference, whose layout Rust owns |
 | zeroization routines | 16 `scrub` / `wipe_*` sites across `crates/` and `firmware/`, and `rsk_secret`'s drops | 16 sites, 49 files using `zeroize` | **No.** Each is a method on a Rust type, and the drop glue that makes it sound is the compiler's |
-| the RSA C/asm wrapper and fault check | `crates/rsk-rsa/src/lib.rs` over `crates/rsk-rsa/csrc/` | 799 Rust, 397 C, 1082 asm | **Already C — and that is the finding.** The assembly is 73% of the foreign half by line and no verified compiler compiles assembly |
+| the RSA C/asm wrapper and fault check | `crates/rsk-rsa/src/lib.rs` over `crates/rsk-rsa/csrc/` | 808 Rust, 397 C, 1082 asm | **Already C — and that is the finding.** The assembly is 73% of the foreign half by line and no verified compiler compiles assembly |
 | ML-DSA reductions | `crates/rsk-mldsa/src/reduce.rs`, `ntt.rs`, `round.rs` | 256 lines | **Yes, in principle.** Branch-free integer arithmetic, no generic function in any of the three |
-| linker-generated boundaries | five of the ten `[[boundary]]` rows in `assurance/toolchain.toml` | 5 symbols | **Not code.** The datum is a symbol's address; a compiler has nothing to say about it |
+| linker-generated boundaries | 15 of the 37 `[[boundary]]` rows in `assurance/toolchain.toml` | 15 symbol imports | **Not code.** The datum is a symbol's address; a compiler has nothing to say about it |
 
 The genericity is the load-bearing number. Across the production modules of
-`crates/rsk-fido/src/`, 242 of 469 functions are generic and 176 of those carry
+`crates/rsk-fido/src/`, 243 of 470 functions are generic and 177 of those carry
 `<S: Storage`. C has no traits and no monomorphisation, so "port the gate" means
 "hand-instantiate and rewrite it", and the rewrite is the risk the verification
 was meant to remove.
@@ -58,9 +58,9 @@ costs at least as much again" is a measurement rather than a guess. What the
 first one costs today:
 
 - **three `unsafe` call sites** — `docs/unsafe.md` sites 25–27, at
-  `crates/rsk-rsa/src/lib.rs:411`, `crates/rsk-rsa/src/lib.rs:502` and
-  `crates/rsk-rsa/src/lib.rs:594`, behind the `unsafe extern "C"` block at
-  `crates/rsk-rsa/src/lib.rs:312` — plus a fourth, build-time, in
+  `crates/rsk-rsa/src/lib.rs:412`, `crates/rsk-rsa/src/lib.rs:503` and
+  `crates/rsk-rsa/src/lib.rs:595`, behind the `unsafe extern "C"` block at
+  `crates/rsk-rsa/src/lib.rs:313` — plus a fourth, build-time, in
   `crates/rsk-rsa/build.rs`;
 - **five registry rows** in `assurance/toolchain.toml`: three `import:` and two
   `unit:`, each owing a `provider` that is a pinned tool;
@@ -90,7 +90,8 @@ producer, one more unreadable contract, and one more containment argument.
 `scripts/check-assurance.sh:"toolchain TCB registry"` prints the live roster, and
 `assurance/toolchain.toml` is what it prints from: 13 registered tools
 carrying 7 distinct roles, of which 12 name a file that pins them and 1 is
-unpinned against an open obligation. The FFI boundaries are the ten above. Of
+unpinned against an open obligation. The tree carries 25 FFI boundaries; 15 belong
+to the separate TrustZone build's CMSE entries and Non-secure vectors. Of
 the six TCB categories the criterion counts, the registry reaches 4 and says
 why the other two are out of reach.
 
@@ -154,7 +155,7 @@ checksums, provenance, signing, notes, publication — are language-agnostic.
 
 ## What it costs the gate
 
-`scripts/check.sh` runs 101 rows: 63 invoke `cargo`, 18 are Python, 20 are
+`scripts/check.sh` runs 112 rows: 64 invoke `cargo`, 18 are Python, 30 are
 neither. A kernel outside Rust is invisible to a measured nine of them, and
 would need a twin for many more.
 
@@ -165,7 +166,7 @@ would need a twin for many more.
 workspace manifests, `scripts/kani_gate.py` from files with an `.rs` suffix —
 so a C or extracted-C kernel is not a thing they can fail about.
 
-**Would need a twin:** 22 clippy rows, 9 rustdoc rows, 4 fmt rows and 17
+**Would need a twin:** 25 clippy rows, 9 rustdoc rows, 5 fmt rows and 18
 `cargo test` rows. A second language does not inherit `-D warnings`, a
 formatter the gate can run, a doc build, or a test harness whose empty
 selection is already caught.
@@ -195,7 +196,7 @@ A decision with no falsifier is a preference. Any one of these overturns it:
   generation, verifying that C would cover the whole kernel instead of a
   quarter of it.
 - **The gate stops being Rust-shaped.** If the tree acquires a second language
-  for an unrelated reason and pays the 22-clippy-row-shaped cost anyway, the
+  for an unrelated reason and pays the linting cost listed above anyway, the
   marginal cost of this decision falls to the toolchain delta alone.
 
 None of the five is close. The first two are outside this project's control.

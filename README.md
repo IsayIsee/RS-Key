@@ -206,7 +206,7 @@ The docs live in [docs/](docs/) and are published as a site:
 | [Feature guides](docs/guides/) | FIDO2, SSH, OpenPGP, PIV, OATH, OTP, backup, soft-lock, LED, audit, … |
 | [Threat model](docs/threat-model.md) · [Limitations](docs/limitations.md) | what it protects against, and what it does not |
 | [Architecture](docs/architecture.md) · [`unsafe` audit](docs/unsafe.md) | how it's built; every `unsafe` site |
-| [Testing](docs/testing.md) · [Interop](docs/interop.md) | host tests, fuzzing; real-tool results |
+| [Testing](docs/testing.md) | host tests, fuzzing, and client compatibility |
 | [Linux setup](docs/linux.md) · [Motivation](docs/motivation.md) | pcscd/udev/polkit; why this exists |
 
 ## Build it yourself
@@ -218,9 +218,9 @@ The release images are reproducible, so you can rebuild any of them bit for bit
 git clone https://github.com/IsayIsee/RS-Key && cd RS-Key
 nix develop                       # toolchain, picotool, host tools, everything
 
-cargo build --release -p firmware
-scripts/pt.sh target/thumbv8m.main-none-eabihf/release/firmware firmware-pt.elf   # fence the key's storage off the bootloader
-picotool uf2 convert firmware-pt.elf -t elf firmware.uf2
+bash scripts/build.sh
+# combined Secure + Non-secure image, with the storage partition fence
+cp target/trustzone/combined.uf2 firmware.uf2
 
 # hold BOOTSEL, plug the board in, then flash, either way:
 cp firmware.uf2 /Volumes/RP2350/                    # macOS drag-and-drop; Linux: the mounted RP2350 volume
@@ -228,7 +228,7 @@ picotool load -v firmware.uf2 && picotool reboot    # more robust; verifies the 
 ```
 
 Re-plug the board and it enumerates as a composite USB authenticator. The default
-build requires a **physical touch** (the BOOTSEL button) for FIDO operations;
+TrustZone build requires a **physical touch** (the BOOTSEL button) for FIDO operations;
 build with `--features no-touch` for a no-touch build (the automated test
 suites need it). Every compile-time knob, including the flash size, LED pin and
 USB identity, is in [docs/build.md](docs/build.md).
@@ -320,7 +320,7 @@ inspecting and managing a local FIDO2/CTAP authenticator, built on
 client stack, which is what makes it interesting here: a second opinion on what
 this firmware answers, from a parser that is not libfido2 or python-fido2. It has
 not been run against RS-Key yet; it is `⏳` in the
-[interop matrix](docs/interop.md#fido2--webauthn--u2f).
+[interop report](assurance/reports/interop.md#fido2--webauthn--u2f).
 
 ## Limitations (short list)
 

@@ -122,10 +122,10 @@ body = '''
 - **A registration with a PIN set and no token — CLOSED, and what is left of it
   is one conjunct.** CTAP 2.1 §6.1.2 steps 7/10 serve a NON-discoverable
   credential on presence alone even where a PIN is set
-  (`makecredential.rs:633-635`), and `Next` carries it now:
+  (`makecredential.rs:635-637`), and `Next` carries it now:
   `RegisterNdStart` / `RegisterNdTouched` / `RegisterNdRefused`, guarded by
   `McTokenlessGuard(FALSE)`. It writes nothing, because
-  `makecredential.rs:916-917` stores only under `req.rk`, so it carries no `rp`
+  `makecredential.rs:918-919` stores only under `req.rk`, so it carries no `rp`
   either. What stays narrow is the `~tok.live` conjunct in that guard: above
   `state.rs:651` the same touch SPENDS a live token without binding it, and tier
   A has no word for that edge — its `UseMc` admits an authorized event only
@@ -194,7 +194,7 @@ body = '''
   `oathCode` exemption fires exactly when `~oathCodeSet` — the very state the
   removal produces. The repair is therefore a recorder at the STEP, not a change
   to the exemption: `OathRemoveCode` carries the gate
-  (`crates/rsk-oath/src/lib.rs:369-371`) as a Guard/Policy pair and
+  (`crates/rsk-oath/src/lib.rs:370-372`) as a Guard/Policy pair and
   `AccessCodeRemovalNeedsTheCode` is its own invariant. Measured exactly as the
   diagnosis predicted: the action adds no new kind of state, while
   `BugRemoveCodeUnvalidated` falls RED in 71 — a violation no state

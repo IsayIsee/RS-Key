@@ -13,6 +13,23 @@ fn fs() -> Fs<RamStorage> {
     fs
 }
 
+#[test]
+fn unknown_internal_and_separately_served_objects_do_not_emit_or_write() {
+    let mut fs = fs();
+    let aid = full_aid(&[1, 2, 3, 4], OPGP_MFR_UNMANAGED);
+    fs.put(EF_AES_KEY.get(), b"private").unwrap();
+    let generation = fs.write_gen();
+    for fid in [0xFFFF, EF_AES_KEY.get(), EF_CH_CERT] {
+        let mut output = [0xA5; 64];
+        assert_eq!(DoWriter::new(&mut output, &mut fs, &aid).build(fid), 0);
+        assert_eq!(output, [0xA5; 64]);
+        assert_eq!(fs.write_gen(), generation);
+    }
+    let mut private = [0; 7];
+    assert_eq!(fs.read(EF_AES_KEY.get(), &mut private), Some(7));
+    assert_eq!(&private, b"private");
+}
+
 /// A template's length goes in BER's shortest form, as a YubiKey 5.8.0 writes `65 09`:
 /// one byte under 128, `81 LL` under 256, `82 HH LL` from there.
 #[test]
@@ -397,4 +414,147 @@ fn a_direct_do_walk_distinguishes_sizing_from_emission() {
         [b"login".as_slice(), &[0x5e, 5], b"login"].concat()
     );
     assert_eq!(writer.fs.write_gen(), generation);
+}
+
+#[test]
+fn advertised_algorithms_refuse_an_unknown_file_even_for_a_valid_attribute() {
+    for (fid, attr) in [
+        (EF_ALGO_SIG, ATTR_P256R1),
+        (EF_ALGO_AUT, ATTR_P384R1),
+        (EF_ALGO_DEC, ATTR_CV25519),
+    ] {
+        assert!(advertised_algo(fid, &attr[1..]));
+        assert!(!advertised_algo(0xffff, &attr[1..]));
+    }
+}
+
+#[path = "dobj_encoding_tests.rs"]
+mod encoding;
+
+#[path = "dobj_read_tests.rs"]
+mod reads;
+
+struct OriginReads {
+    inner: RamStorage,
+    reads: std::rc::Rc<std::cell::Cell<usize>>,
+    fail: std::rc::Rc<std::cell::Cell<bool>>,
+    last_error: bool,
+}
+
+impl Storage for OriginReads {
+    fn read(&mut self, fid: u16, out: &mut [u8]) -> Option<usize> {
+        self.last_error = false;
+        if fid == EF_KEY_ORIGIN {
+            self.reads.set(self.reads.get() + 1);
+            if self.fail.get() {
+                self.last_error = true;
+                out.fill(crate::origin::ORIGIN_GENERATED);
+                return None;
+            }
+        }
+        self.inner.read(fid, out)
+    }
+    fn last_error(&self) -> bool {
+        self.last_error
+    }
+    fn write(&mut self, fid: u16, data: &[u8]) -> rsk_sdk::error::Result<()> {
+        self.inner.write(fid, data)
+    }
+    fn remove(&mut self, fid: u16) -> rsk_sdk::error::Result<()> {
+        self.inner.remove(fid)
+    }
+    fn size(&mut self, fid: u16) -> Option<usize> {
+        self.last_error = false;
+        self.inner.size(fid)
+    }
+    fn for_each_key(&mut self, f: &mut dyn FnMut(u16)) -> bool {
+        self.inner.for_each_key(f)
+    }
+}
+
+#[test]
+fn key_information_reads_each_origin_record_once_and_refreshes_each_response() {
+    use crate::origin::{ORIGIN_GENERATED as GENERATED, ORIGIN_IMPORTED as IMPORTED};
+    for present in 0..8 {
+        let reads = std::rc::Rc::new(std::cell::Cell::new(0));
+        let fail = std::rc::Rc::new(std::cell::Cell::new(false));
+        let mut store = Fs::new(OriginReads {
+            inner: RamStorage::new(),
+            reads: reads.clone(),
+            fail: fail.clone(),
+            last_error: false,
+        });
+        store.scan();
+        for (index, key) in [EF_PK_SIG, EF_PK_DEC, EF_PK_AUT].into_iter().enumerate() {
+            if present & (1 << index) != 0 {
+                store.put(key.get(), b"present").unwrap();
+            }
+        }
+        store.put(EF_PK_ATT.get(), b"present").unwrap();
+        let aid = full_aid(&[1, 2, 3, 4], OPGP_MFR_UNMANAGED);
+        for record in [
+            None,
+            Some(&[][..]),
+            Some(&[GENERATED][..]),
+            Some(&[IMPORTED, GENERATED][..]),
+            Some(&[GENERATED, IMPORTED, GENERATED][..]),
+            Some(&[0x00, 0xff, 0x03][..]),
+        ] {
+            fail.set(false);
+            if let Some(record) = record {
+                store.put(EF_KEY_ORIGIN, record).unwrap();
+            } else {
+                store.delete(EF_KEY_ORIGIN).unwrap();
+            }
+            for fault in [false, true] {
+                fail.set(fault);
+                for tag in [EF_KEY_INFO, EF_APP_DATA] {
+                    reads.set(0);
+                    let mut output = [0xa5; 512];
+                    let n = DoWriter::new(&mut output, &mut store, &aid).build(tag);
+                    let mut expected = [1, 0, 2, 0, 3, 0, KEY_REF_ATT, GENERATED];
+                    for index in 0..KEY_SLOTS {
+                        if present & (1 << index) != 0 {
+                            expected[index * 2 + 1] = if !fault
+                                && record.and_then(|r| r.get(index)) == Some(&GENERATED)
+                            {
+                                GENERATED
+                            } else {
+                                IMPORTED
+                            };
+                        }
+                    }
+                    if tag == EF_KEY_INFO {
+                        assert_eq!(&output[..n], expected);
+                    } else {
+                        let tagged = [&[0xde, 8][..], &expected].concat();
+                        assert!(output[..n].windows(tagged.len()).any(|w| w == tagged));
+                    }
+                    assert_eq!(
+                        reads.get(),
+                        usize::from(present != 0 && record.is_some()),
+                        "present={present}, record={record:?}, fault={fault}, tag={tag:04x}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_direct_unwrapped_multi_object_list_leaves_its_first_object_unprefixed() {
+    let mut fs = fs();
+    let aid = full_aid(&[1, 2, 3, 4], OPGP_MFR_UNMANAGED);
+    let mut out = [0xa5; 128];
+    let n = {
+        let mut writer = DoWriter::new(&mut out, &mut fs, &aid);
+        let n = writer.emit_do(&[2, EF_EXT_CAP, EF_EXT_CAP], 1);
+        assert_eq!(writer.len(), n + 2);
+        writer.len()
+    };
+    let mut single = [0; 64];
+    let first = DoWriter::new(&mut single, &mut fs, &aid).build(EF_EXT_CAP);
+    assert_eq!(&out[..first], &single[..first]);
+    assert_eq!(&out[first..first + 2], &[0xc0, first as u8]);
+    assert_eq!(&out[first + 2..n], &single[..first]);
 }

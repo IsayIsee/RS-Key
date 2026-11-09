@@ -64,6 +64,7 @@ impl UserPresence for DenyPresence {
 }
 
 struct FakePlatform {
+    seal_status: seal::Status,
     time: Option<u32>,
     reboots: Vec<bool>,
     status: (bool, bool, u8),
@@ -83,6 +84,7 @@ struct FakePlatform {
 impl Default for FakePlatform {
     fn default() -> Self {
         FakePlatform {
+            seal_status: seal::Status::Unchecked,
             time: None,
             reboots: Vec::new(),
             status: (false, false, 0xFF),
@@ -122,6 +124,9 @@ impl Platform for FakePlatform {
     }
     fn pre_otp_left(&self) -> Option<u16> {
         self.pre_otp_left
+    }
+    fn auto_seal_status(&self) -> seal::Status {
+        self.seal_status
     }
     fn lock_page58(&mut self) -> bool {
         // OTP bits only go 0→1; model the fuse burning our value into the row.
@@ -801,6 +806,31 @@ fn time_set_and_get_both_forms() {
     let bad = [0x07, 0xEA, 12, 11, 0, 0, 0, 0];
     let (sw, _) = run(&mut app, &mut fs, &apdu(0x80, INS_WRITE, 0x02, 0x01, &bad));
     assert_eq!(sw, Sw::DATA_INVALID);
+
+    let last = [0x07, 0xe0, 11, 31, 0, 23, 59, 60];
+    assert_eq!(
+        run(&mut app, &mut fs, &apdu(0x80, INS_WRITE, 0x02, 0x01, &last)).0,
+        Sw::OK
+    );
+    assert_eq!(
+        run(&mut app, &mut fs, &apdu(0x80, INS_READ, 0x04, 0x02, &[])),
+        (Sw::OK, 1483228800u32.to_be_bytes().to_vec())
+    );
+
+    let leap_day = 951782400u32.to_be_bytes();
+    assert_eq!(
+        run(
+            &mut app,
+            &mut fs,
+            &apdu(0x80, INS_WRITE, 0x02, 0x02, &leap_day)
+        )
+        .0,
+        Sw::OK
+    );
+    assert_eq!(
+        run(&mut app, &mut fs, &apdu(0x80, INS_READ, 0x04, 0x01, &[])),
+        (Sw::OK, vec![0x07, 0xd0, 1, 29, 2, 0, 0, 0])
+    );
 }
 
 #[test]
@@ -1176,11 +1206,19 @@ fn otp_lock_waits_for_a_boot_that_left_nothing_under_the_pre_burn_key() {
         }
     }
     let lefts = [
-        Some(otp_lock::PRE_OTP_PIV),
-        Some(otp_lock::PRE_OTP_FIDO | otp_lock::PRE_OTP_OTP),
-        None,
+        (Some(otp_lock::PRE_OTP_FIDO), [0, 1]),
+        (Some(otp_lock::PRE_OTP_DEVICE_KEY), [0, 2]),
+        (Some(otp_lock::PRE_OTP_PIV), [0, 4]),
+        (Some(otp_lock::PRE_OTP_OATH), [0, 8]),
+        (Some(otp_lock::PRE_OTP_OTP), [0, 16]),
+        (Some(otp_lock::PRE_OTP_STORAGE), [0, 32]),
+        (
+            Some(otp_lock::PRE_OTP_FIDO | otp_lock::PRE_OTP_OTP),
+            [0, 17],
+        ),
+        (None, [0xff, 0xff]),
     ];
-    for left in lefts {
+    for (left, want) in lefts {
         let rng = RefCell::new(LcgRng(7));
         let platform = RefCell::new(FakePlatform {
             pre_otp_left: left,
@@ -1215,7 +1253,6 @@ fn otp_lock_waits_for_a_boot_that_left_nothing_under_the_pre_burn_key() {
         );
         let (sw, body) = run(&mut app, &mut fs, &apdu(0x80, INS_READ, 0x07, 0, &[]));
         assert_eq!(sw, Sw::OK);
-        let want = left.unwrap_or(otp_lock::PRE_OTP_UNCHECKED).to_be_bytes();
         assert_eq!(body, want, "{left:?}");
     }
 }
@@ -1424,4 +1461,42 @@ fn rollback_require_refuses_a_reported_success_whose_readback_stays_clear() {
     assert_eq!(platform.borrow().rollback_raw.unwrap().flags0, [0; 3]);
     assert_eq!(fs.write_gen(), generation);
     assert!(platform.borrow().reboots.is_empty());
+}
+
+#[path = "restart_tests.rs"]
+mod restarts;
+
+#[path = "storage_admin_tests.rs"]
+mod storage_admin;
+
+#[test]
+fn automatic_seal_report_is_read_only_and_preserves_migration_bits() {
+    let rng = RefCell::new(LcgRng(7));
+    let platform = RefCell::new(FakePlatform {
+        seal_status: seal::Status::MigrationPending,
+        pre_otp_left: Some(otp_lock::PRE_OTP_FIDO | otp_lock::PRE_OTP_OATH),
+        ..Default::default()
+    });
+    let presence = RefCell::new(DenyPresence);
+    let mut app = RescueApplet::new(
+        SERIAL_ID,
+        SERIAL_HASH,
+        Some(FusedKey::open(test_mkek)),
+        None,
+        &rng,
+        &platform,
+        &presence,
+        KV_TOTAL,
+        FLASH_SIZE,
+    );
+    let mut fs = Fs::new(RamStorage::new());
+    assert_eq!(
+        run(&mut app, &mut fs, &apdu(0x80, INS_READ, 0x09, 0, &[])),
+        (Sw::OK, vec![1, seal::Status::MigrationPending as u8, 0, 9])
+    );
+    assert_eq!(platform.borrow().lock_writes, 0);
+    assert_eq!(
+        run(&mut app, &mut fs, &apdu(0x80, INS_READ, 0x09, 1, &[])).0,
+        Sw::INCORRECT_P1P2
+    );
 }

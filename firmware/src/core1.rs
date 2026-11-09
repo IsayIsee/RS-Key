@@ -86,6 +86,8 @@ static BUSY: AtomicBool = AtomicBool::new(false);
 /// SRAM load per spin keeps it off the spinlock and (nearly) off XIP, instead
 /// of hammering both through the Mutex on every spurious wake.
 static JOB_PENDING: AtomicBool = AtomicBool::new(false);
+static STARTED: AtomicBool = AtomicBool::new(false);
+static XIP_PAUSE: rsk_store::xip_pause::Pause = rsk_store::xip_pause::Pause::new();
 
 /// Core1's stack. The deep frame is `passes_fermat_base2` → `modexp_priv`
 /// (~6 KiB of fixed buffers); 16 KiB leaves comfortable headroom for the
@@ -124,7 +126,7 @@ pub fn stats() -> [u8; 32] {
     let counters = [
         &WAKES, &JOBS, &C1_TRIES, &C1_FINDS, &C0_TRIES, &C0_FINDS, &SOLO,
     ];
-    for (slot, c) in out.chunks_exact_mut(4).take(7).zip(counters) {
+    for (slot, c) in out.as_chunks_mut::<4>().0.iter_mut().take(7).zip(counters) {
         slot.copy_from_slice(&c.load(Ordering::Relaxed).to_le_bytes());
     }
     let flags = [&BUSY, &STOP, &JOB_PENDING];
@@ -140,7 +142,50 @@ pub fn stats() -> [u8; 32] {
 pub fn spawn(core1: Peri<'static, CORE1>) {
     let stack = CORE1_STACK.init_with(Stack::new);
     let floor = stack.mem.as_ptr() as u32;
+    STARTED.store(true, Ordering::Release);
     spawn_core1(core1, stack, move || core1_main(floor));
+}
+
+/// Run before core1 starts or after its dedicated SRAM park acknowledgment;
+/// a busy core can decline without blocking the worker indefinitely.
+pub fn with_xip_idle<R>(action: impl FnOnce() -> R) -> Option<R> {
+    if !STARTED.load(Ordering::Acquire) {
+        return Some(action());
+    }
+    if BUSY.load(Ordering::Acquire) || !XIP_PAUSE.request_park() {
+        return None;
+    }
+    cortex_m::asm::sev();
+    let deadline = embassy_time::Instant::now() + embassy_time::Duration::from_millis(1);
+    while !XIP_PAUSE.is_parked() {
+        if embassy_time::Instant::now() >= deadline && XIP_PAUSE.cancel() {
+            return None;
+        }
+    }
+    struct Resume;
+    impl Drop for Resume {
+        fn drop(&mut self) {
+            assert!(XIP_PAUSE.release());
+            cortex_m::asm::sev();
+        }
+    }
+    let _resume = Resume;
+    Some(action())
+}
+
+// SAFETY: startup copies this section into executable read-only SRAM. The ACK
+// is published only after interrupts are masked; no flash call occurs before release.
+#[unsafe(link_section = ".data.ram_func")]
+#[inline(never)]
+fn service_xip_pause() {
+    cortex_m::interrupt::free(|_| {
+        if XIP_PAUSE.acknowledge() {
+            while XIP_PAUSE.is_parked() {
+                core::hint::spin_loop();
+            }
+            assert!(XIP_PAUSE.finish());
+        }
+    });
 }
 
 /// Scrub and drop any primes still sitting in the mailbox.
@@ -224,15 +269,15 @@ pub fn scrub() {
     }
 }
 
-/// Spin budget for [`scrub`]'s wait on core1. A candidate test is microseconds and
-/// the reboot path already sleeps ~200 ms for the USB flush, so this is generous
-/// for the live case and still bounded for a wedged one.
+/// Spin budget for [`scrub`]'s wait on core1. Cooperative cancellation releases
+/// a live search; a faulted core must not stall the reboot path indefinitely.
 const SCRUB_WAIT_ITERS: u32 = 2_000_000;
 
 // --------------------------------------------------------------- core1 side --
 
 /// Core1 entry: wait for a job, search until satisfied or told to stop, repeat.
 fn core1_main(stack_floor: u32) -> ! {
+    crate::trustzone::mpu::secure();
     // This stack is a plain array in `.bss`, so an overflow lands in whatever the
     // linker put below it — flip-link only guards core0's, the one at the edge of
     // RAM. MSPLIM traps the SP decrement itself, so a frame big enough to step
@@ -249,6 +294,7 @@ fn core1_main(stack_floor: u32) -> ! {
         seed: Secret::zeroed(),
     };
     loop {
+        service_xip_pause();
         // The cheap idle gate: one SRAM atomic, no lock (see JOB_PENDING).
         if !JOB_PENDING.load(Ordering::Acquire) {
             // STOP up means core0 has assembled and drained: anything still
@@ -325,9 +371,13 @@ fn search(job: &Job) {
     while !STOP.load(Ordering::Acquire) {
         C1_TRIES.fetch_add(1, Ordering::Relaxed);
         let mut le = Secret::<[u8; MAX_HALF]>::zeroed();
-        let Some(len) =
-            RsaKeygen::try_candidate_le(sieve, &mut rng, job.half_bytes, le.expose_mut())
-        else {
+        let Some(len) = RsaKeygen::try_candidate_le_with_cancel(
+            sieve,
+            &mut rng,
+            job.half_bytes,
+            le.expose_mut(),
+            &mut || STOP.load(Ordering::Acquire),
+        ) else {
             continue;
         };
         C1_FINDS.fetch_add(1, Ordering::Relaxed);
@@ -356,8 +406,8 @@ fn search(job: &Job) {
 
 /// Run the RSA prime search on both cores and assemble the key. Blocks the
 /// worker exactly like the old single-core loop did (the interrupt executor
-/// keeps USB + keepalives flowing); core1 is parked again by the time this
-/// returns. `None` is the old `RsaStep::Failed`: an unusable size / failed
+/// keeps USB + keepalives flowing); core1 cancels its last candidate in the
+/// background. `None` is the old `RsaStep::Failed`: an unusable size / failed
 /// modexp self-test, or key assembly failure.
 /// As [`run_rsa_search_progress`] with a no-op tick — the entry the button and
 /// touch builds use (the `display-keys` build drives the busy screen through
@@ -406,9 +456,8 @@ pub fn run_rsa_search_progress(
     ];
     // `Some(Some(key))` = assembled, `Some(None)` = the old `Failed`.
     let mut outcome: Option<Option<Box<RsaKey>>> = None;
-    // Core1 may still be on the last search's final candidate, which at RSA-4096
-    // can be a software Lucas of ten seconds and more: search alone meanwhile and
-    // hand it the job once it is free. A core1 that never frees costs no wait.
+    // A previous search may still be unwinding after STOP. Search alone until
+    // core1 has scrubbed that job; a core1 that never frees costs no wait.
     let mut engaged = false;
     while outcome.is_none() {
         // Observation hook (display spinner); time-gated by the caller, off the keygen state.
@@ -461,11 +510,9 @@ pub fn run_rsa_search_progress(
         }
     }
 
-    // Wind down — OFF the critical path: un-post the job if core1 never took
-    // it, drain-scrub what is posted right now, raise STOP, and return the key
-    // immediately. A candidate still in flight on core1 finishes in the
-    // background; core1 scrubs its own late find when it notices STOP, and the
-    // next job's entry gate (the BUSY wait above) keeps the mailbox exclusive.
+    // Un-post and drain before requesting cancellation. Core1 wipes its own
+    // candidate and late find in the background; BUSY excludes the next job
+    // until its cleanup completes.
     MAILBOX.lock(|mb| {
         let mut mb = mb.borrow_mut();
         scrub_job(&mut mb.job);

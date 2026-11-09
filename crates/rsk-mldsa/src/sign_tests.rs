@@ -2,6 +2,67 @@
 // Copyright (C) 2026 RS-Key contributors
 
 use super::*;
+
+#[test]
+#[should_panic(expected = "ctx.len() <= 255")]
+fn expanded_key_refuses_an_oversized_context() {
+    let key = ExpandedKey::<4, 4>::from_seed(&crate::params::ML_DSA_44, &[7; SEED_LEN]);
+    let mut out = [0; crate::params::ML_DSA_44.sig_len];
+    key.sign(
+        &crate::params::ML_DSA_44,
+        b"message",
+        &[0; 256],
+        &[0; 32],
+        &mut out,
+    );
+}
+
+std::thread_local! {
+    static DROP_WIPED: core::cell::Cell<Option<bool>> = const { core::cell::Cell::new(None) };
+}
+
+pub(super) fn observe_drop(rho: &[u8; 32], cap_k: &[u8; 32], tr: &[u8; 64]) {
+    DROP_WIPED.with(|observed| {
+        if observed.get().is_some() {
+            observed.set(Some(*rho == [0; 32] && *cap_k == [0; 32] && *tr == [0; 64]));
+        }
+    });
+}
+
+#[test]
+fn dropping_every_expanded_key_wipes_its_live_byte_fields() {
+    fn check<const K: usize, const L: usize>(params: &crate::params::Params) {
+        let key = ExpandedKey::<K, L>::from_seed(params, &[7; SEED_LEN]);
+        assert!(key.cap_k.iter().any(|&byte| byte != 0));
+        DROP_WIPED.with(|observed| observed.set(Some(false)));
+        drop(key);
+        DROP_WIPED.with(|observed| assert_eq!(observed.replace(None), Some(true)));
+    }
+    check::<4, 4>(&ML_DSA_44);
+    check::<6, 5>(&ML_DSA_65);
+    check::<8, 7>(&ML_DSA_87);
+}
+
+#[test]
+fn every_row_is_reduced_before_inverse_ntt_can_amplify_it() {
+    let values = [-3 * Q, -Q - 1, -Q, -1, 0, 1, Q, Q + 1, 3 * Q];
+    let mut rows = crate::poly::zero_vec::<8>();
+    for (row, polynomial) in rows.iter_mut().enumerate() {
+        for (column, coefficient) in polynomial.0.iter_mut().enumerate() {
+            *coefficient = values[(row + column) % values.len()];
+        }
+    }
+    reduce_vec(&mut rows);
+    for (row, polynomial) in rows.iter().enumerate() {
+        for (column, &coefficient) in polynomial.0.iter().enumerate() {
+            assert!((-Q..Q).contains(&coefficient));
+            assert_eq!(
+                coefficient.rem_euclid(Q),
+                values[(row + column) % values.len()].rem_euclid(Q)
+            );
+        }
+    }
+}
 use crate::params::{ML_DSA_44, ML_DSA_65, ML_DSA_87};
 use crate::testutil::{Rng, unhex};
 use crate::testvectors::{KEYGEN, SIGGEN, SIGVER};
@@ -357,4 +418,34 @@ fn the_keygen_probe_byte_matches_the_public_key_hash() {
     let mut expected = [0; 1];
     hash.finalize_xof().read(&mut expected);
     assert_eq!(std::hint::black_box(&key).probe_byte(), expected[0]);
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn expanded_key_refuses_short_encoding_buffers_before_writing() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    let p = &ML_DSA_44;
+    let key = ExpandedKey::<4, 4>::from_seed(p, &[7; SEED_LEN]);
+    for signing in [false, true] {
+        let expected = if signing { p.sig_len } else { p.pk_len };
+        let mut output = vec![0xa5; expected - 1];
+        let panic = catch_unwind(AssertUnwindSafe(|| {
+            if signing {
+                key.sign(p, b"message", &[], &[0; SEED_LEN], &mut output);
+            } else {
+                key.write_public_key(p, &mut output);
+            }
+        }))
+        .expect_err("undersized encoding buffer accepted");
+        let text = panic.downcast_ref::<String>().unwrap();
+        assert!(
+            text.starts_with("assertion `left == right` failed\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("left: {}\n right: {expected}", expected - 1)),
+            "{text}"
+        );
+        assert_eq!(output, vec![0xa5; expected - 1]);
+    }
 }

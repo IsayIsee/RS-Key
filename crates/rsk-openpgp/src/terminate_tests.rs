@@ -502,8 +502,8 @@ fn a_wipe_clears_more_files_than_one_batch_holds() {
 #[test]
 fn a_truncated_enumeration_fails_the_wipe_instead_of_reading_it_as_clear() {
     let mut fs = Fs::new(rsk_fs::storage::faults::TruncatedWalk::new());
-    fs.scan();
     fs.put(EF_PK_SIG.get(), &[0xAB; 40]).unwrap();
+    fs.scan();
     assert_eq!(wipe_openpgp(&mut fs), Err(Sw::MEMORY_FAILURE));
     let mut buf = [0u8; 40];
     assert_eq!(
@@ -843,4 +843,17 @@ fn a_status_record_without_the_pw3_counter_allows_recovery_termination() {
         Sw::OK
     );
     assert_eq!(lifecycle(&mut fs), Lifecycle::Terminated);
+}
+
+#[test]
+fn a_missing_pw_status_is_not_recreated_by_authenticated_termination() {
+    let mut fs = seeded();
+    fs.delete(EF_PW_PRIV).unwrap();
+    let generation = fs.write_gen();
+    assert_eq!(
+        terminate_df(&dev(), &mut fs, &mut CountRng(0), true, &apdu()),
+        Sw::REFERENCE_NOT_FOUND
+    );
+    assert_eq!(fs.write_gen(), generation);
+    assert!(!fs.has_data(EF_PW_PRIV));
 }

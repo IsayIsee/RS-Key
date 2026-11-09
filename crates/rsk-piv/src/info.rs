@@ -111,11 +111,15 @@ pub fn slot_label(slot: u8, buf: &mut [u8; SLOT_LABEL_MAX]) -> &str {
             let n = s - (SLOT_RETIRED_FIRST - 1);
             let mut end = PRE.len();
             if n >= 10 {
-                let Some(tens) = buf.get_mut(end) else { return "?" };
+                let Some(tens) = buf.get_mut(end) else {
+                    return "?";
+                };
                 *tens = b'0' + n / 10;
                 end += 1;
             }
-            let Some(ones) = buf.get_mut(end) else { return "?" };
+            let Some(ones) = buf.get_mut(end) else {
+                return "?";
+            };
             *ones = b'0' + n % 10;
             end += 1;
             return buf

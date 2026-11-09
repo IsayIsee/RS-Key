@@ -154,7 +154,7 @@ PAGES = (PAGE, pathlib.Path("docs/releases.md"))
 #: vendored `outputHashes` — and it is one value a downstream verifier can check
 #: with one `sha256sum`. Each moves when its file moves and at no other time,
 #: which is the whole of [`stable`]'s requirement.
-PROCEDURE = (CALLER, WORKFLOW, NIX, pathlib.Path("scripts/pt.sh"))
+PROCEDURE = (CALLER, WORKFLOW, NIX, pathlib.Path("scripts/build.sh"))
 
 #: The region this script owns inside an otherwise hand-written page. Rule 9 for
 #: why it is a region. The name deliberately does not start `run-count-`: that
@@ -411,7 +411,7 @@ COUNT = re.compile(r"(?<![\w.-])(\d+)(?![\w.-])")
 #: one case is one an upper-case spelling walks past. The widening is free,
 #: measured over today's region: 15 runs of 4-40 against 6 of 7-40, so it costs
 #: nine more `git rev-parse` calls and finds no new commit.
-HEXRUN = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{4,40}(?![0-9a-fA-F])")
+HEXRUN = re.compile(r"(?<![0-9a-zA-Z])[0-9a-fA-F]{4,40}(?![0-9a-zA-Z])")
 
 #: The English spellings of a small count, so rule 5b holds both halves of what
 #: this page actually says: `the 14 .uf2 flavors` and `rebuilds all fourteen

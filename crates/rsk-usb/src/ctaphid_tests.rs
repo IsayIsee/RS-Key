@@ -20,9 +20,9 @@
 //!
 //! | Defect | Anchor, and what it becomes | The assertion that fell, and its direction |
 //! |---|---|---|
-//! | wrong channel, INIT-type arm | the BUSY return at `crates/rsk-usb/src/ctaphid.rs:461-465`, deleted | `init_other_channel_busy`: `Error(cid, 4)` where `Error(cid, 6)` was owed — `INVALID_SEQ` in place of `CHANNEL_BUSY`. `an_interfering_frame_never_moves_the_owners_transaction`: `owner: None` where `Some(0x1122_3344)` was owed. Both say a stranger's frame was ACTED ON, not that an honest one was refused |
-//! | premature completion | `crates/rsk-usb/src/ctaphid.rs:513` relaxed to `self.cur + CONT_DATA >= self.bcnt` | NINE tests fall, and the count matters because most are not witnesses. `multi_frame_reassembly` is: `Message(..)` where `None` was owed after the INIT of a two-frame message — a message COMPLETED that had not arrived. `cont_wrong_cid_busy`, `init_other_channel_busy` and `wrong_seq_aborts` say the same at their own INIT. TWO fall the other way round — `max_length_message` and `roundtrip`, `None` where `Message` was owed — the far side of the same defect, which proves nothing alone; `the_declared_length_is_refused_one_byte_past_the_buffer` reads 7550 for 7609, one CONT frame short, on that same reading. And `an_interfering_frame_never_moves_the_owners_transaction:631` fells its own SETUP ("the pre-state is not a live transaction"), so it is a casualty, not evidence |
-//! | the copy bound | `crates/rsk-usb/src/ctaphid.rs:502` relaxed to `CONT_DATA` | Exactly ONE killer, which is the row's point: `a_partial_last_frame_advances_by_its_remainder_and_no_further` — "the tail advanced by more than it carried", `cur` 116 where 67 was owed, the index walked PAST the declared length. Nothing else in the suite sees it: `CTAP_MAX_MESSAGE - INIT_DATA` divides by `CONT_DATA` exactly, so every other test's last frame is full and the `min` never bites |
+//! | wrong channel, INIT-type arm | the BUSY return at `crates/rsk-usb/src/ctaphid.rs:473-477`, deleted | `init_other_channel_busy`: `Error(cid, 4)` where `Error(cid, 6)` was owed — `INVALID_SEQ` in place of `CHANNEL_BUSY`. `an_interfering_frame_never_moves_the_owners_transaction`: `owner: None` where `Some(0x1122_3344)` was owed. Both say a stranger's frame was ACTED ON, not that an honest one was refused |
+//! | premature completion | `crates/rsk-usb/src/ctaphid.rs:525` relaxed to `self.cur + CONT_DATA >= self.bcnt` | NINE tests fall, and the count matters because most are not witnesses. `multi_frame_reassembly` is: `Message(..)` where `None` was owed after the INIT of a two-frame message — a message COMPLETED that had not arrived. `cont_wrong_cid_busy`, `init_other_channel_busy` and `wrong_seq_aborts` say the same at their own INIT. TWO fall the other way round — `max_length_message` and `roundtrip`, `None` where `Message` was owed — the far side of the same defect, which proves nothing alone; `the_declared_length_is_refused_one_byte_past_the_buffer` reads 7550 for 7609, one CONT frame short, on that same reading. And `an_interfering_frame_never_moves_the_owners_transaction:631` fells its own SETUP ("the pre-state is not a live transaction"), so it is a casualty, not evidence |
+//! | the copy bound | `crates/rsk-usb/src/ctaphid.rs:514` relaxed to `CONT_DATA` | Exactly ONE killer, which is the row's point: `a_partial_last_frame_advances_by_its_remainder_and_no_further` — "the tail advanced by more than it carried", `cur` 116 where 67 was owed, the index walked PAST the declared length. Nothing else in the suite sees it: `CTAP_MAX_MESSAGE - INIT_DATA` divides by `CONT_DATA` exactly, so every other test's last frame is full and the `min` never bites |
 //! | CONTROL — no patch | — | 62 passed, exit 0: the row is not red for a reason of its own |
 
 use super::*;
@@ -458,9 +458,9 @@ struct StallSink {
     attempts: usize,
 }
 impl FrameSink for StallSink {
-    async fn write_frame(&mut self, _frame: &[u8; HID_RPT_SIZE]) {
+    async fn write_frame(&mut self, _frame: &[u8; HID_RPT_SIZE]) -> Result<(), EndpointError> {
         self.attempts += 1;
-        core::future::pending::<()>().await
+        core::future::pending::<Result<(), EndpointError>>().await
     }
 }
 
@@ -469,8 +469,9 @@ struct CountingSink {
     written: usize,
 }
 impl FrameSink for CountingSink {
-    async fn write_frame(&mut self, _frame: &[u8; HID_RPT_SIZE]) {
+    async fn write_frame(&mut self, _frame: &[u8; HID_RPT_SIZE]) -> Result<(), EndpointError> {
         self.written += 1;
+        Ok(())
     }
 }
 
@@ -899,4 +900,103 @@ fn a_corrupt_probe_cursor_is_refused_before_copying_a_continuation() {
         Outcome::Error(cid, ERR_INVALID_LEN)
     );
     assert_eq!(posed.tx_view().owner, None);
+}
+
+#[test]
+fn write_frames_stops_after_an_endpoint_error() {
+    struct Closed {
+        attempts: usize,
+    }
+    impl FrameSink for Closed {
+        async fn write_frame(&mut self, _: &[u8; HID_RPT_SIZE]) -> Result<(), EndpointError> {
+            self.attempts += 1;
+            Err(EndpointError::Disabled)
+        }
+    }
+    let mut sink = Closed { attempts: 0 };
+    let data = [0xAB; FOUR_FRAME_LEN];
+    assert!(
+        poll_bounded(
+            write_frames(
+                &mut sink,
+                1,
+                CTAPHID_CBOR,
+                &data,
+                core::future::pending::<()>
+            ),
+            1000
+        )
+        .is_some()
+    );
+    assert_eq!(
+        sink.attempts, 1,
+        "an endpoint reset continued the old response"
+    );
+}
+
+/// The wire vocabulary, pinned to the protocol bytes (CTAP 2.3 §11.2.9.1.3, plus
+/// the pre-standard U2FHID commands `tools/emu` names). `TYPE_INIT | n` and
+/// `TYPE_INIT ^ n` agree for every command here by construction — the INIT bit is
+/// disjoint from every command nibble — so an OR→XOR swap is unobservable. An
+/// `&` in that place is not: `TYPE_INIT & 0x11` is 0x00, a command that erases
+/// itself, and this is the assertion that notices.
+#[test]
+fn the_command_bytes_are_the_protocol_constants() {
+    assert_eq!(CTAPHID_PING, 0x81);
+    assert_eq!(CTAPHID_MSG, 0x83);
+    assert_eq!(CTAPHID_LOCK, 0x84);
+    assert_eq!(CTAPHID_INIT, 0x86);
+    assert_eq!(CTAPHID_WINK, 0x88);
+    assert_eq!(CTAPHID_CBOR, 0x90);
+    assert_eq!(CTAPHID_CANCEL, 0x91);
+    assert_eq!(CTAPHID_KEEPALIVE, 0xBB);
+    assert_eq!(CTAPHID_SYNC, 0xBC);
+    assert_eq!(CTAPHID_ERROR, 0xBF);
+    assert_eq!(CTAPHID_VENDOR_FIRST, 0xC0);
+    assert_eq!(CTAPHID_VERSION, 0xE1);
+    assert_eq!(CTAPHID_UUID, 0xE2);
+}
+
+/// §11.2.9.2.2's lock lasts `seconds` — the field is scaled by 1000, not added to
+/// it. A `+` in place of the `*` makes a 3-second lock expire 1.997 s early, so the
+/// exclusion has to hold right up to `now + seconds * 1000` and end there.
+#[test]
+fn a_lock_lasts_its_whole_seconds_field() {
+    let mut lock = ChannelLock::default();
+    let (mine, theirs) = (0x0100_0000, 0x0100_0001);
+    lock.arm(mine, 3, 1_000);
+    assert!(
+        lock.blocks(theirs, 3_999),
+        "still locked just before expiry"
+    );
+    assert!(!lock.blocks(theirs, 4_000), "expired at now + 3 * 1000 ms");
+}
+
+/// A payload one byte past the INIT frame is one INIT plus one 1-byte
+/// continuation, and the walk must end there. Driving `next()` a bounded number
+/// of times (not collecting) is what makes a continuation whose cursor stops
+/// advancing, or stops a frame early, an assertion failure rather than a
+/// non-terminating stream or a hang.
+#[test]
+fn a_continuation_walk_ends_exactly_at_the_declared_length() {
+    let cid = 0x0100_0000;
+    let data = [0xCD; INIT_DATA + 1];
+    let mut frames = TxFrames::new(cid, CTAPHID_MSG, &data);
+    let init = frames.next().expect("the INIT frame");
+    assert_eq!(
+        ((init[5] as usize) << 8) | init[6] as usize,
+        data.len(),
+        "the INIT frame declares a different length than the payload"
+    );
+    let cont = frames.next().expect("the one continuation");
+    assert_eq!(cont[4], 0, "the continuation's seq");
+    assert_eq!(
+        &cont[5..6],
+        &data[INIT_DATA..],
+        "the continuation carries the remainder"
+    );
+    assert!(
+        frames.next().is_none(),
+        "the walk did not stop at the declared length"
+    );
 }

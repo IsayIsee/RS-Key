@@ -12,6 +12,9 @@ use rsk_fs::Fs;
 use rsk_fs::storage::ram::RamStorage;
 use rsk_sdk::Apdu;
 
+#[path = "restart_tests.rs"]
+mod restarts;
+
 struct DenyPresence;
 
 #[test]
@@ -654,3 +657,7 @@ fn ins_1e_and_1f_answer_as_a_yubikey_does_and_reset_nothing() {
         .expect("the stored config stays");
     assert_eq!(&got[..n], &stored);
 }
+
+#[cfg(feature = "strict-config")]
+#[path = "mutation_tests.rs"]
+mod mutation;

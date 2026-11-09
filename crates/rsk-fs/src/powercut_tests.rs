@@ -91,7 +91,11 @@ struct Medium {
     /// that did.
     cuts: Rc<Cell<u32>>,
     read_cut: Rc<Cell<Option<u16>>>,
+    read_fault: Rc<Cell<Option<u16>>>,
+    err: Rc<Cell<bool>>,
     walk_cut: Rc<Cell<Option<usize>>>,
+    /// Number of upcoming key walks to truncate without cutting the power.
+    walk_fault: Rc<Cell<u32>>,
 }
 
 impl Medium {
@@ -137,8 +141,15 @@ impl Medium {
 
 impl Storage for Medium {
     fn read(&mut self, fid: u16, buf: &mut [u8]) -> Option<usize> {
+        self.err.set(false);
+        if self.read_fault.get() == Some(fid) {
+            self.read_fault.set(None);
+            self.err.set(true);
+            return None;
+        }
         if self.read_cut.get() == Some(fid) {
             self.read_cut.set(None);
+            self.err.set(true);
             self.cut();
             return None;
         }
@@ -167,10 +178,19 @@ impl Storage for Medium {
     }
 
     fn size(&mut self, fid: u16) -> Option<usize> {
+        self.err.set(false);
         self.kept.borrow().get(&fid).map(Vec::len)
     }
 
+    fn last_error(&self) -> bool {
+        self.err.get()
+    }
+
     fn for_each_key(&mut self, f: &mut dyn FnMut(u16)) -> bool {
+        if self.walk_fault.get() > 0 {
+            self.walk_fault.set(self.walk_fault.get() - 1);
+            return false;
+        }
         if let Some(skip) = self.walk_cut.get() {
             if skip == 0 {
                 self.walk_cut.set(None);
@@ -206,7 +226,10 @@ impl RamDevice {
                 forget: Rc::new(Cell::new(None)),
                 cuts: Rc::new(Cell::new(0)),
                 read_cut: Rc::new(Cell::new(None)),
+                read_fault: Rc::new(Cell::new(None)),
+                err: Rc::new(Cell::new(false)),
                 walk_cut: Rc::new(Cell::new(None)),
+                walk_fault: Rc::new(Cell::new(0)),
             },
         }
     }
@@ -242,6 +265,41 @@ impl Device for RamDevice {
     fn revive(&mut self) {
         self.medium.dead.set(false);
     }
+}
+
+struct OneBoot(RamDevice);
+
+impl Device for OneBoot {
+    type Storage = Medium;
+
+    fn boot(&mut self) -> Fs<Medium> {
+        assert_eq!(self.0.boots, 0, "stable RAM recovery needs one boot");
+        self.0.boot()
+    }
+
+    fn dead(&self) -> bool {
+        self.0.dead()
+    }
+
+    fn revive(&mut self) {
+        self.0.revive();
+    }
+}
+
+#[test]
+fn an_atomic_ram_put_cut_finishes_recovery_after_one_boot() {
+    let mut dev = OneBoot(RamDevice::new(Tear::Before));
+    let mut fs = dev.0.mount();
+    let mut model = PowerCutModel::new(&FIDS, META_MAX);
+    model.step(&mut dev, &mut fs, Op::Put(A, b"old".to_vec()));
+    dev.0.arm(0);
+    model.step(&mut dev, &mut fs, Op::Put(A, b"new".to_vec()));
+    assert_eq!(dev.0.boots, 1);
+    assert_eq!(model.live(), 1);
+    assert!(!dev.dead());
+    let mut out = [0; 3];
+    assert_eq!(fs.read(A, &mut out), Some(3));
+    assert_eq!(&out, b"old");
 }
 
 /// The script every sweep replays: two files with metadata, a delete, a rewrite
@@ -492,4 +550,210 @@ fn the_power_cut_model_recovers_when_reads_or_mount_walks_lose_power() {
         assert_eq!(fs.meta_find(A, &mut record), Some(record.len()));
         assert_eq!(&record, b"policy");
     }
+}
+
+/// A failed read with the power still on is not evidence of absence. The old
+/// oracle asked `Fs::read`, which collapses a backend fault into `None`, and
+/// then accepted that `None` for a key the model knew was absent. The fuzz
+/// target's torn records can produce exactly this read error after a reboot,
+/// so the model must use the fallible probe and refuse the collapse.
+#[test]
+#[should_panic(expected = "read failed without a power cut")]
+fn a_read_failure_is_not_an_absent_file() {
+    let mut dev = RamDevice::new(Tear::Before);
+    let mut fs = Fs::new(dev.medium.clone());
+    // A truncated boot walk leaves the cache undecided, the one place a read is
+    // allowed to reach the backend for an absent key.
+    dev.medium.walk_fault.set(1);
+    fs.scan();
+    let mut model = PowerCutModel::new(&FIDS, META_MAX);
+    dev.medium.read_fault.set(Some(C));
+    model.step(&mut dev, &mut fs, Op::Read(C, 4));
+}
+
+/// A key walk that stops early with the power on is not evidence that its
+/// un-yielded keys are absent. The old sweep ignored `for_each_key`'s
+/// completeness flag, so a truncated walk could hide a committed key.
+#[test]
+#[should_panic(expected = "key walk truncated without a power cut")]
+fn a_truncated_key_walk_is_not_an_absent_key() {
+    let mut dev = RamDevice::new(Tear::Before);
+    let mut fs = dev.mount();
+    let mut model = PowerCutModel::new(&FIDS, META_MAX);
+    model.step(&mut dev, &mut fs, Op::Put(A, b"value".to_vec()));
+    // The recovery's scan consumes the first walk; the sweep's walk is the one
+    // that must not be read as an absent key.
+    dev.medium.walk_fault.set(2);
+    model.reboot(&mut dev, &mut fs);
+}
+
+/// A recovery that never settles must need a second boot, and a second boot with
+/// no second cut is not a recovery. This bounds the loop without weakening a
+/// legitimate multi-cut history: `OneBoot` refuses the retry.
+#[test]
+fn a_recovery_that_does_not_settle_cannot_loop_on_healthy_power() {
+    let mut dev = OneBoot(RamDevice::new(Tear::Before));
+    let mut fs = dev.0.mount();
+    let mut model = PowerCutModel::new(&FIDS, META_MAX);
+    model.step(&mut dev, &mut fs, Op::Put(A, b"old".to_vec()));
+    dev.0.arm(0);
+    model.step(&mut dev, &mut fs, Op::Put(A, b"new".to_vec()));
+}
+
+/// The same rule without a hidden key: the model is empty, so a complete walk
+/// would legitimately see nothing. The empty result still cannot be read from a
+/// truncated walk; this isolates the completeness guard from the key-set check.
+#[test]
+#[should_panic(expected = "key walk truncated without a power cut")]
+fn a_truncated_empty_key_walk_is_not_an_absent_key() {
+    let mut dev = RamDevice::new(Tear::Before);
+    let mut fs = Fs::new(dev.medium.clone());
+    let mut model = PowerCutModel::new(&FIDS, META_MAX);
+    dev.medium.walk_fault.set(2);
+    model.reboot(&mut dev, &mut fs);
+}
+
+/// Adopting over a read fault with the power on must not turn that fault into
+/// a partial model. This is the `adopt` half of the same rule the read path
+/// checks: an error is not an absence, and a dead device needs a reboot rather
+/// than a model built from whatever answered before the fault.
+#[test]
+#[should_panic(expected = "read failed without a power cut")]
+fn adopting_a_value_read_failure_is_not_absence() {
+    let mut dev = RamDevice::new(Tear::Before);
+    let mut fs = Fs::new(dev.medium.clone());
+    // A truncated boot walk leaves the FID undecided, so the read reaches the
+    // medium instead of a cache that says "absent".
+    dev.medium.walk_fault.set(1);
+    fs.scan();
+    let mut model = PowerCutModel::new(&FIDS, META_MAX);
+    dev.medium.read_fault.set(Some(C));
+    model.adopt(&mut dev, &mut fs);
+}
+
+#[test]
+fn adopting_a_value_read_failure_after_a_power_cut_recovers() {
+    let mut dev = RamDevice::new(Tear::Before);
+    let mut fs = Fs::new(dev.medium.clone());
+    dev.medium.walk_fault.set(1);
+    fs.scan();
+    let mut model = PowerCutModel::new(&FIDS, META_MAX);
+    dev.medium.dead.set(true);
+    dev.medium.read_fault.set(Some(A));
+    model.adopt(&mut dev, &mut fs);
+    assert!(!dev.dead());
+}
+
+#[test]
+#[should_panic(expected = "read failed without a power cut")]
+fn adopting_a_metadata_read_failure_is_not_absence() {
+    let mut dev = RamDevice::new(Tear::Before);
+    let mut fs = Fs::new(dev.medium.clone());
+    dev.medium.walk_fault.set(1);
+    fs.scan();
+    let mut model = PowerCutModel::new(&FIDS, META_MAX);
+    dev.medium.read_fault.set(Some(crate::EF_META));
+    model.adopt(&mut dev, &mut fs);
+}
+
+#[test]
+fn adopting_a_metadata_read_failure_after_a_power_cut_recovers() {
+    let mut dev = RamDevice::new(Tear::Before);
+    let mut fs = Fs::new(dev.medium.clone());
+    dev.medium.walk_fault.set(1);
+    fs.scan();
+    let mut model = PowerCutModel::new(&FIDS, META_MAX);
+    dev.medium.dead.set(true);
+    dev.medium.read_fault.set(Some(crate::EF_META));
+    model.adopt(&mut dev, &mut fs);
+    assert!(!dev.dead());
+}
+
+/// A cut inside the command and a second cut inside its recovery. The first
+/// must not hide the second: the recovery's read or mount walk fails, the loop
+/// reboots, and the settled state is still the old value with the neighbour
+/// intact. Both cuts are counted, so a fixture that only injected one cannot
+/// pass as the combination.
+#[test]
+fn a_second_cut_inside_recovery_does_not_hide_the_first() {
+    for refuse_walk in [false, true] {
+        let mut dev = RamDevice::new(Tear::Before);
+        let mut fs = dev.mount();
+        let mut model = PowerCutModel::new(&FIDS, META_MAX);
+        model.step(&mut dev, &mut fs, Op::Put(A, b"old".to_vec()));
+        model.step(&mut dev, &mut fs, Op::Put(B, b"neighbour".to_vec()));
+        dev.arm(0); // the command's write is cut
+        if refuse_walk {
+            dev.medium.walk_cut.set(Some(0)); // the recovery mount walk is cut
+        } else {
+            dev.medium.read_cut.set(Some(A)); // the recovery settle read is cut
+        }
+        model.step(&mut dev, &mut fs, Op::Put(A, b"new".to_vec()));
+        assert_eq!(
+            dev.medium.cuts.get(),
+            2,
+            "both the command cut and the recovery cut must fire (walk={refuse_walk})"
+        );
+        assert!(!dev.dead());
+        let mut a = [0; 3];
+        assert_eq!(fs.read(A, &mut a), Some(3));
+        assert_eq!(&a, b"old");
+        let mut b = [0; 9];
+        assert_eq!(fs.read(B, &mut b), Some(9));
+        assert_eq!(&b, b"neighbour");
+    }
+}
+
+#[test]
+fn explicit_reads_refuse_unmodelled_length_and_content_changes() {
+    for metadata in [false, true] {
+        for changed in [b"longer".as_slice(), b"lost".as_slice()] {
+            let mut dev = RamDevice::new(Tear::Before);
+            let mut fs = dev.mount();
+            let mut model = PowerCutModel::new(&FIDS, META_MAX);
+            let initial = if metadata {
+                Op::MetaAdd(A, b"kept".to_vec())
+            } else {
+                Op::Put(A, b"kept".to_vec())
+            };
+            model.step(&mut dev, &mut fs, initial);
+            if metadata {
+                fs.meta_add(A, changed).unwrap();
+            } else {
+                fs.put(A, changed).unwrap();
+            }
+            let op = if metadata {
+                Op::MetaFind(A)
+            } else {
+                Op::Read(A, 16)
+            };
+            let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                model.step(&mut dev, &mut fs, op)
+            }))
+            .expect_err("model accepted an unacknowledged replacement");
+            let text = panic.downcast_ref::<String>().unwrap();
+            assert!(
+                text.starts_with("assertion `left == right` failed\n"),
+                "{text}"
+            );
+            if changed.len() != 4 {
+                assert!(text.contains("left: 6\n right: 4"), "{text}");
+            } else {
+                assert!(text.contains("left: [108, 111, 115, 116]"), "{text}");
+                assert!(text.contains("right: [107, 101, 112, 116]"), "{text}");
+            }
+        }
+    }
+}
+
+#[test]
+#[should_panic(expected = "committed meta lost or changed")]
+fn recovery_refuses_unacknowledged_metadata_with_the_value_intact() {
+    let mut dev = RamDevice::new(Tear::Before);
+    let mut fs = dev.mount();
+    let mut model = PowerCutModel::new(&FIDS, META_MAX);
+    model.step(&mut dev, &mut fs, Op::Put(A, b"value".to_vec()));
+    model.step(&mut dev, &mut fs, Op::MetaAdd(A, b"policy".to_vec()));
+    fs.meta_add(A, b"forged").unwrap();
+    model.reboot(&mut dev, &mut fs);
 }

@@ -17,6 +17,12 @@ use rsk_fs::storage::ram::RamStorage;
 #[path = "getassertion_walk_tests.rs"]
 mod walk;
 
+#[path = "getassertion_mutation_tests.rs"]
+mod mutation;
+
+#[path = "getassertion_discovery_tests.rs"]
+mod discovery;
+
 struct SeqRng(u64);
 impl Rng for SeqRng {
     fn fill(&mut self, buf: &mut [u8]) {
@@ -479,7 +485,7 @@ fn unscoped_pin_token_binds_rpid_on_first_getassertion() {
     {
         let req = ga_request_pin(&cred_id, &param[..plen], 2);
         let mut o = [0u8; 1024];
-        let mut presence = crate::AlwaysConfirm;
+        let mut presence = Decline;
         let mut ctx = Ctx {
             presence: &mut presence,
             dev: dev(),
@@ -488,12 +494,18 @@ fn unscoped_pin_token_binds_rpid_on_first_getassertion() {
             state: &mut state,
             now_ms: 20,
         };
-        get_assertion(&mut ctx, &req, &mut o).unwrap();
+        assert_eq!(
+            get_assertion(&mut ctx, &req, &mut o),
+            Err(CtapError::OperationDenied)
+        );
     }
     assert!(
         state.paut.has_rp_id,
         "unscoped token must bind on first use"
     );
+    assert!(state.user_verified(), "a declined touch must leave UV live");
+    assert_eq!(state.paut.permissions, PERM_GA);
+    assert_eq!(state.paut.rp_id_hash, sha256(b"example.com"));
     // A second GA for a DIFFERENT rpId is rejected before credential lookup.
     let mut buf = [0u8; 512];
     let m = {
@@ -520,6 +532,14 @@ fn unscoped_pin_token_binds_rpid_on_first_getassertion() {
         CtapError::PinAuthInvalid,
         "a token bound to example.com must reject other.example"
     );
+    assert!(ctx.state.user_verified());
+    assert_eq!(ctx.state.paut.permissions, PERM_GA);
+    get_assertion(
+        &mut ctx,
+        &ga_request_pin(&cred_id, &param[..plen], 2),
+        &mut o,
+    )
+    .expect("the same live token must still authorize its bound RP");
 }
 
 #[test]
@@ -5241,3 +5261,9 @@ fn a_u2f_credential_whose_counter_will_not_read_is_not_asserted() {
 // The read-fault sweep lives in its own file; it needs this module's fixtures.
 #[path = "getassertion_reads_tests.rs"]
 mod reads;
+
+#[path = "getassertion_restart_tests.rs"]
+mod restarts;
+
+#[path = "getassertion_component_tests.rs"]
+mod component;

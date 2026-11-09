@@ -15,6 +15,7 @@
     clippy::cast_possible_truncation
 )]
 
+mod counter;
 mod seal;
 
 use core::cell::RefCell;
@@ -38,7 +39,7 @@ pub const VERSION: (u8, u8, u8) = rsk_sdk::FIRMWARE_VERSION;
 
 // FIDs.
 /// First credential slot, for fault injection through the storage interface.
-pub const EF_OATH_CRED: u16 = 0xBA00; // 255 cred slots, 0xBA00..=0xBAFE (each a sealed KeyFid)
+pub const EF_OATH_CRED: u16 = rsk_fs::counter::OATH_FIRST; // 255 cred slots, 0xBA00..=0xBAFE (each a sealed KeyFid)
 const EF_OATH_CODE: KeyFid = KeyFid::new(0xBAFF); // SET CODE validation key, sealed
 /// VALIDATE's read buffer, and so the widest access code that can still be
 /// read back — otherwise `seal_read` fails and (pre-fix) VALIDATE unlocked the
@@ -46,9 +47,9 @@ const EF_OATH_CODE: KeyFid = KeyFid::new(0xBAFF); // SET CODE validation key, se
 /// ([`CODE_TLV_MAX`]); this stays wide because a build before that rule stored
 /// up to this much, and such a key must go on opening.
 const OATH_CODE_MAX: usize = 128;
-const EF_OTP_PIN: u16 = 0x10A0;
+const EF_OTP_PIN: u16 = rsk_fs::counter::OATH_PIN;
 
-const MAX_OATH_CRED: u16 = 255;
+const MAX_OATH_CRED: u16 = rsk_fs::counter::OATH_SLOTS;
 /// Width of the VALIDATE challenge SELECT offers — the one place YKOATH fixes a
 /// challenge length. A read path's challenge is [`CHALLENGE_MAX`] wide.
 const CHALLENGE_LEN: usize = 8;
@@ -574,12 +575,10 @@ impl<'a> OathApplet<'a> {
         // LOCKED — a fail-open here unlocked it without the access code. A truly
         // absent code leaves the applet as select() set it (unlocked, no code).
         //
-        // The collapsing probe stands: `select` reads a code it could not probe as
-        // SET and starts the session locked, so `validated` is already false in every
-        // state this arm can be reached in. Measured — a `try_has_key` twin here is
-        // bit-identical, and a guard nothing can falsify is a comment with a type.
+        // SELECT starts an unreadable code locked; a visible damaged record also
+        // revokes a prior validation here, including a zero-length record.
         let Some(n) = seal::seal_read(&dev, fs, EF_OATH_CODE, &mut code) else {
-            if fs.has_key(EF_OATH_CODE) {
+            if fs.exists(EF_OATH_CODE.get()) {
                 self.validated = false;
             }
             return Sw::DATA_INVALID;
@@ -588,6 +587,10 @@ impl<'a> OathApplet<'a> {
             self.validated = false;
             return Sw::DATA_INVALID;
         };
+        if secret.is_empty() && alg_supported(alg) {
+            self.validated = false;
+            return Sw::DATA_INVALID;
+        }
         let mut mac = Secret::<[u8; 64]>::zeroed();
         let Some(proof) = oath_hmac(alg, secret, &self.challenge, mac.expose_mut()) else {
             return Sw::WRONG_DATA;
@@ -697,7 +700,18 @@ impl<'a> OathApplet<'a> {
             };
             counter = *stored;
             *stored = u64::from_be_bytes(counter).wrapping_add(1).to_be_bytes();
-            if !self.store_cred(&dev, fs, fid, scratch.expose(), n) {
+            let published = counter::publish(
+                &dev,
+                fs,
+                &mut *self.rng.borrow_mut(),
+                KeyFid::new(fid),
+                stored,
+            );
+            if !match published {
+                Ok(true) => true,
+                Ok(false) => self.store_cred(&dev, fs, fid, scratch.expose(), n),
+                Err(_) => false,
+            } {
                 return Sw::MEMORY_FAILURE;
             }
         }
@@ -1061,9 +1075,7 @@ impl<'a> OathApplet<'a> {
     /// `Fs::has_data` collapses the two, and the absent arm here hands the stored
     /// credentials to an unauthenticated host.
     fn otp_pin_gate<S: Storage>(&self, fs: &mut Fs<S>) -> Result<(), Sw> {
-        let set = fs
-            .try_has_data(EF_OTP_PIN)
-            .map_err(|_| Sw::MEMORY_FAILURE)?;
+        let set = fs.try_exists(EF_OTP_PIN).map_err(|_| Sw::MEMORY_FAILURE)?;
         if set && !self.otp_pin_verified {
             return Err(Sw::SECURITY_STATUS_NOT_SATISFIED);
         }
@@ -1081,7 +1093,7 @@ impl<'a> OathApplet<'a> {
         // it proves nothing and this command is otherwise unauthenticated: a host
         // could plant a PIN on a factory-state key and unlock the store later,
         // through the access code the owner sets afterwards. Require the operator.
-        if !fs.has_key(EF_OATH_CODE)
+        if !fs.exists(EF_OATH_CODE.get())
             && self
                 .presence
                 .borrow_mut()
@@ -1097,7 +1109,7 @@ impl<'a> OathApplet<'a> {
         };
         // A faulted probe must not read as "no PIN yet": that arm overwrites the
         // owner's OTP-PIN with the caller's.
-        match fs.try_has_data(EF_OTP_PIN) {
+        match fs.try_exists(EF_OTP_PIN) {
             Ok(true) => return Sw::CONDITIONS_NOT_SATISFIED,
             Err(_) => return Sw::MEMORY_FAILURE,
             Ok(false) => {}
@@ -1229,7 +1241,7 @@ impl<'a> OathApplet<'a> {
         };
         // Any attempt clears a prior unlock; only a correct PIN restores one below. A
         // probe the flash failed reads as a code set, whose lock the PIN cannot open.
-        let code_set = fs.try_has_key(EF_OATH_CODE).unwrap_or(true);
+        let code_set = fs.try_exists(EF_OATH_CODE.get()).unwrap_or(true);
         let unlocked = self.validated;
         self.validated = false;
         self.otp_pin_verified = false;
@@ -1243,18 +1255,18 @@ impl<'a> OathApplet<'a> {
         // (rsk-fs `EF_HARDENED` invariant; audit run-35) BEFORE that write, so a
         // reset between the two appends costs the re-key and never the re-arm.
         //
-        // A re-arm the medium REFUSED skips the write instead of failing the verify:
-        // this upgrade is already best-effort here (`let _`), and skipping it leaves
-        // the record in force rather than superseded under a marker nothing clears.
-        if let Ok(rearmed) = rsk_fs::request_rescrub(fs) {
-            // Success: reset the counter and (lazily) upgrade a legacy record to the
-            // OTP-rooted v1 verifier. The OTP PIN doubles as VALIDATE (nitropy flow).
-            let _ = fs.put_over(
-                EF_OTP_PIN,
-                &Self::otp_pin_record_v1(&dev, pw),
-                Some(&rearmed),
-            );
-        }
+        // A medium that cannot show the re-arm landed fails the verify: the write
+        // below resets the counter, so skipping it would leave a mixed outcome
+        // behind a standing success. Matches `cmd_change_otp_pin`'s strict arm.
+        let Ok(rearmed) = rsk_fs::request_rescrub(fs) else {
+            return Sw::MEMORY_FAILURE;
+        };
+        // Success: reset the counter and lazily upgrade a legacy verifier (OTP PIN = VALIDATE).
+        let _ = fs.put_over(
+            EF_OTP_PIN,
+            &Self::otp_pin_record_v1(&dev, pw),
+            Some(&rearmed),
+        );
         // A code-less applet opens on its PIN (the nitropy flow); a coded one keeps
         // only the unlock its code gave, and the PIN opens the password safe alone.
         self.validated = !code_set || unlocked;
@@ -1321,7 +1333,7 @@ impl<S: Storage> Applet<Fs<S>> for OathApplet<'_> {
         // the access-code gate on every protected command, SELECT is unauthenticated
         // and host-driven, and the collapsed `false` opened the whole store for the
         // session — so the failed probe must lock it, not unlock it.
-        let code_set = fs.try_has_key(EF_OATH_CODE).unwrap_or(true);
+        let code_set = fs.try_exists(EF_OATH_CODE.get()).unwrap_or(true);
         if code_set {
             self.rng.borrow_mut().fill(&mut self.challenge);
             res.push(TAG_CHALLENGE);
@@ -1927,6 +1939,7 @@ fn find_cred<S: Storage>(
                 .and_then(|b| find_tag(b, TAG_NAME as u16))
                 == Some(name)
         {
+            counter::apply(dev, fs, KeyFid::new(fid), buf, n).map_err(|_| Sw::MEMORY_FAILURE)?;
             found = Some((fid, n));
             break;
         }
@@ -2012,6 +2025,9 @@ fn reseal_if_plaintext<S: Storage>(
         && let Some(old) = dev.pre_otp_arm()
         && let Some(n) = seal::open(&old, blob, out)
     {
+        if counter::apply(&old, fs, fid, out, n).is_err() {
+            return true;
+        }
         // Ahead of the write and gating it, per `rsk_fs::request_rescrub`: the copy
         // it supersedes is the pre-OTP one. The `return` stays outside — falling
         // through would re-seal that ciphertext as if it were plaintext.

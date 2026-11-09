@@ -114,7 +114,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.emulator == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # TrustZone isolation alone can take over an hour on the hosted runner.
+    # Leave time for the operation and power-cut suites that follow it.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -131,6 +133,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target/thumbv8m.main-none-eabihf
+            target/trustzone
             tools/emu/target
           key: image-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'tools/emu/Cargo.lock', 'flake.lock') }}
           restore-keys: image-${{ runner.os }}-
@@ -142,7 +145,7 @@ jobs:
 
       - name: image reports and logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: image-assurance
           path: |
@@ -188,7 +191,7 @@ jobs:
 
       - name: USB stack, PICOBOOT and MSC reports and logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: usbip-assurance
           path: |

@@ -28,6 +28,17 @@ use sequential_storage::map::{MapConfig, MapStorage};
 use rsk_fs::Storage;
 use rsk_sdk::error::{Error, Result};
 
+mod verified_flash;
+use verified_flash::VerifiedFlash;
+
+mod flash_buf;
+pub use flash_buf::FlashBuf;
+
+pub mod authenticated;
+pub mod flash_quad;
+pub mod flash_stream;
+pub mod xip_pause;
+
 /// Scratch for one map op; must fit the largest stored key+value.
 const KV_BUF: usize = 4080;
 
@@ -64,9 +75,9 @@ pub struct SeqStorage<
     CM: CacheImpl<u16>,
     CC: CacheImpl<u16>,
 > {
-    main: MapStorage<u16, F, CM>,
-    counter: MapStorage<u16, F, CC>,
-    buf: [u8; KV_BUF],
+    main: MapStorage<u16, VerifiedFlash<F>, CM>,
+    counter: MapStorage<u16, VerifiedFlash<F>, CC>,
+    buf: FlashBuf<KV_BUF>,
     /// Bytes one [`Storage::compact`] lap must push through the main ring to
     /// sweep it. Taken from the range, not a build constant: the `power_cut`
     /// fuzz target's ring is 8 pages against the board's 352, and a lap sized for
@@ -81,9 +92,10 @@ pub struct SeqStorage<
 
 /// Route the hot per-operation counters to the dedicated counter partition so their
 /// churn never reclaims a credential/key page in the main partition. The set is
-/// [`rsk_fs::counter::COUNTER_FIDS`], the one place it is written.
+/// [`rsk_fs::counter::COUNTER_FIDS`] plus the authenticated backend's private buckets.
 pub fn is_counter_fid(fid: u16) -> bool {
     rsk_fs::counter::COUNTER_FIDS.iter().any(|c| c.get() == fid)
+        || authenticated::bound_counter::bucket_index(fid).is_some()
 }
 
 impl<F: NorFlash + MultiwriteNorFlash + Clone, CM: CacheImpl<u16>, CC: CacheImpl<u16>>
@@ -100,10 +112,11 @@ impl<F: NorFlash + MultiwriteNorFlash + Clone, CM: CacheImpl<u16>, CC: CacheImpl
         counter_cache: CC,
     ) -> Self {
         let main_len = (main_range.end - main_range.start) as usize;
+        let flash = VerifiedFlash::new(flash);
         Self {
             main: MapStorage::new(flash.clone(), MapConfig::new(main_range), main_cache),
             counter: MapStorage::new(flash, MapConfig::new(counter_range), counter_cache),
-            buf: [0; KV_BUF],
+            buf: FlashBuf::new(),
             main_len,
             last_err: false,
         }
@@ -257,3 +270,7 @@ fn for_each_in<F: NorFlash + MultiwriteNorFlash, C: CacheImpl<u16>>(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "page_probe_tests.rs"]
+mod page_probe_tests;

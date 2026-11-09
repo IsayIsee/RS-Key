@@ -2826,3 +2826,12 @@ fn entering_the_no_host_info_repaints_the_body() {
         "the card did not replace the spinner"
     );
 }
+
+#[path = "render_contract_tests.rs"]
+mod contracts;
+
+#[path = "render_geometry_tests.rs"]
+mod geometry;
+
+#[path = "render_hold_tests.rs"]
+mod hold;

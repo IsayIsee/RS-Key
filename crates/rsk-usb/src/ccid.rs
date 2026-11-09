@@ -39,6 +39,10 @@ use rsk_secret::WipeGuard;
 const CCID_SET_PARAMS: u8 = 0x61;
 pub const CCID_POWER_ON: u8 = 0x62;
 pub const CCID_POWER_OFF: u8 = 0x63;
+pub const CCID_ABORT: u8 = 0x72;
+pub const ABORT_REQUEST: u8 = 0x01;
+pub const CMD_ABORTED: u8 = 0xff;
+pub const ERR_BAD_SEQUENCE: u8 = 6;
 const CCID_SLOT_STATUS: u8 = 0x65;
 const CCID_GET_PARAMS: u8 = 0x6C;
 const CCID_RESET_PARAMS: u8 = 0x6D;
@@ -171,6 +175,20 @@ const SLOT_CHANGE_PRESENT: &[u8] = &[0x50, 0x03];
 /// and streams CCID time-extensions while a slow op (RSA keygen, flash GC) runs.
 #[allow(async_fn_in_trait)] // crate-internal, single-threaded executor — no Send bound needed
 pub trait ApduHandler {
+    fn session_epoch() -> u32 {
+        0
+    }
+    /// Bind all packets of the response to the request epoch.
+    fn bind_response_epoch(_epoch: u32) {}
+    fn abort_requested(_sequence: u8) -> bool {
+        false
+    }
+    fn abort_pending() -> bool {
+        false
+    }
+    fn acknowledge_abort(_sequence: u8) -> Option<bool> {
+        None
+    }
     /// Process a command APDU, writing the response APDU (body + SW1 SW2) into
     /// `out`; returns its length.
     async fn handle_apdu(&mut self, apdu: &[u8], out: &mut [u8]) -> usize;
@@ -323,17 +341,40 @@ pub fn process_message(msg: &[u8], atr: &[u8], status: &mut u8, out: &mut [u8]) 
     }
 }
 
+/// Message storage kept in its final owner before constructing the transport.
+pub struct Buffers {
+    rx: [u8; MAX_CCID_MSG],
+    tx: [u8; MAX_CCID_MSG],
+}
+
+impl Buffers {
+    pub const fn new() -> Self {
+        Self {
+            rx: [0; MAX_CCID_MSG],
+            tx: [0; MAX_CCID_MSG],
+        }
+    }
+}
+
+impl Default for Buffers {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// CCID transport bound to a bulk OUT/IN pair plus an interrupt IN endpoint,
 /// dispatching `XfrBlock` APDUs to `H`.
 pub struct Ccid<'d, D: Driver<'d>, H: ApduHandler> {
+    interface: u8,
+    session_epoch: u32,
     read_ep: D::EndpointOut,
     write_ep: D::EndpointIn,
     int_ep: D::EndpointIn,
     handler: H,
     status: u8,
     atr: &'static [u8],
-    rx: [u8; MAX_CCID_MSG],
-    tx: [u8; MAX_CCID_MSG],
+    rx: &'d mut [u8; MAX_CCID_MSG],
+    tx: &'d mut [u8; MAX_CCID_MSG],
 }
 
 impl<'d, D: Driver<'d>, H: ApduHandler> Ccid<'d, D, H> {
@@ -349,9 +390,14 @@ impl<'d, D: Driver<'d>, H: ApduHandler> Ccid<'d, D, H> {
         handler: H,
         atr: &'static [u8],
         pin_support: u8,
+        buffers: &'d mut Buffers,
     ) -> Self {
+        let Buffers { rx, tx } = buffers;
+        rx.fill(0);
+        tx.fill(0);
         let mut func = builder.function(USB_CLASS_SMART_CARD, 0, 0);
         let mut iface = func.interface();
+        let interface = u8::from(iface.interface_number());
         let mut alt = iface.alt_setting(USB_CLASS_SMART_CARD, 0, 0, None);
         // `bPINSupport` is body byte 50 (full descriptor byte 52, the offset every
         // host CCID driver reads). Patch a stack copy — embassy copies the bytes
@@ -366,15 +412,21 @@ impl<'d, D: Driver<'d>, H: ApduHandler> Ccid<'d, D, H> {
         drop(func);
 
         Self {
+            interface,
+            session_epoch: H::session_epoch(),
             read_ep,
             write_ep,
             int_ep,
             handler,
             status: STATUS_INACTIVE,
             atr,
-            rx: [0; MAX_CCID_MSG],
-            tx: [0; MAX_CCID_MSG],
+            rx,
+            tx,
         }
+    }
+
+    pub fn interface_number(&self) -> u8 {
+        self.interface
     }
 
     /// Read messages forever, answer each one. Announces the card as present on
@@ -384,19 +436,56 @@ impl<'d, D: Driver<'d>, H: ApduHandler> Ccid<'d, D, H> {
     /// card via Slot Status regardless.
     pub async fn run(&mut self) -> ! {
         self.read_ep.wait_enabled().await;
+        H::bind_response_epoch(H::session_epoch());
         let _ = select(
             self.int_ep.write(SLOT_CHANGE_PRESENT),
             Timer::after_millis(50),
         )
         .await;
         loop {
-            match self.read_message().await {
+            let read_epoch = H::session_epoch();
+            let message = self.read_message().await;
+            H::bind_response_epoch(self.session_epoch);
+            match message {
                 Some(total) => {
                     // An XfrBlock too short for an APDU is refused inline, any other
                     // goes to the worker (async) with a streamed CCID time-extension;
                     // the protocol messages (power/params/…) are answered inline.
                     let msg = self.rx.get(..total).unwrap_or_default();
-                    if let Some(n) = refuse_short_xfr(msg, self.status, &mut self.tx) {
+                    let seq = self.rx[6];
+                    if let Some(seq) = abort_sequence(msg)
+                        && let Some(accepted) = H::acknowledge_abort(seq)
+                    {
+                        put_header(
+                            self.tx.as_mut_slice(),
+                            CCID_SLOT_STATUS_RET,
+                            0,
+                            seq,
+                            self.status | if accepted { 0 } else { STATUS_FAILED },
+                        );
+                        self.tx[8] = if accepted { 0 } else { ERR_BAD_SEQUENCE };
+                        let _ = select(
+                            self.write_ep.write_transfer(&self.tx[..HEADER], false),
+                            Timer::after_millis(TX_TIMEOUT_MS),
+                        )
+                        .await;
+                    } else if H::abort_pending() {
+                        put_header(
+                            self.tx.as_mut_slice(),
+                            CCID_DATA_BLOCK_RET,
+                            0,
+                            seq,
+                            self.status | STATUS_FAILED,
+                        );
+                        self.tx[8] = CMD_ABORTED;
+                        let _ = select(
+                            self.write_ep.write_transfer(&self.tx[..HEADER], false),
+                            Timer::after_millis(TX_TIMEOUT_MS),
+                        )
+                        .await;
+                    } else if let Some(n) =
+                        refuse_short_xfr(msg, self.status, self.tx.as_mut_slice())
+                    {
                         let _ = select(
                             self.write_ep
                                 .write_transfer(self.tx.get(..n).unwrap_or_default(), false),
@@ -418,7 +507,7 @@ impl<'d, D: Driver<'d>, H: ApduHandler> Ccid<'d, D, H> {
                             self.rx.get(..total).unwrap_or_default(),
                             self.atr,
                             &mut self.status,
-                            &mut self.tx,
+                            self.tx.as_mut_slice(),
                         );
                         if n > 0 {
                             // A short packet (or ZLP on an exact multiple) ends the
@@ -433,6 +522,7 @@ impl<'d, D: Driver<'d>, H: ApduHandler> Ccid<'d, D, H> {
                         }
                     }
                 }
+                None if read_epoch != H::session_epoch() => {}
                 None => {
                     // Bad framing: reply "6F 00" (wrong length) and resync. Echo the
                     // sequence we are answering — every `read_message` bail-out has
@@ -441,7 +531,13 @@ impl<'d, D: Driver<'d>, H: ApduHandler> Ccid<'d, D, H> {
                     // does, on the power/status/params responses) discarded the one
                     // reply whose whole job is to resynchronise (audit run-36).
                     let seq = self.rx[6];
-                    put_header(&mut self.tx, CCID_DATA_BLOCK_RET, 2, seq, self.status);
+                    put_header(
+                        self.tx.as_mut_slice(),
+                        CCID_DATA_BLOCK_RET,
+                        2,
+                        seq,
+                        self.status,
+                    );
                     self.tx[HEADER] = 0x6F;
                     self.tx[HEADER + 1] = 0x00;
                     let _ = select(
@@ -461,6 +557,9 @@ impl<'d, D: Driver<'d>, H: ApduHandler> Ccid<'d, D, H> {
     /// `write_ep` — disjoint fields, so the time-extensions keep flowing while the
     /// worker blocks on the slow op (on-card RSA keygen, flash GC).
     async fn run_xfr(&mut self, a: usize, b: usize) {
+        let epoch = self.session_epoch;
+        H::bind_response_epoch(epoch);
+        let mut aborted = false;
         let Self {
             handler,
             write_ep,
@@ -469,6 +568,7 @@ impl<'d, D: Driver<'d>, H: ApduHandler> Ccid<'d, D, H> {
             status,
             ..
         } = self;
+        let tx = &mut **tx;
         let seq = rx[6];
         let n = {
             // The APDU can carry an imported private key: wiped once the handler is
@@ -476,9 +576,13 @@ impl<'d, D: Driver<'d>, H: ApduHandler> Ccid<'d, D, H> {
             let req = WipeGuard::new(rx.get_mut(a..b).unwrap_or_default());
             let mut fut = core::pin::pin!(handler.handle_apdu(&req, &mut tx[HEADER..]));
             loop {
+                aborted |= H::abort_requested(seq);
                 match select(fut.as_mut(), Timer::after_millis(WTX_INTERVAL_MS)).await {
                     Either::First(n) => break n,
                     Either::Second(_) => {
+                        if epoch != H::session_epoch() {
+                            continue;
+                        }
                         let mut wtx = [0u8; HEADER];
                         put_header(&mut wtx, CCID_DATA_BLOCK_RET, 0, seq, STATUS_TIMEEXT);
                         let _ = select(
@@ -490,6 +594,25 @@ impl<'d, D: Driver<'d>, H: ApduHandler> Ccid<'d, D, H> {
                 }
             }
         };
+        aborted |= H::abort_requested(seq);
+        if epoch != H::session_epoch() {
+            let _response = WipeGuard::new(tx);
+            *status = STATUS_INACTIVE;
+            return;
+        }
+        if aborted {
+            {
+                let _response = WipeGuard::new(tx);
+            }
+            put_header(tx, CCID_DATA_BLOCK_RET, 0, seq, *status | STATUS_FAILED);
+            tx[8] = CMD_ABORTED;
+            let _ = select(
+                write_ep.write_transfer(&tx[..HEADER], false),
+                Timer::after_millis(TX_TIMEOUT_MS),
+            )
+            .await;
+            return;
+        }
         // handle_apdu wrote the body into tx[HEADER..]; frame the response header.
         let n = n.min(tx.len() - HEADER);
         put_header(tx, CCID_DATA_BLOCK_RET, dw_length(n), seq, *status);
@@ -512,6 +635,9 @@ impl<'d, D: Driver<'d>, H: ApduHandler> Ccid<'d, D, H> {
     /// frames a normal DataBlock with the live slot status; a pad cancel/timeout
     /// frames a failed DataBlock with the matching `bError`.
     async fn run_secure(&mut self, a: usize, b: usize) {
+        let epoch = self.session_epoch;
+        H::bind_response_epoch(epoch);
+        let mut aborted = false;
         let Self {
             handler,
             write_ep,
@@ -520,15 +646,20 @@ impl<'d, D: Driver<'d>, H: ApduHandler> Ccid<'d, D, H> {
             status,
             ..
         } = self;
+        let tx = &mut **tx;
         let seq = rx[6];
         let result = {
             // No PIN in here (the pad collects it on-device); wiped as `run_xfr`'s is.
             let req = WipeGuard::new(rx.get_mut(a..b).unwrap_or_default());
             let mut fut = core::pin::pin!(handler.handle_secure(&req, &mut tx[HEADER..]));
             loop {
+                aborted |= H::abort_requested(seq);
                 match select(fut.as_mut(), Timer::after_millis(WTX_INTERVAL_MS)).await {
                     Either::First(r) => break r,
                     Either::Second(_) => {
+                        if epoch != H::session_epoch() {
+                            continue;
+                        }
                         let mut wtx = [0u8; HEADER];
                         put_header(&mut wtx, CCID_DATA_BLOCK_RET, 0, seq, STATUS_TIMEEXT);
                         let _ = select(
@@ -540,6 +671,25 @@ impl<'d, D: Driver<'d>, H: ApduHandler> Ccid<'d, D, H> {
                 }
             }
         };
+        aborted |= H::abort_requested(seq);
+        if epoch != H::session_epoch() {
+            let _response = WipeGuard::new(tx);
+            *status = STATUS_INACTIVE;
+            return;
+        }
+        if aborted {
+            {
+                let _response = WipeGuard::new(tx);
+            }
+            put_header(tx, CCID_DATA_BLOCK_RET, 0, seq, *status | STATUS_FAILED);
+            tx[8] = CMD_ABORTED;
+            let _ = select(
+                write_ep.write_transfer(&tx[..HEADER], false),
+                Timer::after_millis(TX_TIMEOUT_MS),
+            )
+            .await;
+            return;
+        }
         let n = result.len.min(tx.len() - HEADER);
         // A card result reports SECURE_STATUS_OK → use the live slot status; a pad
         // cancel/timeout carries its own failed status and bError.
@@ -566,7 +716,12 @@ impl<'d, D: Driver<'d>, H: ApduHandler> Ccid<'d, D, H> {
     /// buffer (the caller answers with an error block).
     async fn read_message(&mut self) -> Option<usize> {
         let mut w = 0usize;
+        let mut epoch = H::session_epoch();
         loop {
+            if epoch != self.session_epoch {
+                self.status = STATUS_INACTIVE;
+                self.session_epoch = epoch;
+            }
             // An in-progress message is bounded; an idle transport is not. Without
             // the bound, an interrupted multi-packet write (a bus reset inside a key
             // or certificate import — this class advertises extended APDUs and a
@@ -607,6 +762,15 @@ impl<'d, D: Driver<'d>, H: ApduHandler> Ccid<'d, D, H> {
                     continue;
                 }
             };
+            let next_epoch = H::session_epoch();
+            if next_epoch != epoch {
+                self.rx.copy_within(w..w + n, 0);
+                let _old = WipeGuard::new(self.rx.get_mut(n..).unwrap_or_default());
+                w = 0;
+                epoch = next_epoch;
+                self.status = STATUS_INACTIVE;
+                self.session_epoch = epoch;
+            }
             w += n;
             if w >= HEADER {
                 let dw =
@@ -622,6 +786,13 @@ impl<'d, D: Driver<'d>, H: ApduHandler> Ccid<'d, D, H> {
                 return None;
             }
         }
+    }
+}
+
+fn abort_sequence(message: &[u8]) -> Option<u8> {
+    match message {
+        [CCID_ABORT, 0, 0, 0, 0, 0, sequence, 0, 0, 0] => Some(*sequence),
+        _ => None,
     }
 }
 

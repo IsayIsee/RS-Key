@@ -12,6 +12,9 @@ mod dek_decisions;
 #[path = "init_repair_decisions_tests.rs"]
 mod repair_decisions;
 
+#[path = "init_damage_tests.rs"]
+mod damage;
+
 /// Deterministic counter RNG for tests.
 struct CountRng(u8);
 impl Rng for CountRng {
@@ -514,3 +517,9 @@ fn retry_and_maximum_repairs_can_observe_an_absent_status_record() {
     assert!(settle_pw_status_maxima(&mut fs).is_ok());
     assert_eq!(fs.write_gen(), generation);
 }
+
+#[path = "init_restart_tests.rs"]
+mod restarts;
+
+#[path = "init_mutation_tests.rs"]
+mod mutation;

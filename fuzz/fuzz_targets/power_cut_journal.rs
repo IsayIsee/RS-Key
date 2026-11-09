@@ -82,12 +82,12 @@ fn exported_head(fs: &mut Fs<TortureStorage>, identity: rsk_crypto::Device<'_>) 
     assert_eq!(decoder.u8().unwrap(), 4);
     let entries = decoder.bytes().unwrap();
     assert_eq!(entries.len(), next.wrapping_sub(start) as usize * ENTRY_LEN);
-    for (offset, raw) in entries.chunks_exact(ENTRY_LEN).enumerate() {
+    for (offset, raw) in entries.as_chunks::<ENTRY_LEN>().0.iter().enumerate() {
         assert_eq!(
             u32::from_le_bytes(raw[..4].try_into().unwrap()),
             start.wrapping_add(offset as u32)
         );
-        head = fold(&head, raw.try_into().unwrap());
+        head = fold(&head, raw);
     }
     assert_eq!(decoder.position(), n);
     assert_eq!(chain_head(&identity, fs).unwrap().0, head);
@@ -156,11 +156,8 @@ pub fn run(data: &[u8]) -> Outcome {
     command(&mut fs, identity, scrub);
     let operation_stats = before.compare_to(flash.borrow().stats_snapshot());
     let interrupted = dev.dead();
-    flash.borrow_mut().bytes_until_shutoff = None;
-    dev.revive();
-    fs = dev.boot();
-    fs.scan();
-    let head = exported_head(&mut fs, identity);
+    let mut observed = diagnostic_mount(&dev);
+    let head = exported_head(&mut observed, identity);
     let appended = head != original;
     if scrub {
         assert_eq!(head, original, "a scrub lost chain history");
@@ -174,7 +171,7 @@ pub fn run(data: &[u8]) -> Outcome {
         }
     }
     let before = flash.borrow().stats_snapshot();
-    flash.borrow_mut().bytes_until_shutoff = Some(budget(data, 4));
+    fs = recovery_mount(&mut dev, budget(data, 4));
     command(&mut fs, identity, true);
     let recovery_stats = before.compare_to(flash.borrow().stats_snapshot());
     let recovery_interrupted = dev.dead();

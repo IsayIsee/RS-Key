@@ -58,7 +58,7 @@ CONSTANTS
 (* defect; `formal/README.md` maps every switch to its commit or audit id.   *)
 CONSTANTS
     BugResetGatesFirst,           \* reset.rs:127-128   two-phase wipe order
-    BugCredBeforeRp,              \* credential.rs:875-932 registration order
+    BugCredBeforeRp,              \* credential.rs:875-926 registration order
     BugTokenSurvivesPinChange,    \* clientpin.rs:335  resetPinUvAuthToken
     BugSetPinKeepsPpuat,          \* clientpin.rs:227-231
     BugChangePinKeepsPpuat,       \* clientpin.rs:324-328
@@ -68,7 +68,7 @@ CONSTANTS
     \* also resolves to firmware/src/presence.rs since the arbitration was lifted
     BugUnscopedCancel,            \* crates/rsk-device/src/presence.rs:118-122
     BugTouchNotSpent,             \* crates/rsk-device/src/presence.rs:203-211,226
-    BugSoftLockLostOnWarmReset,   \* crates/rsk-device/src/lib.rs:128-137 PinLock across sys_reset
+    BugSoftLockLostOnWarmReset,   \* crates/rsk-device/src/lib.rs:132-141 PinLock across sys_reset
     BugWarmResetReopensWindow,    \* reset.rs:266-267  in_reset_window
     BugCmWalkIgnoresChannel,      \* state.rs:178-189  may_walk_rps
     BugDeleteRpBeforeCred,        \* credmgmt.rs:759-767 deleteCredential order
@@ -90,8 +90,8 @@ CONSTANTS
     \* The two halves of the token-less carve-out, one switch each, so a RED
     \* names which half was load-bearing -- the split TraceSecurity's own
     \* MutateUvNotRqd / MutateAlwaysUvArm already make one layer out.
-    BugUvNotRqdIgnoresRk,         \* makecredential.rs:633-635 makeCredUvNotRqd
-    BugTokenlessIgnoresAlwaysUv,  \* makecredential.rs:627-629 the alwaysUv arm
+    BugUvNotRqdIgnoresRk,         \* makecredential.rs:635-637 makeCredUvNotRqd
+    BugTokenlessIgnoresAlwaysUv,  \* makecredential.rs:629-631 the alwaysUv arm
     BugForceChangeIgnored         \* clientpin.rs:411-417
 
 (* Mutation switches for the LIVENESS properties. Kept apart from the set above *)
@@ -99,7 +99,7 @@ CONSTANTS
 (* listing them in the safety matrix would mean 3 mutants nothing catches.       *)
 CONSTANTS
     BugAssertWedgesOnTimeout,     \* getassertion.rs: only a confirm completes it
-    BugWaitScopeNotCleared,       \* worker.rs:527  set_wait_scope(SCOPE_NONE)
+    BugWaitScopeNotCleared,       \* worker.rs:600  set_wait_scope(SCOPE_NONE)
     BugWalkNeverExpires           \* state.rs:770-776 expire_stale_sequences
 
 (* A switch on the SHAPE of the fairness assumption rather than on a behaviour: *)
@@ -111,7 +111,7 @@ CONSTANT BugFairnessFoldsLocalCeremony
 
 (* A PROPOSED fix, not a defect: order phase 1 of the reset sweep so no EF_RP  *)
 (* entry is dropped while its EF_CRED record is still live. The shipped        *)
-(* `sweep` batches both in `for_each_key` order, which fs.rs:386-389 documents *)
+(* `sweep` batches both in `for_each_key` order, which fs.rs:447-450 documents *)
 (* as store order rather than FID order, so the batch can delete the metadata  *)
 (* first. TRUE models the fix; FALSE is the tree as it stands.                 *)
 CONSTANT FixSweepDropsCredsBeforeRpEntries
@@ -276,7 +276,7 @@ Init ==
     \* alwaysUv's COMPILED default, not a state choice: `--features always-uv`
     \* is what the device comes up on and what a reset restores it to.
     \* The record exists from provisioning: `ensure_seed` mints it beside the seed
-    \* (seed.rs:692-695), and no platform has been handed it yet.
+    \* (seed.rs:678-681), and no platform has been handed it yet.
     /\ gate  = [ppuat |-> FALSE, ppuatRec |-> TRUE, ppuatStale |-> FALSE,
                 alwaysUv |-> AlwaysUvShipped, backupSealed |-> FALSE,
                 forceChange |-> FALSE]
@@ -325,7 +325,7 @@ WaitOpen == pres.scope # NoOwner /\ pres.granted = "none"
 
 \* ONE BUTTON, ONE CEREMONY: a host command may not open a wait over one that is
 \* already running. The worker is synchronous and the panel yields to a queued
-\* host command only outside a hold (crates/rsk-display/src/lib.rs:196-202), so
+\* host command only outside a hold (crates/rsk-display/src/lib.rs:199-205), so
 \* the firmware never reassigns WAIT_SCOPE out from under a live ceremony.
 \*
 \* FOUR sites carry it: RegisterStart, AssertStart, ResetStart and
@@ -383,7 +383,7 @@ PressUp ==
     /\ UNCHANGED << pin, gate, store, lock, tok, plat, walk, sys, op, snap,
                     upSpent, viol, ram >>
 
-\* CTAPHID_CANCEL for the channel being processed. rsk-usb ctaphid.rs:830-835
+\* CTAPHID_CANCEL for the channel being processed. rsk-usb ctaphid.rs:929-931
 \* raises it; crates/rsk-device/src/presence.rs:118-122 is the scope check that decides
 \* whether it may end THIS wait. Only the CTAPHID transport can send one.
 \* E45's ruling in one line: request_cancel accepts ONLY while the wait it would
@@ -401,7 +401,7 @@ HostCancel ==
     /\ UNCHANGED << pin, gate, store, lock, tok, plat, walk, sys, op, snap,
                     upSpent, viol, ram >>
 
-\* WAIT_SCOPE is set around the whole DISPATCH (worker.rs:428, :519), not around
+\* WAIT_SCOPE is set around the whole DISPATCH (worker.rs:484-489), not around
 \* the touch wait, so Arbiter::request_cancel accepts a cancel during a FIDO
 \* command that never opens one -- getInfo, a denied CBOR, getAssertion up:false.
 \* Nothing clears `cancel_requested` when that dispatch ends, so the latch
@@ -463,8 +463,8 @@ TouchTimeout ==
 \* THE PANEL AND THE OTP FRAME PROTOCOL ALSO OPEN WAITS, and neither is a host's
 \* to cancel. An on-panel ceremony -- Settings, Backup's reveal-recovery hold,
 \* the Passkeys delete -- runs BETWEEN dispatches, where the worker has left
-\* WAIT_SCOPE at SCOPE_NONE (firmware/src/worker.rs:525-527); an OTP frame's wait
-\* runs under SCOPE_OTP (firmware/src/worker.rs:663-665). Both clear a stale
+\* WAIT_SCOPE at SCOPE_NONE (firmware/src/worker.rs:598-600); an OTP frame's wait
+\* runs under SCOPE_OTP (firmware/src/worker.rs:735-737). Both clear a stale
 \* cancel at their own wait's entry -- the panel in its own loop
 \* (crates/rsk-display/src/presence.rs:41-44), not in ButtonWait::wait -- so
 \* OpenWaitFor stands for two different drops here and
@@ -519,7 +519,7 @@ OtpCancelWait ==
 (***************************************************************************)
 
 \* THE FOUR CALL SITES DO NOT TEST THE SAME THING, and the difference is
-\* load-bearing. makeCredential (makecredential.rs:603-606) and getAssertion
+\* load-bearing. makeCredential (makecredential.rs:605-608) and getAssertion
 \* (getassertion.rs:446-449) test the MAC, `user_verified()` -- which is
 \* `in_use && user_verified` (state.rs:779-781) -- the permission bit and the
 \* rpId binding. authenticatorConfig (config.rs:245-247) and
@@ -558,13 +558,13 @@ UvRequired == pin.set \/ gate.alwaysUv
 OpGuard(p, rp)  == IF UvRequired THEN TokenGuardUv(p, rp) ELSE TRUE
 OpPolicy(p, rp) == IF UvRequired THEN TokenPolicy(p, rp) ELSE TRUE
 
-\* THE TOKEN-LESS CARVE-OUT -- makecredential.rs:617-636, the `None` arm of
+\* THE TOKEN-LESS CARVE-OUT -- makecredential.rs:619-638, the `None` arm of
 \* `enforce_pin`, which `assurance/token_refinement.toml` owns as the `UseMc`
 \* volatile writer and outcome producer. `disc` is the request's `rk`, an INPUT
 \* and not state, which is why the two arms below are a function of it:
-\*   makecredential.rs:627-629 -- CTAP 2.1 6.1.2 steps 6.2/6.4: alwaysUv with no
+\*   makecredential.rs:629-631 -- CTAP 2.1 6.1.2 steps 6.2/6.4: alwaysUv with no
 \*     way to verify refuses whatever `rk` says;
-\*   makecredential.rs:633-635 -- steps 7/10, makeCredUvNotRqd: with a PIN set a
+\*   makecredential.rs:635-637 -- steps 7/10, makeCredUvNotRqd: with a PIN set a
 \*     DISCOVERABLE credential still needs a token, a non-discoverable one does
 \*     not (issue #51).
 \* Step 6.3's third arm -- a pad UPGRADES a token-less request to built-in UV
@@ -625,7 +625,7 @@ ConsumedTok ==
              ELSE [tok EXCEPT !.perms = {}]
 
 \* makeCredential/getAssertion bind an unbound pinUvAuthToken to the request's
-\* rpId before consuming its permissions (makecredential.rs:611-613,
+\* rpId before consuming its permissions (makecredential.rs:613-615,
 \* getassertion.rs:456-458).
 BoundConsumedTok(r) ==
     LET consumed == ConsumedTok IN
@@ -644,7 +644,7 @@ PinAttemptEnabled == pin.set /\ pin.retries > 0 /\ ~lock.soft
 \* The requirement the soft lock encodes: after MismatchLimit consecutive
 \* mismatches no further attempt is accepted until a REAL power cycle. The
 \* policy counter is cleared only by PowerCut, never by a host-requested warm
-\* reset -- which is the whole point of crates/rsk-device/src/lib.rs:128-137.
+\* reset -- which is the whole point of crates/rsk-device/src/lib.rs:132-141.
 PinAttemptPolicy == pin.set /\ pin.retries > 0 /\ lock.policyMism < MismatchLimit
 
 \* EF_MINPINLEN[1], the forced-PIN-change flag, and it is a GATE: while it stands
@@ -661,7 +661,7 @@ PinAttemptPolicy == pin.set /\ pin.retries > 0 /\ lock.policyMism < MismatchLimi
 \* with no code behind it, and review found that, not a gate.
 \*
 \* setMinPINLength sets it over a PIN that exists and, in the SAME branch, ends
-\* the session token and the persistent grant (config.rs:491-511). The module
+\* the session token and the persistent grant (config.rs:492-512). The module
 \* carried three conjuncts where the code has four until PLAT-MODEL-010 measured
 \* the gap, and a defect that waives the pending change is a live token.
 TokenIssuanceGuard  == IF BugForceChangeIgnored THEN TRUE ELSE ~gate.forceChange
@@ -771,10 +771,10 @@ LocalPinEnabled == Idle /\ LocalPinGuard
 \* with budget left to spend, because a `Blocked` verdict reached at zero was
 \* turned away before any compare -- which `LocalPinEnabled` already excludes.
 \*
-\* Modelled as taking effect at once. The hook is consumed at the head of the
-\* next CBOR dispatch (crates/rsk-device/src/ctap.rs:230-233), not inside
-\* gates.rs, but nothing can use the token in between: every command that reads
-\* it is a CBOR command and the flag is spent before the dispatch runs.
+\* Modelled as taking effect at once. The hook is consumed by the next CBOR
+\* dispatch (crates/rsk-device/src/ctap.rs:372, crates/rsk-device/src/lib.rs:123-125),
+\* not inside gates.rs. Nothing can use the token in between: every command that
+\* reads it is a CBOR command and the flag is spent before the dispatch runs.
 LocalPinWrong ==
     /\ LocalPinEnabled
     /\ viol' = IF LocalPinPolicy THEN viol
@@ -930,7 +930,7 @@ StopUsingToken ==
 (* makeCredential / getAssertion.                                          *)
 (***************************************************************************)
 
-\* makecredential.rs:601-609. Needs PERM_MC and a touch.
+\* makecredential.rs:603-611. Needs PERM_MC and a touch.
 RegisterStart(r, t) ==
     /\ Idle
     /\ ButtonFreeGuard
@@ -945,7 +945,7 @@ RegisterStart(r, t) ==
     \* buys the shipped tree no state at all. It exists to be MUTATED --
     \* BugUvNotRqdIgnoresRk drops the `disc` conjunct and a discoverable
     \* registration is then served with a PIN set and no token, which is the
-    \* defect deleting makecredential.rs:633-635 makes.
+    \* defect deleting makecredential.rs:635-637 makes.
     /\ (OpGuard("mc", r) \/ McTokenlessGuard(TRUE))
     /\ viol' = (IF OpPolicy("mc", r) \/ McTokenlessPolicy(TRUE)
                   THEN viol ELSE viol \cup TokenBypass)
@@ -983,7 +983,7 @@ RegisterRefused ==
     /\ UNCHANGED << pin, gate, store, lock, tok, plat, walk, sys, snap,
                     upSpent, viol, ram >>
 
-\* credential.rs:872-932. Order so that any truncation leaves an RP entry
+\* credential.rs:872-926. Order so that any truncation leaves an RP entry
 \* without a credential -- rolled back best-effort, never reclaimed -- never a
 \* without an RP entry, which enumerateRPs and the display can neither list
 \* nor delete while getAssertion authenticates with it happily (audit run-35).
@@ -1007,8 +1007,8 @@ RegisterWriteB ==
                     viol, ram >>
 
 \* THE NON-DISCOVERABLE REGISTRATION, and the reason it is not `RegisterStart`
-\* with a flag: it writes NOTHING. makecredential.rs:916-917 stores only under
-\* `req.rk`, and makecredential.rs:889-891 says why -- "a non-discoverable
+\* with a flag: it writes NOTHING. makecredential.rs:918-919 stores only under
+\* `req.rk`, and makecredential.rs:891-893 says why -- "a non-discoverable
 \* credential keeps no on-device state at all". So there is no `rp` to carry
 \* either: `store` is exactly what it observes per relying party, and a
 \* credential the device does not record is one it cannot tell apart from
@@ -1109,12 +1109,12 @@ ConfigOp ==
     /\ ConfigGuard
     /\ viol' = IF ConfigPolicy THEN viol ELSE viol \cup TokenBypass
     \* TWO authenticatorConfig subcommands over one gate: toggleAlwaysUv, and
-    \* setMinPINLength's forced-change byte, which config.rs:491 refuses unless a
+    \* setMinPINLength's forced-change byte, which config.rs:492 refuses unless a
     \* PIN exists. A choice inside the action rather than a second action, so the
     \* refinement's one `UseAcfg`/`Authorized` clause keeps covering both.
     /\ \/ /\ gate' = [gate EXCEPT !.alwaysUv = ~gate.alwaysUv]
           /\ UNCHANGED << tok, plat, walk >>
-       \* config.rs:508-511: the forced-change branch calls
+       \* config.rs:509-512: the forced-change branch calls
        \* reset_pin_uv_auth_token AND clear_ppuat, so it ENDS the session token,
        \* the credMgmt cursor and the persistent grant before refusing to issue
        \* anything new. Modelled as the two sibling PIN sites already are -- the
@@ -1131,12 +1131,12 @@ ConfigOp ==
     /\ UNCHANGED << pin, store, lock, pres, sys, op, upSpent, ram >>
 
 (***************************************************************************)
-(* Vendor BACKUP_FINALIZE -- vendor.rs:981-988, and its on-device twin      *)
-(* mark_backup_sealed (vendor.rs:1057-1063).                                  *)
+(* Vendor BACKUP_FINALIZE -- vendor.rs:980-987, and its on-device twin      *)
+(* mark_backup_sealed (vendor.rs:1056-1062).                                  *)
 (***************************************************************************)
 
 \* Writing EF_BACKUP_SEALED closes the one-time seed-export window: after it,
-\* BACKUP_EXPORT refuses (vendor.rs:875) and the display's recovery-phrase
+\* BACKUP_EXPORT refuses (vendor.rs:874) and the display's recovery-phrase
 \* reveal is gone, until a reset reopens the window. Modelled UNGATED -- the
 \* real one carries the PIN half and a deliberate hold -- which widens only the
 \* states the marker can be SET in, never the states it can be LOST in, and it
@@ -1148,7 +1148,7 @@ BackupFinalize ==
     /\ UNCHANGED << pin, store, lock, tok, plat, pres, walk, sys, op, snap,
                     upSpent, viol, ram >>
 
-\* Vendor UNLOCK (vendor.rs:589-618): the host presents the 32-byte lock key over
+\* Vendor UNLOCK (vendor.rs:588-617): the host presents the 32-byte lock key over
 \* the MSE channel, the wrapped seed on flash decrypts, and `state.keydev_dec`
 \* holds it until power-off. No PIN and no touch -- knowing the lock key IS the
 \* authorization -- so this is not modelled as a gate, only as the one door
@@ -1157,7 +1157,7 @@ BackupFinalize ==
 \* WIDER than the firmware in two directions, both sound: the model has no device
 \* lock, so it does not require the seed to be stored WRAPPED (only a locked
 \* device has an EF_KEY_DEV_ENC to open), and it omits AUT_DISABLE
-\* (config.rs:433-434), which only ever CLEARS the copy.
+\* (config.rs:434-435), which only ever CLEARS the copy.
 DeviceUnlock ==
     /\ Idle
     /\ store.seed
@@ -1516,7 +1516,7 @@ VolatileCleared ==
     /\ upSpent' = FALSE
 
 \* EVERY boot runs ensure_seed, not just the one at the end of a reset:
-\* firmware/src/main.rs:893 and tools/emu/src/device.rs:510; one that cannot read
+\* firmware/src/main.rs:960 and tools/emu/src/device.rs:513; one that cannot read
 \* the fused key runs none, which this action, allowing more, over-approximates. A cut that stranded
 \* the device mid-wipe therefore comes back WITH a seed and can hold usable
 \* credentials again. Leaving it out made the model less permissive than the
@@ -1528,7 +1528,7 @@ VolatileCleared ==
 \*
 \* And it MAY mint the grant record if none stands (`ensure_ppuat`), which is how a
 \* grant a PIN change revoked comes back -- as a record, issued to nobody. May,
-\* because `ensure_seed` skips the mint on a vendor-soft-locked key (seed.rs:687)
+\* because `ensure_seed` skips the mint on a vendor-soft-locked key (seed.rs:673)
 \* and main.rs drops its error: a boot that leaves no record is the firmware's too.
 BootEnsuresSeed ==
     /\ store' = [KeepOpen(store, store.seed) EXCEPT !.seed = TRUE]
@@ -1546,7 +1546,7 @@ PowerCut ==
     /\ UNCHANGED viol
 
 \* A host-requestable warm reset (SCB::sys_reset -- vendor 0x1F P1=0, the
-\* rescue twin, the phy config-write auto-reboot). crates/rsk-device/src/lib.rs:128-137
+\* rescue twin, the phy config-write auto-reboot). crates/rsk-device/src/lib.rs:132-141
 \* carries the PinLock across it from either transport; reset.rs:267 makes it CLOSE the reset window.
 WarmReset ==
     /\ VolatileCleared
@@ -1634,7 +1634,7 @@ TokenOutcomeActions ==
 \* strong fairness would buy nothing and would assert more than the code does.
 \*
 \* The worker is synchronous -- one `Exchange` at a time, under a lock, and the
-\* dispatch runs to completion before the next is accepted (worker.rs:648-673).
+\* dispatch runs to completion before the next is accepted (worker.rs:720-745).
 \* So every step that ADVANCES an in-flight sequence eventually happens: nothing
 \* in the firmware can park one. What it cannot survive is a power cut, and
 \* PowerCut is not fair, so "eventually" here still admits the cut.
@@ -1676,7 +1676,7 @@ OpAdvances ==
 \* button, but setPIN and changePIN need only `Idle`. So a panel wait that had
 \* taken its confirm sat open for ever while the PIN ladder kept OpAdvances
 \* satisfied on its own, and EveryWaitReleases failed in 423 900 states.
-\* Justified the same way worker.rs:525-527 justifies the FIDO half: the
+\* Justified the same way worker.rs:598-600 justifies the FIDO half: the
 \* ceremony's own dispatch runs to completion and puts WAIT_SCOPE back.
 FairSpec == Spec /\ WF_vars(OpAdvances)
                  /\ WF_vars(TouchTimeout)
@@ -1741,7 +1741,7 @@ NoAuthorizationBypass ==
     \* the authenticatorConfig the advisory named and not a second assertion.
     /\ (upSpent /\ tok.live) => tok.perms = {}
     \* The RAM soft lock must reflect the policy it stands for: MismatchLimit
-    \* consecutive mismatches and no real power cycle since (crates/rsk-device/src/lib.rs:128-137).
+    \* consecutive mismatches and no real power cycle since (crates/rsk-device/src/lib.rs:132-141).
     /\ (lock.policyMism >= MismatchLimit) => lock.soft
 
 \* A presence decision produced for one transport is never applied to

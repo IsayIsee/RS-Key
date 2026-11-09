@@ -13,6 +13,12 @@ use rsk_fs::Fs;
 use rsk_fs::storage::faults::{Cut, CutMedium, ProbeStuck};
 use rsk_fs::storage::ram::RamStorage;
 
+#[path = "clientpin_damage_tests.rs"]
+mod damage;
+
+#[path = "clientpin_mutation_tests.rs"]
+mod mutation_boundaries;
+
 #[test]
 fn an_already_cleared_force_change_does_not_require_a_flash_write() {
     let (storage, medium) = Cut::new();
@@ -343,7 +349,7 @@ fn key_agreement<S: rsk_fs::Storage>(
     assert_eq!(d.u8().unwrap(), 1);
     assert_eq!(d.u8().unwrap(), 2);
     assert_eq!(d.u8().unwrap(), 3);
-    assert_eq!(d.i64().unwrap(), crate::consts::ALG_ECDH_ES_HKDF_256);
+    assert_eq!(d.i64().unwrap(), -25);
     assert_eq!(d.i8().unwrap(), -1);
     assert_eq!(d.u8().unwrap(), 1);
     assert_eq!(d.i8().unwrap(), -2);
@@ -3340,7 +3346,7 @@ mod perms;
 fn a_torn_set_pin_leaves_no_pin_or_a_usable_one() {
     use crate::consts::{EF_PAUTHTOKEN, MAX_PIN_RETRIES};
 
-    rsk_fs::cut::sweep(
+    assert!(!rsk_fs::cut::sweep_restarts(
         || {
             let (fs, medium, _) = setup_cut();
             (fs, medium)
@@ -3352,7 +3358,8 @@ fn a_torn_set_pin_leaves_no_pin_or_a_usable_one() {
             let mut out = [0u8; 256];
             run(fs, &mut rng, &mut state, &plat.set_pin_req(PIN), &mut out).is_ok()
         },
-        |fs, budget, completed, medium| {
+        |_| {},
+        |fs, budget, _second, completed, medium| {
             let mut stored = [0u8; PIN_FILE_LEN];
             let Some(len) = fs.read(EF_PIN, &mut stored) else {
                 assert!(
@@ -3386,12 +3393,12 @@ fn a_torn_set_pin_leaves_no_pin_or_a_usable_one() {
                 "budget {budget}: the PIN that survived does not verify"
             );
         },
-    );
+    ));
 }
 
 /// A PIN record cut short cannot be verified against and must not be spent from:
 /// getPinToken answers ERR_OTHER before the decrement and leaves the record as it
-/// was. An empty one reads as no PIN at all, with the full budget on offer.
+/// was. An empty stored record is damaged, rather than a new unset PIN.
 #[test]
 fn a_pin_record_of_the_wrong_length_is_neither_verified_nor_spent() {
     let (mut fs, mut rng) = setup();
@@ -3439,7 +3446,7 @@ fn a_pin_record_of_the_wrong_length_is_neither_verified_nor_spent() {
             &plat.get_token_req(PIN),
             &mut out
         ),
-        Err(CtapError::PinNotSet)
+        Err(CtapError::Other)
     );
     let n = run(
         &mut fs,
@@ -3733,6 +3740,14 @@ fn store_device_pin_enforces_its_length_bounds() {
         other => panic!("expected TooLong, got {other:?}"),
     }
     assert!(!fs.has_data(EF_DEVICE_PIN));
+    for pin in [&PIN[..usize::from(MIN_PIN_LENGTH)], &[b'5'; 63][..]] {
+        store_device_pin(&dev(), &mut fs, pin).unwrap();
+        assert!(matches!(
+            spend_and_verify_device_pin(&dev(), &mut fs, pin),
+            LocalPin::Ok
+        ));
+        assert_eq!(device_pin_retries_left(&mut fs), Some(MAX_PIN_RETRIES));
+    }
 }
 
 /// The pad's verify reads its decrement back before trusting it, as the host's does
@@ -4420,3 +4435,9 @@ mod uv_outcomes;
 
 #[path = "clientpin_decisions_tests.rs"]
 mod decisions;
+
+#[path = "clientpin_restart_tests.rs"]
+mod restarts;
+
+#[path = "clientpin_assertion_tests.rs"]
+mod assertion;

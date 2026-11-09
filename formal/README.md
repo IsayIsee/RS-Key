@@ -94,11 +94,11 @@ match more than one file in the tree.
 
 | Invariant | What it asserts here | The Rust construct that owns it |
 |---|---|---|
-| `NoAuthorizationBypass` | No protected operation completes without the live authorization its own gate requires | `crates/rsk-fido/src/`: `getassertion.rs:452-455` · `makecredential.rs:603-606` · `config.rs:245-247` · `credmgmt.rs:300` · retry ladder `clientpin.rs:797-890` · soft lock `state.rs:296-304` + `crates/rsk-device/src/ctap.rs:262-269` · reset window `reset.rs:262-268` · walk owner `state.rs:178-189`, `credmgmt.rs:363` |
+| `NoAuthorizationBypass` | No protected operation completes without the live authorization its own gate requires | `crates/rsk-fido/src/`: `getassertion.rs:452-455` · `makecredential.rs:605-608` · `config.rs:245-247` · `credmgmt.rs:300` · retry ladder `clientpin.rs:797-890` · soft lock `state.rs:296-304` + `crates/rsk-device/src/ctap.rs:274-281` · reset window `reset.rs:262-268` · walk owner `state.rs:178-189`, `credmgmt.rs:363` |
 | `NoCrossTransportTouchConsumption` | A presence decision produced for one transport is never applied to another — neither a confirm nor a cancel | `crates/rsk-device/src/presence.rs`: `Arbiter::pending_for` · `::request_cancel` / `::cancel_otp_wait` (the scope guards) · `ButtonWait::wait` (the `spent` latch). `firmware/src/presence.rs` keeps only the board half. **The stale-cancel drop that carries this property is the one at the wait's ENTRY.** The exit clear cannot substitute for it — a cancel latched by a dispatch that never entered `wait` is never seen by the exit — see "The cancel that no wait was open for" |
 | `NoTokenAfterInvalidation` | A grant invalidated by a PIN change, PIN set, reset, `stopUsingPinUvAuthToken` or power cycle never authorizes again | `crates/rsk-fido/src/`: `state.rs:607-622` (`reset_pin_uv_auth_token`) · `state.rs:659-675` (`stop_using_token`) · `state.rs:709-722` (`expire_stale_token`) · `clientpin.rs:324-335` · `seed.rs:346-347` (`clear_ppuat`) |
 | `NoAccessibleSecretWithoutGate` | No live secret is reachable while the gate record that protects it is gone | `crates/rsk-fido/src/`: `reset.rs:217-260` (`is_fido_gate_fid`) · `reset.rs:98-120` (phase order) · `credmgmt.rs:271-288` (`authorized_by_ppuat`) · `clientpin.rs:227-231`, `:901-905` |
-| `NoUnmanageableCredential` | Every live credential is reachable by the management surface (its `EF_RP` entry exists) | `crates/rsk-fido/src/`: `credential.rs:875-932` (registration write order) · `credmgmt.rs:719-816` (`delete_credential` / `decrement_rp`) · `passkeys.rs:89-155` (`for_each_rp`, the `EF_RP` walk the display lists from) |
+| `NoUnmanageableCredential` | Every live credential is reachable by the management surface (its `EF_RP` entry exists) | `crates/rsk-fido/src/`: `credential.rs:875-926` (registration write order) · `credmgmt.rs:719-816` (`delete_credential` / `decrement_rp`) · `passkeys.rs:89-155` (`for_each_rp`, the `EF_RP` walk the display lists from) |
 | `ResetNeverWeakensSurvivingState` | No prefix of an `authenticatorReset` — torn or complete — leaves a surviving usable secret whose gate has already gone, where "surviving" counts the RAM copy of the seed as well as the flash record | `crates/rsk-fido/src/`: `reset.rs:36-130` (`reset` and its flash half `wipe`: session then seed then two phases) · `reset.rs:104-107` (`ctx.state.reset()` ahead of every flash write) · `reset.rs:132-178` (`sweep`, and the `Err` at `:159-163` that leaves the device running) · `reset.rs:217-260` (`is_fido_gate_fid`, incl. `EF_BACKUP_SEALED`) · `reset.rs:315-323` (`survives_factory_reset`) · `crates/rsk-fido/src/lib.rs:107-116` (`Ctx::load_keydev`, the RAM copy that wins) · `state.rs:545-555` (`FidoState::reset`, what drops it). Shipped twin for its third clause: `reset_tests.rs::a_torn_reset_never_unseals_a_surviving_seed` |
 
 ### Two more that are not among the six, and three clauses that now have names
@@ -199,7 +199,7 @@ says how deep TLC had to go to find it, roughly.
 |---|---|---|---|
 | `BugResetGatesFirst` | `reset.rs:127-128` phase order | `ResetNeverWeakensSurvivingState` | 2 352 states |
 | `BugBackupSealedNotAGate` | `reset.rs:222-259` — `EF_BACKUP_SEALED` back in phase 1 (audit run-36) | `ResetNeverWeakensSurvivingState` | 2 347 states |
-| `BugCredBeforeRp` | `credential.rs:875-932` write order | `NoUnmanageableCredential` | 820 states |
+| `BugCredBeforeRp` | `credential.rs:875-926` write order | `NoUnmanageableCredential` | 820 states |
 | `BugDeleteRpBeforeCred` | `credmgmt.rs:759-767` — `decrement_rp` ahead of the `EF_CRED` delete | `NoUnmanageableCredential` | 111 503 states |
 | `BugTokenSurvivesPinChange` | `clientpin.rs:335` | `NoTokenAfterInvalidation` | 15 299 states |
 | `BugSetPinKeepsPpuat` | `clientpin.rs:227-231` | `NoTokenAfterInvalidation` | 416 314 states |
@@ -233,7 +233,7 @@ mutants nothing catches.
 | Mutation switch | Removes | Target property | Caught in |
 |---|---|---|---|
 | `BugAssertWedgesOnTimeout` | only a confirm completes a getAssertion | `EveryOpQuiesces` | 79 523 states |
-| `BugWaitScopeNotCleared` | `worker.rs:527` `set_wait_scope(SCOPE_NONE)` | `EveryWaitReleases` | 76 446 states |
+| `BugWaitScopeNotCleared` | `worker.rs:600` `set_wait_scope(SCOPE_NONE)` | `EveryWaitReleases` | 76 446 states |
 | `BugWalkNeverExpires` | `state.rs:733-739` `expire_stale_sequences` | `EveryWalkCloses` | 93 607 states |
 
 **Two mutants need a companion, and that is a result — IN THE MODEL.** Read the
@@ -300,17 +300,17 @@ split three ways, and the split is the point.
 
 | | |
 |---|---|
-| **Equivalent, not a defect** | `ctaphid.rs:471` `\|` → `^` on `(f[5] << 8) \| f[6]` — disjoint bits, the two operators agree |
-| **Fail-safe direction** | `ctaphid.rs:472` `>` → `>=` refuses an exactly-maximum message: stricter, so `NoBufferOverrun` still holds. `fs.rs:234` and `fs.rs:282` `\|=` → `&=` clear *decided* bits, which sends more reads to the reliable backend |
-| **Model-blind** | the dynamic-file registry in `scan` (`fs.rs:287` and `fs.rs:290`, three mutants), `try_has_data`'s zero-length test (`fs.rs:378`), `factory_wipe`'s 64-key batch bound (`fs.rs:504`), the registry retain in `delete` (`fs.rs:604`), and **`meta_delete`'s fault guard (`fs.rs:867`)** |
+| **Equivalent, not a defect** | `ctaphid.rs:483` `\|` → `^` on `(f[5] << 8) \| f[6]` — disjoint bits, the two operators agree |
+| **Fail-safe direction** | `ctaphid.rs:484` `>` → `>=` refuses an exactly-maximum message: stricter, so `NoBufferOverrun` still holds. `fs.rs:264` and `fs.rs:312` `\|=` → `&=` clear *decided* bits, which sends more reads to the reliable backend |
+| **Model-blind** | the dynamic-file registry in `scan` (`fs.rs:296` and `fs.rs:321`, three mutants), `try_has_data`'s zero-length test (`fs.rs:409`), `factory_wipe`'s 64-key batch bound (`fs.rs:569`), the registry retain in `delete` (`fs.rs:675`), and **`meta_delete`'s fault guard (`fs.rs:954`)** |
 
 The last one was worth the exercise on its own. `Fs::meta_add_reserve` refuses a
 FAILED EF_META read and the model carries that as `BugMetaAddDropsOnFault`; its
-sibling `Fs::meta_delete` has the identical guard at `fs.rs:869`, and **nothing
+sibling `Fs::meta_delete` has the identical guard at `fs.rs:956`, and **nothing
 held it at either level**. No test killed it, and `MetaDelete` was modelled as an
 unconditional single write with no read to fail. Worse than a lost delete: the
 mutant caches EF_META as *absent*, and the next `meta_add` legitimately trusts
-`known_absent` and rebuilds the blob from empty (`fs.rs:830`), so the records go
+`known_absent` and rebuilds the blob from empty (`fs.rs:917`), so the records go
 on the write **after** the defect. That is why it is `NoFalseMetaAbsent`,
 SEC-STORE-004, a step recorder — once the cache has lied, the losing write is
 correct code and no state predicate over `meta` can tell the two apart.
@@ -423,7 +423,7 @@ whole seam module is about was handed to nobody who looked.
 
 #### The ninth row, and the column number that decided it
 
-`crates/rsk-piv/src/lib.rs:1395` `&&` → `||` is the sharpest thing this pass has
+`crates/rsk-piv/src/lib.rs:1398` `&&` → `||` is the sharpest thing this pass has
 produced. The PIV PIN gate ends in
 
 ```rust
@@ -457,11 +457,11 @@ says which.
 | Mutation | Verdict | Owned by |
 |---|---|---|
 | `crates/rsk-fido/src/reset.rs:151` `<` → `<=` — `sweep`'s 64-key batch bound | test gap; the mutation indexes past `keys` | `a_reset_sweeps_more_secrets_than_one_batch_holds` |
-| `crates/rsk-openpgp/src/pin.rs:253` `&&` → `\|\|`, and the same guard → `true` | test gap; a record too short to be `[len, fmt, verifier]`, or with a zeroed length, read as a verifier | `a_malformed_pw_record_is_reference_not_found_not_a_verifier` |
-| `crates/rsk-openpgp/src/pin.rs:247` `<` → `<=` | fail-safe — a short `EF_PW_PRIV` makes a live reference answer `PIN_BLOCKED`; wrong, but in the refusing direction | recorded |
-| `crates/rsk-openpgp/src/pin.rs:946` guard → `true` | effectively equivalent — an empty `EF_RC` yields `rc_len = 0`, and the `check_pin` below re-reads `EF_RC` and refuses on its own guard | recorded |
+| `crates/rsk-openpgp/src/pin.rs:255` `&&` → `\|\|`, and the same guard → `true` | test gap; a record too short to be `[len, fmt, verifier]`, or with a zeroed length, read as a verifier | `a_malformed_pw_record_is_reference_not_found_not_a_verifier` |
+| `crates/rsk-openpgp/src/pin.rs:249` `<` → `<=` | fail-safe — a short `EF_PW_PRIV` makes a live reference answer `PIN_BLOCKED`; wrong, but in the refusing direction | recorded |
+| `crates/rsk-openpgp/src/pin.rs:948` guard → `true` | effectively equivalent — an empty `EF_RC` yields `rc_len = 0`, and the `check_pin` below re-reads `EF_RC` and refuses on its own guard | recorded |
 | `crates/rsk-fido/src/reset.rs:166` `>` → `>=` | conformance in three applets of four — the runaway valve trips one delete early, and `deleted` differs from `>` only where it lands EXACTLY on the budget. Unreachable where each `sweep` call counts its own phase over a fid space smaller than the budget: FIDO 1034 + 5 against 1039, OATH 255 + 2 against 257, PIV 764 + 4 against 768 (all measured). **OpenPGP is the exception** — one `deleted` is SHARED across both phases (`crates/rsk-openpgp/src/terminate.rs:184`, outside the `for gates` loop) over 1049 fids, and its 64-key batch DIVIDES the 512 budget, so `deleted == 512` is reachable and `>=` would fail a TERMINATE that `>` completes. Green in all four when driven, because no fixture holds 512 live OpenPGP records — a property of the FIXTURE, not of the behaviour | recorded |
-| `>` → `==` at all four valves — `crates/rsk-fido/src/reset.rs:166`, `crates/rsk-oath/src/lib.rs:1788`, `crates/rsk-piv/src/files.rs:677`, `crates/rsk-openpgp/src/terminate.rs:215` | **the valve stops guarding**: `deleted` rises a whole batch at a time and can step past the budget without ever equalling it. It was never the cardinality that made this undrivable — a medium that answers `Ok` and keeps the record runs 1039 out of FIVE files. It was the BATCH: both runaways the tree had re-yield ONE fid, and 1 divides every budget, so the mutant merely trips one delete early there and each test passes it by construction. OATH and OpenPGP reached the valve with nothing at all — their fault backends ERROR, which stops the sweep at a `?` above it | `a_sweep_that_never_converges_stops_inside_its_delete_budget` (FIDO, OATH, PIV) + `a_wipe_that_never_converges_stops_inside_its_delete_budget` (OpenPGP) |
+| `>` → `==` at all four valves — `crates/rsk-fido/src/reset.rs:166`, `crates/rsk-oath/src/lib.rs:1800`, `crates/rsk-piv/src/files.rs:690`, `crates/rsk-openpgp/src/terminate.rs:215` | **the valve stops guarding**: `deleted` rises a whole batch at a time and can step past the budget without ever equalling it. It was never the cardinality that made this undrivable — a medium that answers `Ok` and keeps the record runs 1039 out of FIVE files. It was the BATCH: both runaways the tree had re-yield ONE fid, and 1 divides every budget, so the mutant merely trips one delete early there and each test passes it by construction. OATH and OpenPGP reached the valve with nothing at all — their fault backends ERROR, which stops the sweep at a `?` above it | `a_sweep_that_never_converges_stops_inside_its_delete_budget` (FIDO, OATH, PIV) + `a_wipe_that_never_converges_stops_inside_its_delete_budget` (OpenPGP) |
 
 Both closures are the tree's own rule about sweeping by class rather than by
 site, and both were one applet away from being closed already. PIV has
@@ -758,7 +758,7 @@ still red, on the same mutant as before the repair.**
 One mutant was **not** caught on the first attempt, and that mattered more than
 the eleven that were. `BugStopUsingKeepsPerms` ran green over 6 275 376 distinct states
 because the model gave every call site one uniform guard including "the token
-is in use". The code does not: `getassertion.rs:453` and `makecredential.rs:606`
+is in use". The code does not: `getassertion.rs:453` and `makecredential.rs:608`
 test `user_verified()`, but `config.rs:245-247` and `credmgmt.rs:300` test the
 MAC and the permission bits **only**. For those two the single thing standing
 between a stopped or expired token and a live authorization is that
@@ -794,8 +794,8 @@ the record rather than preventing it.
 
 `HostCancel` required an open wait, so the model could not raise a
 `CTAPHID_CANCEL` at any other moment. The firmware can, and it matters:
-`set_wait_scope` is called around the whole **dispatch** (`worker.rs:428`,
-`:527`), not around the touch wait, so `Arbiter::request_cancel` (`crates/rsk-device/src/presence.rs:118-122`)
+`set_wait_scope` is called around the whole **dispatch** (`worker.rs:484`,
+`:600`), not around the touch wait, so `Arbiter::request_cancel` (`crates/rsk-device/src/presence.rs:118-122`)
 accepts a cancel during a FIDO command that never opens one — getInfo, a
 capability-denied CBOR, a silent `up:false`. **Nothing clears
 `CANCEL_REQUESTED` when that dispatch ends**, and the next dispatch may be CCID
@@ -1035,7 +1035,7 @@ violation, and `floors.txt` records what that costs.
 `Shipped.cfg` (every switch off) is **RED**, and that is the result, not a
 broken model. Both findings are one class: **the two-phase wipe controls the
 order *between* phases but nothing controls the order *within* a phase.**
-`sweep` batches whatever `for_each_key` yields, and `fs.rs:381-384` documents
+`sweep` batches whatever `for_each_key` yields, and `fs.rs:442-445` documents
 that walk as log-structured *store* order, not FID order; each `force_delete`
 is its own flash write, so a power cut can land between any two of them.
 
@@ -1138,7 +1138,7 @@ separately:
 
 - **The RAM copy.** `ram` is `state.keydev_dec` (`state.rs:398-400`);
   `SeedReachable == store.seed \/ ram` is what "the owner's seed is still
-  reachable" means; `DeviceUnlock` is the vendor `UNLOCK` (`vendor.rs:589-618`)
+  reachable" means; `DeviceUnlock` is the vendor `UNLOCK` (`vendor.rs:588-617`)
   that is its only door. `KeepOpen` / `KeepSurv` move the wipe's own claim — that
   what a tear leaves behind is undecryptable — from the flash delete to the
   moment the **last** copy dies.
@@ -1165,48 +1165,48 @@ Round two's "no, in two independent ways" was exact.
 <!-- Generated by scripts/run_count_gate.py --write; do not edit. -->
 | Configuration | Verdict | States generated | Distinct | Depth | Wall |
 |---|---|---|---|---|---|
-| `Shipped.cfg` — the tree as it stands, `SYMMETRY` on, firmware constants | **GREEN** | 1 401 505 939 | 108 618 956 | 58 | 2877 s |
-| `AlwaysUv.cfg` — AS-AUTH-2's other arm: the build that ships it | **GREEN** | 385 191 607 | 31 451 172 | 51 | 740 s |
-| `PermWide.cfg` — `WidePerms`'s other arm: all sixteen permission subsets | **GREEN** | 497 332 297 | 29 185 896 | 45 | 795 s |
-| 2 × `PermWideMut_*.cfg` — and what says that arm's observers can fail | all 2 RED | 4 061 – 221 696 | 1 282 – 25 247 | 7 – 9 | 1 s – 2 s |
-| `ForceChange.cfg` — `ForceChangeModelled`'s other arm: EF_MINPINLEN[1], the forced-PIN-change gate | **GREEN** | 156 123 019 | 14 853 324 | 46 | 259 s |
-| `Historical_E76.cfg` — the seed-lead taken back out | **GREEN** | 1 401 567 499 | 108 618 956 | 58 | 2818 s |
-| `Historical_E77.cfg` — the grant back in phase 2 **and** the consumer fix out | `RED: NoAccessibleSecretWithoutGate` | 2 096 918 | 234 091 | 13 | 6 s |
-| 31 × `Mut_*.cfg` — mutant against the whole invariant set | all 31 RED | 89 – 4 673 532 | 40 – 492 157 | 4 – 14 | 1 s – 11 s |
-| 34 × `Solo_*.cfg` — the same mutants against their **own** target only | all 34 RED | 89 – 6 424 221 | 40 – 680 062 | 4 – 15 | 0 s – 14 s |
-| 3 × `SoloClause_*.cfg` — and against **one clause** of it | all 3 RED | 27 522 – 29 218 194 | 6 152 – 2 789 419 | 8 – 18 | 2 s – 57 s |
-| `Fairness.cfg` — `ENABLED OpAdvances => ~Idle`, at the liveness constants | **GREEN** | 151 264 817 | 14 514 424 | 46 | 232 s |
-| `FairMut_*.cfg` — E160 verbatim | `RED: OpAdvancesIsOneActivity` | 73 | 40 | 4 | 0 s |
-| `Seams.cfg` — the second module: the applet seams | **GREEN** | 6 349 | 422 | 11 | 0 s |
+| `Shipped.cfg` — the tree as it stands, `SYMMETRY` on, firmware constants | **GREEN** | 1 401 505 939 | 108 618 956 | 58 | 3186 s |
+| `AlwaysUv.cfg` — AS-AUTH-2's other arm: the build that ships it | **GREEN** | 385 191 607 | 31 451 172 | 51 | 764 s |
+| `PermWide.cfg` — `WidePerms`'s other arm: all sixteen permission subsets | **GREEN** | 497 332 297 | 29 185 896 | 45 | 874 s |
+| 2 × `PermWideMut_*.cfg` — and what says that arm's observers can fail | all 2 RED | 4 016 – 211 634 | 1 290 – 24 221 | 7 – 9 | 1 s – 2 s |
+| `ForceChange.cfg` — `ForceChangeModelled`'s other arm: EF_MINPINLEN[1], the forced-PIN-change gate | **GREEN** | 156 123 019 | 14 853 324 | 46 | 267 s |
+| `Historical_E76.cfg` — the seed-lead taken back out | **GREEN** | 1 401 567 499 | 108 618 956 | 58 | 3088 s |
+| `Historical_E77.cfg` — the grant back in phase 2 **and** the consumer fix out | `RED: NoAccessibleSecretWithoutGate` | 2 459 059 | 268 290 | 13 | 7 s |
+| 31 × `Mut_*.cfg` — mutant against the whole invariant set | all 31 RED | 89 – 4 656 625 | 40 – 489 330 | 4 – 14 | 0 s – 11 s |
+| 34 × `Solo_*.cfg` — the same mutants against their **own** target only | all 34 RED | 89 – 6 216 765 | 40 – 661 043 | 4 – 15 | 0 s – 14 s |
+| 3 × `SoloClause_*.cfg` — and against **one clause** of it | all 3 RED | 28 748 – 29 219 671 | 6 433 – 2 789 769 | 8 – 18 | 2 s – 59 s |
+| `Fairness.cfg` — `ENABLED OpAdvances => ~Idle`, at the liveness constants | **GREEN** | 151 264 817 | 14 514 424 | 46 | 233 s |
+| `FairMut_*.cfg` — E160 verbatim | `RED: OpAdvancesIsOneActivity` | 73 | 40 | 4 | 1 s |
+| `Seams.cfg` — the second module: the applet seams | **GREEN** | 6 349 | 422 | 11 | 1 s |
 | 52 × `SeamMut_*.cfg` / `SeamSolo_*.cfg` | all 52 RED | — | — | — | 0 s – 1 s |
-| `Store.cfg` — the third module: the flash layer | **GREEN** | 4 185 | 364 | 6 | 0 s |
+| `Store.cfg` — the third module: the flash layer | **GREEN** | 4 185 | 364 | 6 | 1 s |
 | 19 × `StoreMut_*.cfg` / `StoreSolo_*.cfg` | all 19 RED | 55 – 221 | 24 – 77 | 3 – 4 | 0 s – 1 s |
 | `StoreInduction.cfg` — `IndInv /\ Next => IndInv'`, the probe that found one | **GREEN** | 12 460 | 1 000 | 1 | 1 s |
 | `StoreInductionMut_*.cfg` — what says that probe can go red | `RED: NoRecordLostToMetaWrite` | 1 499 | 1 002 | 2 | 1 s |
 | `Lattice.cfg` — the fourth module: the retry/recovery lattice | **GREEN** | 629 541 | 24 920 | 17 | 1 s |
-| 26 × `LatMut_*.cfg` / `LatSolo_*.cfg` | all 26 RED | 2 – 916 | 2 – 228 | 2 – 5 | 0 s – 1 s |
-| `LatInduction.cfg` — `IndInv /\ Next => IndInv'`, the probe that found NOTHING | **GREEN** | 2 100 000 | 70 000 | 1 | 4 s |
-| `LatInductionMut_*.cfg` — what says that probe can go red | `RED: WrongAttemptIsCharged` | 99 714 | 70 002 | 2 | 1 s |
-| `Policies.cfg` — all four applets' stateful operation policies | **GREEN** | 83 888 029 | 3 048 516 | 31 | 53 s |
-| 22 × `PolicyMut_*.cfg` / `PolicySolo_*.cfg` | all 22 RED | 39 – 12 465 | 16 – 1 720 | 3 – 6 | 0 s – 1 s |
+| 26 × `LatMut_*.cfg` / `LatSolo_*.cfg` | all 26 RED | 2 – 835 | 2 – 205 | 2 – 5 | 0 s – 1 s |
+| `LatInduction.cfg` — `IndInv /\ Next => IndInv'`, the probe that found NOTHING | **GREEN** | 2 100 000 | 70 000 | 1 | 3 s |
+| `LatInductionMut_*.cfg` — what says that probe can go red | `RED: WrongAttemptIsCharged` | 99 714 | 70 002 | 2 | 2 s |
+| `Policies.cfg` — all four applets' stateful operation policies | **GREEN** | 83 888 029 | 3 048 516 | 31 | 52 s |
+| 22 × `PolicyMut_*.cfg` / `PolicySolo_*.cfg` | all 22 RED | 39 – 12 432 | 16 – 1 716 | 3 – 6 | 0 s – 1 s |
 | `Admin.cfg` — the fifth module: the administrative surface | **GREEN** | 101 | 8 | 3 | 1 s |
 | 8 × `AdminMut_*.cfg` / `AdminSolo_*.cfg` | all 8 RED | 2 – 99 | 2 – 10 | 2 – 3 | 0 s – 1 s |
 | `Display.cfg` — the sixth module: the trusted-display ceremony | **GREEN** | 15 | 5 | 3 | 1 s |
 | 6 × `DispMut_*.cfg` / `DispSolo_*.cfg` | all 6 RED | 12 – 15 | 6 | 3 – 4 | 0 s – 1 s |
 | 2 × `Boot.cfg` / `BootCarry.cfg` — the seventh module, and its open hardware assumption's other arm | all 2 **GREEN** | 67 – 77 | 18 – 24 | 5 | 1 s |
-| 9 × `BootMut_*.cfg` / `BootSolo_*.cfg` / `BootCarryMut_*.cfg` | all 9 RED | 2 – 61 | 2 – 26 | 2 – 5 | 0 s – 1 s |
+| 9 × `BootMut_*.cfg` / `BootSolo_*.cfg` / `BootCarryMut_*.cfg` | all 9 RED | 2 – 60 | 2 – 26 | 2 – 5 | 0 s – 1 s |
 | `BootInduction.cfg` — `IndInv /\ Next => IndInv'` from ANY admitted state | **GREEN** | 180 | 48 | 1 | 1 s |
 | `BootInductionMut_*.cfg` | `RED: MarkerNeverLies` | 101 | 50 | 2 | 0 s |
-| 2 × `Historical_Boot*.cfg` — the write/re-arm order the tree ships, and the one it does not | 1 GREEN, 1 RED | 25 – 141 | 14 – 38 | 4 – 7 | 1 s |
-| `Transport.cfg` — the eighth module: the CTAPHID reassembler | **GREEN** | 127 | 13 | 5 | 1 s |
-| 6 × `TransMut_*.cfg` / `TransSolo_*.cfg` | all 6 RED | 28 – 46 | 8 – 11 | 3 – 4 | 0 s – 1 s |
-| 2 × `TraceSeams.cfg` / `TraceSeamsBad.cfg` — phase 4: a recorded session replayed, and one the model must refuse | 1 GREEN, 1 RED | 2 – 15 | 2 – 14 | 2 – 14 | 0 s |
-| `TraceSecurity.cfg` — raw C-state --beta--> B and alpha == gamma(B) | **GREEN** | 78 | 76 | 76 | 1 s |
+| 2 × `Historical_Boot*.cfg` — the write/re-arm order the tree ships, and the one it does not | 1 GREEN, 1 RED | 31 – 141 | 16 – 38 | 4 – 7 | 0 s – 1 s |
+| `Transport.cfg` — the eighth module: the CTAPHID reassembler | **GREEN** | 127 | 13 | 4 | 0 s |
+| 6 × `TransMut_*.cfg` / `TransSolo_*.cfg` | all 6 RED | 28 – 45 | 8 – 11 | 3 – 4 | 0 s – 1 s |
+| 2 × `TraceSeams.cfg` / `TraceSeamsBad.cfg` — phase 4: a recorded session replayed, and one the model must refuse | 1 GREEN, 1 RED | 2 – 15 | 2 – 14 | 2 – 14 | 0 s – 1 s |
+| `TraceSecurity.cfg` — raw C-state --beta--> B and alpha == gamma(B) | **GREEN** | 78 | 76 | 76 | 0 s |
 | 8 × `TraceSecurityBad*.cfg` — the shifts the replay must refuse, one control among them | 1 GREEN, 7 RED | 11 – 78 | 10 – 76 | 10 – 76 | 0 s – 1 s |
-| 4 × `TokenGate*.cfg` — tier A's requirement half, its oracle, their disagreement, and one forbidden edge | 2 GREEN, 2 RED | — | — | — | 1 s – 2 s |
-| 4 × `TokenRefinement*.cfg` — phase 5: native B -> A state refinement | 2 GREEN, 2 RED | 2 – 48 737 609 | 2 – 4 611 484 | 2 – 44 | 1 s – 315 s |
-| `Liveness.cfg` — the three temporal properties, at the heap `floors.txt` gives it | **GREEN** | 151 264 817 | 14 514 424 | 46 | 2798 s |
-| 3 × `LiveMut_*.cfg` — one mutant per property | all 3 RED | 498 306 – 633 863 | 77 438 – 92 331 | — | 3 s – 4 s |
+| 4 × `TokenGate*.cfg` — tier A's requirement half, its oracle, their disagreement, and one forbidden edge | 2 GREEN, 2 RED | — | — | — | 1 s |
+| 4 × `TokenRefinement*.cfg` — phase 5: native B -> A state refinement | 2 GREEN, 2 RED | 2 – 48 737 609 | 2 – 4 611 484 | 2 – 44 | 1 s – 316 s |
+| `Liveness.cfg` — the three temporal properties, at the heap `floors.txt` gives it | **GREEN** | 151 264 817 | 14 514 424 | 46 | 3172 s |
+| 3 × `LiveMut_*.cfg` — one mutant per property | all 3 RED | 456 250 – 552 601 | 70 527 – 83 858 | — | 4 s – 5 s |
 <!-- run-count-results-table:end -->
 
 Every named baseline above, plus `Fairness.cfg` and `Liveness.cfg`, is an exhaustive
@@ -1241,10 +1241,10 @@ out of that column.
 
 <!-- run-count-tlc-measured:start -->
 <!-- Generated by scripts/run_count_gate.py --write; do not edit. -->
-**Every row above is from one run on 2026-10-01**: `./run-tlc.sh safety` and
+**Every row above is from one run on 2026-10-09**: `./run-tlc.sh safety` and
 then `./run-tlc.sh liveness`, which is what `all` does, on an Apple M5 Pro (18
 cores) at the default `WORKERS=2` and whatever heap `floors.txt` gives each
-configuration. 262 safety rows in **8774 s** and 4 liveness rows in **2809 s**;
+configuration. 262 safety rows in **9469 s** and 4 liveness rows in **3185 s**;
 27 GREEN, 239 RED, and not one row missed what `floors.txt` requires of it —
 which is what makes the command exit 0 rather than merely finish.
 <!-- run-count-tlc-measured:end -->
@@ -1357,7 +1357,7 @@ model used to have one value for both, which left the panel unable to own a
 ceremony at all — so a physical hold spent on an on-panel flow was invisible to
 the one-hold-one-ceremony rule, and E45's ruling had nothing to be true of.
 `Panel` is a distinct owner here, `SCOPE_OTP` is a third
-(`firmware/src/worker.rs:663-665`), and `request_cancel`'s single `if`
+(`firmware/src/worker.rs:735-737`), and `request_cancel`'s single `if`
 (`crates/rsk-device/src/presence.rs:118-122`) is what refuses a host cancel
 against any of them. `BugPanelCancelable` loosens exactly the panel half of that
 test — the narrow mistake somebody could make while keeping the CCID half — and
@@ -1421,7 +1421,7 @@ than assumed. The CCID side owns a `Dispatcher` and the only instances of
 openpgp / oath / piv / otp / management / rescue / vendor
 (`crates/rsk-device/src/ccid.rs:104-122`); the CTAPHID side owns a **separate**
 `Dispatcher` whose applet array is literally one element, its own `VendorApplet`
-(`crates/rsk-device/src/ctap.rs:205-209`). PIV, OpenPGP and OATH are not
+(`crates/rsk-device/src/ctap.rs:217-221`). PIV, OpenPGP and OATH are not
 reachable over CTAPHID at all, so no status can be established on one transport
 and honoured on the other. A product of the two models would multiply 17 M
 states by this one's 205 and buy exactly zero new interleavings. What they do
@@ -1478,18 +1478,18 @@ it.
 |---|---|---|---|
 | `BugSelectKeepsOtherApplet` | `crates/rsk-sdk/src/applet.rs:450-454` — the `deselect` a select of a *different* AID runs | `NoStatusOutsideItsSelection` | 27 states |
 | `BugReselectResetsStatus` | `637ed98` taken back out: PIV, OpenPGP and OATH's VALIDATE resetting on every select | `ReselectPreservesAccessStatus` | 42 states |
-| `BugCardResetKeepsStatus` | `crates/rsk-device/src/ccid.rs:394-409` — the ICC power transition | `NoStatusOutsideItsSelection` | 29 states |
+| `BugCardResetKeepsStatus` | `crates/rsk-device/src/ccid.rs:403-418` — the ICC power transition | `NoStatusOutsideItsSelection` | 29 states |
 | `BugAdminOpensKeyOps` | `e5da38b` taken back out: PW3 standing in for PW1/PW2 | `NoKeyOpOnTheAdminStatus` | 67 states |
 | `BugFailedChangeKeepsStatus` | `aa47867` taken back out: a refused OTP-PIN change that leaves the safe open | `NoStatusAfterARefusedAuth` | 74 states |
 | `BugPinFreshNotSpent` | `crates/rsk-piv/src/auth.rs:117-121` — one VERIFY, one key operation | `NoKeyOpOnTheAdminStatus` | 45 states |
 | `BugPinFreshOutlivesPin` | the selection clamp removed, so `pin_fresh` survives after `has_pin` is cleared | `NoKeyOpOnTheAdminStatus` | 42 states |
-| `BugSigPinNotSpent` | `crates/rsk-openpgp/src/keys.rs:443-458` — the same shape one applet over, PW1 valid for one PSO:CDS | `NoKeyOpOnTheAdminStatus` | 212 states |
+| `BugSigPinNotSpent` | `crates/rsk-openpgp/src/keys.rs:447-462` — the same shape one applet over, PW1 valid for one PSO:CDS | `NoKeyOpOnTheAdminStatus` | 212 states |
 | `BugUserStatusOpensAdmin` | a *user* status opening the admin surface — the converse `BugAdminOpensKeyOps` cannot express | `NoKeyOpOnTheAdminStatus` | 48 states |
 | `BugRefusedValidateGrants` | a refused OATH access-code `VALIDATE` that grants the unlock | `NoStatusAfterARefusedAuth` | 73 states |
 | `BugPwStatusIgnoresAdmin` | a *user* status writing the PW status byte — PUT DATA `0xC4` is PW3's (`crates/rsk-openpgp/src/putdata.rs:260-263`, and the ACL one layer up at `:60-66`) | `NoKeyOpOnTheAdminStatus` | 49 states |
 | `BugPivChangeResetsStatus` | PIV's refused `CHANGE REFERENCE DATA` clearing the standing status | `ExemptRefusalPreservesStatus` | 46 states |
 | `BugRefusedValidateDropsUnlock` | a refused OATH access-code `VALIDATE` dropping the standing unlock | `ExemptRefusalPreservesStatus` | 46 states |
-| `BugRemoveCodeUnvalidated` | the access-code removal (`73 00`) reached without the validated status (`crates/rsk-oath/src/lib.rs:369-371`) — the hole the abstractions list carried for two revisions as definitionally invisible to any state predicate | `AccessCodeRemovalNeedsTheCode` | 71 states |
+| `BugRemoveCodeUnvalidated` | the access-code removal (`73 00`) reached without the validated status (`crates/rsk-oath/src/lib.rs:370-372`) — the hole the abstractions list carried for two revisions as definitionally invisible to any state predicate | `AccessCodeRemovalNeedsTheCode` | 71 states |
 
 `Seams.cfg` is **GREEN, exhaustive, 6 045 states generated / 410 distinct at
 depth 11**, and every mutant listed above is caught by the invariant that names it.
@@ -1525,7 +1525,7 @@ so the invariant's converse — a *user* status opening the *admin* surface — 
 unfalsifiable. `AdminOp` costs a handful of states and `BugUserStatusOpensAdmin`
 falls in 48. It also found the second `pin_fresh`-shaped hole, one applet over:
 OpenPGP's `spend_one_shot_pw1` clears `has_pw1` under the one-shot PW status
-(`crates/rsk-openpgp/src/keys.rs:443-458`), which `PgpKeyOp` had no term for —
+(`crates/rsk-openpgp/src/keys.rs:447-462`), which `PgpKeyOp` had no term for —
 `BugSigPinNotSpent`, RED in 361 once `oneShotSig`/`psig` exist. And a **refused
 OATH `VALIDATE` that GRANTS the unlock was invisible**, because the `refused`
 ghost provably never names that reference: exempting the action from the refusal
@@ -1608,11 +1608,11 @@ seventh, recorded with the fault-disjunct work earlier in this file.)
 
 | Mutation switch | Rebuilds | Target invariant | Caught in |
 |---|---|---|---|
-| `BugDeleteValueBeforeMeta` | `fs.rs:598-600` — the two backend writes reversed, so a torn delete leaves value-gone-meta-alive (`delete_landed`) | `NoOrphanedMetadata` | 54 states |
+| `BugDeleteValueBeforeMeta` | `fs.rs:669-671` — the two backend writes reversed, so a torn delete leaves value-gone-meta-alive (`delete_landed`) | `NoOrphanedMetadata` | 54 states |
 | `BugDeleteMetaOnlyUnderPresent` | the 0x077C databug — `delete` dropping `EF_META` only under `if present_bit`, so a meta-only file keeps its record | `NoOrphanedMetadata` | 55 states |
-| `BugDeleteHidesFaultedDrop` | the shipped tree before `fs.rs:605` — a faulted `meta_delete` swallowed, so the caller hears `Ok` about a record standing over a value that is gone | `NoSilentOrphan` | 61 states |
+| `BugDeleteHidesFaultedDrop` | the shipped tree before `fs.rs:676` — a faulted `meta_delete` swallowed, so the caller hears `Ok` about a record standing over a value that is gone | `NoSilentOrphan` | 61 states |
 | `BugCacheFaultAsAbsent` | audit run-36 — `record` in place of `record_unless_faulted`, caching a faulted read as a decided absence | `NoFalseAbsent` | 23 states |
-| `BugTruncatedScanDecidesAll` | `fs.rs:300-302` — `scan` deciding the whole FID space after a *truncated* walk, so a missed live key reads absent | `NoFalseAbsent` | 24 states |
+| `BugTruncatedScanDecidesAll` | `fs.rs:331-333` — `scan` deciding the whole FID space after a *truncated* walk, so a missed live key reads absent | `NoFalseAbsent` | 24 states |
 | `BugMetaAddDropsOnFault` | the 0x077C databug's meta half — a faulted `EF_META` read rebuilt from empty, dropping every other record | `NoRecordLostToMetaWrite` | 51 states |
 
 `Store.cfg` is **GREEN, exhaustive** over 364 distinct states at depth 6 in
@@ -1889,10 +1889,10 @@ removed defences:
 
 | Mutation switch | Rebuilds | Target invariant | Caught in |
 |---|---|---|---|
-| `BugMaskIsCosmetic` | **the pre-`0x084A` tree, shipped**: `USB_ENABLED` echoed in DeviceInfo while SELECT and dispatch never consulted it — `ykman config usb --disable` disabled nothing (`crates/rsk-sdk/src/applet.rs:259-261`, fed at `crates/rsk-device/src/ccid.rs:255-263`, consulted at `:380`) | `DisabledAppletNeverDispatches` | 10 states |
+| `BugMaskIsCosmetic` | **the pre-`0x084A` tree, shipped**: `USB_ENABLED` echoed in DeviceInfo while SELECT and dispatch never consulted it — `ykman config usb --disable` disabled nothing (`crates/rsk-sdk/src/applet.rs:259-261`, fed at `crates/rsk-device/src/ccid.rs:255-266`, consulted at `:389`) | `DisabledAppletNeverDispatches` | 10 states |
 | `BugLockWriteResetsCaps` | **audit run-35, shipped**: a lock-code-only write strips to zero bytes, stored verbatim as an EMPTY record that `read_enabled_caps` reads as `SUPPORTED_CAPS` — every disabled application silently re-enabled (`crates/rsk-devconf/src/lib.rs:310-317`, the merge) | `DisableSetSurvivesLockWrite` | 9 states |
 | `BugAdminGateable` | the `APPLET_CAPS` cap-`0` carve-out removed (`crates/rsk-device/src/ccid.rs:80-87`): management/vendor/rescue gated by the mask, so one disable-everything write is irreversible | `AdminSurfaceAlwaysReachable` | 2 states |
-| `BugPrivilegedOpUngated` | `require_presence` removed (`crates/rsk-rescue/src/lib.rs:142-144`): keydev signing, cert/config writes, BOOTSEL reboot and fuse burns driven by the USB host alone | `PrivilegedOpNeedsPresence` | 10 states |
+| `BugPrivilegedOpUngated` | `require_presence` removed (`crates/rsk-rescue/src/lib.rs:149-151`): keydev signing, cert/config writes, BOOTSEL reboot and fuse burns driven by the USB host alone | `PrivilegedOpNeedsPresence` | 10 states |
 
 `Admin.cfg` is **GREEN, exhaustive over 8 distinct states** — honestly tiny,
 because the state *is* the 3-capability mask's power set and every property
@@ -1939,7 +1939,7 @@ what the registry refuses:
   completes only through the card that names it. The PIN pad cannot substitute:
   its title is `'static`, *never* RP data
   (`crates/rsk-fido/src/clientpin.rs:604-605`, consumed at
-  `getassertion.rs:688-689`, `makecredential.rs:765-766`, `u2f.rs:106`);
+  `getassertion.rs:694-695`, `makecredential.rs:767-768`, `u2f.rs:106`);
 - `StaleTouchApprovesNothing` — the touch controller reports *level, not
   edges*, so a finger already down when the card paints would read as a tap on
   it; the release edge is the whole defence, and it is two layers — the ambient
@@ -1997,7 +1997,7 @@ exercise their interleavings at all.
 (chip-serial) root to the OTP root, and the log-structured store keeps the
 superseded weak copy readable in a raw flash dump until a compaction lap pushes
 it off the medium. `EF_HARDENED` says the lap has run
-(`crates/rsk-fs/src/lib.rs:29-124`); the boot runs it iff the marker is absent
+(`crates/rsk-fs/src/lib.rs:29-126`); the boot runs it iff the marker is absent
 and writes the marker only after `compact()` returns Ok
 (`crates/rsk-fs/src/lib.rs:126-148`) — marker AFTER scrub, the same write-order
 family as the store's delete and the PIN flows' revoke. The boot glue keeps only
@@ -2048,10 +2048,10 @@ firmware keeps only the OTP gate and the placement of the stall.
 All three switches are registered co-mutants now, each measured `killed` and
 each failure read for its direction rather than its colour:
 `BugRekeyKeepsTheMarker` (`requesting_a_rescrub_clears_the_hardened_marker`,
-`crates/rsk-fs/src/fs_tests.rs:386` — the marker SURVIVED),
+`crates/rsk-fs/src/fs_tests.rs:423` — the marker SURVIVED),
 `BugMarkerBeforeScrub`
 (`the_at_rest_lap_writes_its_marker_only_after_a_completed_scrub`,
-`crates/rsk-fs/src/fs_tests.rs:506` — the marker is PRESENT over a torn lap,
+`crates/rsk-fs/src/fs_tests.rs:543` — the marker is PRESENT over a torn lap,
 read off the medium past `Fs`'s cache), `BugPartialLockCarry`
 (`pin_lock_round_trips_and_boot_leaves_it_alone` at
 `crates/rsk-fido/src/state_tests.rs:189`, `left: 0 right: 2` — a live batch
@@ -2076,7 +2076,7 @@ removing its own site's re-arm in a worktree — the first probe removed the
 as the asserts' specificity check. The panel path's own twin
 (`spend_and_verify_pin_at`, the fourth PIN door) and the OATH/OpenPGP site
 asserts remain open, recorded here rather than implied. The boot-wiring gap that
-stood here is CLOSED. `crates/rsk-device/src/ctap_tests.rs:105-127` drives only
+stood here is CLOSED. `crates/rsk-device/src/ctap_tests.rs:126-148` drives only
 `engaged: true, mismatches: 3`, so `a_warm_boot_carries_a_sub_limit_batch_in`
 was added beside it for the other arm — and what that case alone catches is not
 `BugPartialLockCarry`, which the ordinary rsk-device host row catches too, but a
@@ -2152,7 +2152,7 @@ bring-up order are M8's transport territory.
 ## The ninth module — `RSKeyTransport.tla`
 
 `rsk-usb` was the last workspace member no module covered, and the CTAPHID
-frame reassembler (`crates/rsk-usb/src/ctaphid.rs:441-519`) is a genuine
+frame reassembler (`crates/rsk-usb/src/ctaphid.rs:453-531`) is a genuine
 sequence machine — `in_tx` carries across the frames of a multi-frame message.
 It is already unit-tested and fuzzed, and that is exactly the point of also
 modelling it: every one of those exercises a *single* `feed`, or a fuzzer's
@@ -2163,13 +2163,13 @@ assert and a sampling fuzzer does not prove.
 
 - `NoCrossChannelSplice` — a continuation on a channel other than the
   in-progress transaction's is `CHANNEL_BUSY`, the owner's transaction left
-  intact (`crates/rsk-usb/src/ctaphid.rs:491-493`); one host application's bytes
+  intact (`crates/rsk-usb/src/ctaphid.rs:503-505`); one host application's bytes
   must never assemble into another's message;
 - `NoSequenceGap` — an out-of-order continuation aborts rather than filling the
-  gap (`:495-498`); the reassembler never completes a message the host did not
+  gap (`:507-510`); the reassembler never completes a message the host did not
   send in that order;
 - `NoBufferOverrun` — an INIT declaring more than `CTAP_MAX_MESSAGE` is refused
-  (`:472-474`), and the chunk count never passes the ceiling; in a `no_std`
+  (`:484-486`), and the chunk count never passes the ceiling; in a `no_std`
   image passing it is an out-of-bounds write, so this one is **structural** (the
   other two are ghosts — a splice and a desync leave no trace in the completed
   message, they are steps).
@@ -2192,10 +2192,10 @@ mid-transaction is a legal resync (a takeover, not a splice: B's fresh buffer
 holds B's chunks). The bounded IN-endpoint write that fixed the runtime
 interface wedge (0x075D, `TX_TIMEOUT_MS`) is a liveness property, and **no
 liveness proof is claimed from CTAPHID evidence**. It lives on `write_frames`
-(`crates/rsk-usb/src/ctaphid.rs:928-940`), the response path, where two host
+(`crates/rsk-usb/src/ctaphid.rs:1038-1050`), the response path, where two host
 regressions pin the abandon and the drain
-(`crates/rsk-usb/src/ctaphid_tests.rs:478,500`) — not on the async `run` loop
-(`crates/rsk-usb/src/ctaphid.rs:639`), which neither of them enters. No mutation
+(`crates/rsk-usb/src/ctaphid_tests.rs:479,501`) — not on the async `run` loop
+(`crates/rsk-usb/src/ctaphid.rs:683`), which neither of them enters. No mutation
 record stands behind either: `write_frames`, `FrameSink` and `TX_TIMEOUT` appear
 in none of `formal/comutants.toml`, `formal/floors.txt` or `formal/runs.toml`,
 and `scripts/comutate.py` excludes liveness switches from the roster by design.
@@ -2308,11 +2308,11 @@ carrying no `pinUvAuthParam`, and the reason is structural rather than a want of
 cleverness: **the model expresses a refusal by DISABLING an action**, so a
 refused command reaches a replay as a stutter — and a *successful* one that
 stores nothing is the same stutter. `rk` is the only thing that separates them,
-CTAP 2.1 §6.1.2 step 10 being the whole rule (`makecredential.rs:630-636`): a
+CTAP 2.1 §6.1.2 step 10 being the whole rule (`makecredential.rs:632-638`): a
 discoverable credential still needs a token where a PIN is set, a non-discoverable
 one is served on presence alone. Step 6's `alwaysUv` arm was deliberately NOT in
 `McTokenlessRefused`: it refuses only where built-in UV is unavailable
-(`makecredential.rs:618-626`), which would need `req.uv` and the pad's
+(`makecredential.rs:620-628`), which would need `req.uv` and the pad's
 availability recorded, and asserting it from `gate.alwaysUv` alone would be an
 uncited claim the code does not make. **That argument is wrong about the rule and
 the recording refuted it — see "The arm that was left out was wrong" below;** the
@@ -2554,7 +2554,7 @@ State 2  MetaAdd("a")        meta = [a |-> TRUE,  b |-> FALSE]
 The cache says `EF_META` is absent while `b`'s record stands. Nothing in
 `TypeOK` or the four invariants forbids that state, and from it `MetaAdd` does
 exactly what the shipped code does — trusts the cache and rebuilds the blob from
-empty (`fs.rs:830`), losing `b`. This is SEC-STORE-004's damage arriving from a
+empty (`fs.rs:917`), losing `b`. This is SEC-STORE-004's damage arriving from a
 STATE rather than from the step that made the cache lie, and the model had no
 way to say the cache is honest. One conjunct fixes it:
 
@@ -3038,6 +3038,7 @@ evidence columns and validated cross-model support edges below on every gate run
 | Crate | Class | Model / evidence | Named gap / disposition |
 |---|---|---|---|
 | `firmware` | embedded-binary | — | no_std binary: boot, worker sequencing, board halves of Hooks/Platform. The boot path's cross-boot state — the EF_HARDENED lap and scratch-word lock carry — is RSKeyBootHardening (M7), precisely because this crate has no host tests; the FIDO state it builds is reconstructed host-side in rsk-device (ctap.rs:82-93). Worker scheduling and USB bring-up remain implementation mechanics, with transport state owned by RSKeyTransport. |
+| `firmware-ns` | embedded-binary | — | TrustZone Non-secure classes, packet framing and TIMER1; no worker or applet state is instantiated here. Protocol state is host-tested in rsk-usb; full ELF crypto, lifecycle, presence and hostile-access checks are tests/95 through tests/99. Hardware attribution and complete exception/FP fidelity remain separate platform obligations. |
 | `rsk-bench` | out-of-scope | — | latency statistics for the on-device harness; not part of the security argument. |
 | `rsk-bip39` | pure | `crates/rsk-bip39/src/kani.rs` | — |
 | `rsk-crypto` | pure | `crates/rsk-crypto/src/base64url_kani.rs`<br>`fuzz/fuzz_targets/aes_gcm.rs`<br>`fuzz/fuzz_targets/chachapoly.rs` | — |
@@ -3046,7 +3047,7 @@ evidence columns and validated cross-model support edges below on every gate run
 | `rsk-display` | state-partial | `RSKeyTrustedDisplay` | the confirm ceremony (WhatIsConfirmedIsWhatIsShown, decomposed as SEC-DISP-001..003) is modelled; the wait owner and the fourth PIN door stay in RSKeySecurityState. The menus and settings flows are navigation over that same armed-touch chokepoint. The device-PIN SCREENS are too, but `EF_DEVICE_PIN` itself is not: it carries a second independent persistent retry ladder that `local_pin_gate` spends, and it is the PIN half of the host-side vendor gate as well — PLAT-MODEL-011 is where that scope obligation lives. |
 | `rsk-ec` | pure | `crates/rsk-ec/src/tests.rs`<br>`crates/rsk-ec/src/key_tests.rs`<br>`crates/rsk-ec/src/key_x25519_tests.rs`<br>`crates/rsk-ec/src/key_bp_kat.rs`<br>`crates/rsk-ec/src/curve_tests.rs`<br>`crates/rsk-ec/src/pubdo_tests.rs` | — |
 | `rsk-fido` | state-modelled | `RSKeySecurityState` | — |
-| `rsk-fs` | state-partial | `RSKeyStore` | the committed store, the delete write-order and the present-cache soundness are modelled (M3 lifted powercut_model.rs to TLA+ and ties R0p to it); phase 6 composes the FIDO reset projection with delete_landed and the real byte-cuttable Fs stack. Values are still two opaque tokens, so a content-corrupting defect is out of reach, and Fs::factory_wipe's two-phase sweep remains the security module's ordering (SeedLeadsTheWipe), not this one's. |
+| `rsk-fs` | state-partial | `RSKeyStore` | the committed store, the delete write-order and the present-cache soundness are modelled (M3 lifted powercut_model.rs to TLA+ and ties R0p to it); phase 6 composes the FIDO reset projection with delete_landed and the real byte-cuttable Fs stack. Command status, uncertain-write rescan, mutation generation and dynamic-capacity admission are outside this status-free projection and are exercised by real-NOR fault tests. Values are still two opaque tokens, so a content-corrupting defect is out of reach, and Fs::factory_wipe's two-phase sweep remains the security module's ordering (SeedLeadsTheWipe), not this one's. |
 | `rsk-led` | pure | `crates/rsk-led/src/kani.rs` | — |
 | `rsk-mgmt` | state-partial | `RSKeyAdminSurface` | what is left after the EF_DEV_CONF codec moved to rsk-devconf: the CCID command surface (INS 0x1C/0x1D, and 0x1E acknowledged with nothing done) and the strict-config presence gate on WRITE CONFIG. AdminSurfaceAlwaysReachable models this applet as the always-on carve-out, and the applet holds no flash state of its own. |
 | `rsk-mldsa` | pure | `crates/rsk-mldsa/src/round_kani.rs`<br>`fuzz/fuzz_targets/mldsa_roundtrip.rs`<br>`fuzz/fuzz_targets/mldsa_verify.rs` | — |
@@ -3059,9 +3060,10 @@ evidence columns and validated cross-model support edges below on every gate run
 | `rsk-rsa` | pure | `crates/rsk-rsa/src/kani.rs` | — |
 | `rsk-sdk` | state-partial | `RSKeyAppletSeams` | Dispatcher::current is the seam module's sel. APDU command chaining remains outside RSKeyTransport, which covers CTAPHID framing rather than the SDK's per-applet chain buffer. |
 | `rsk-secret` | pure | `crates/rsk-secret/src/tests.rs` | — |
+| `rsk-sha256` | pure | `crates/rsk-sha256/src/tests.rs`<br>`fuzz/fuzz_targets/sha256_diff.rs` | — |
 | `rsk-sha512` | pure | `fuzz/fuzz_targets/sha512_diff.rs` | — |
 | `rsk-slip39` | pure | `crates/rsk-slip39/src/kani.rs`<br>`crates/rsk-slip39/src/tests.rs` | — |
-| `rsk-store` | state-partial | `RSKeyStore` | the Storage contract it implements — atomic append, an enumeration-completeness flag — is taken as RSKeyStore's backend assumption; the two-partition counter/main ring, is_counter_fid routing, wear and page reclaim, and compact are backend mechanics the model abstracts. |
+| `rsk-store` | state-partial | `RSKeyStore` | the Storage contract it implements — atomic append, an enumeration-completeness flag — is taken as RSKeyStore's backend assumption; the two-partition counter/main ring, is_counter_fid routing, wear and page reclaim, and compact are backend mechanics the model abstracts. Storage v2 authentication, complete-set authority, root migration and attended legacy import are outside this model; authenticated_store and native fault tests exercise those concrete mechanisms. Program/erase readback, a committed mutation followed by an error, and multi-fault recovery are held by real-backend controls rather than that model's pre-commit-refusal arm. |
 | `rsk-ui` | state-partial | `RSKeyTrustedDisplay` | hit_confirm's disjoint Allow/Deny zones are the modelled seam (OnlyAllowConfirms's Rust owner); rendering, fonts and the settings codec are pure functions under their own 14 Kani proofs and render tests — no screen-transition state lives in this crate (the ceremony state machine is rsk-display's). |
 | `rsk-usb` | state-partial | `RSKeyTransport` | the CTAPHID reassembler's channel/sequence/length state machine is modelled (M8), and SEC-TRANS-001..003 are tagged on feed and on the dispatcher that consumes its Outcome. The async transport loop's bounded-write liveness (the 0x075D wedge fix) is NOT proved: two host regressions cover write_frames, the response path, and no mutation record stands behind them. CCID framing and the secure_pin codec are single-step, Kani-proved and unit-tested; keyboard framing is unit-tested only — kbd.rs has no Kani harness. |
 | `rsk-vendor` | state-partial | `RSKeySecurityState` | ConfigOp/plat in the security model; the config-write pipeline it shares with rsk-devconf (persist_dev_conf) is RSKeyAdminSurface now. Still open: UNLOCK is modelled wider than its real gate (the one-shot MSE channel + lock_engaged). |
@@ -3101,7 +3103,7 @@ abstractions producing traces the firmware cannot follow.
   not permit; `PowerCut` reaches the same flash states and is the realistic
   interrupter.
 - **`BackupFinalize` is ungated.** The real `BACKUP_FINALIZE` carries the PIN
-  half of the gate and a deliberate hold (`vendor.rs:976-988`). Widening where
+  half of the gate and a deliberate hold (`vendor.rs:975-987`). Widening where
   the marker can be **set** never widens where it can be **lost**, and the loss
   is what the invariant is about.
 - **Any boot may mint the grant record, or not.** `BootEnsuresSeed` leaves
@@ -3116,14 +3118,14 @@ abstractions producing traces the firmware cannot follow.
   cryptographically dead. The reset snapshot's `snap.seed` *does* make that
   distinction, but only for the backup-marker clause.
 - **The order within a sweep phase is arbitrary.** `for_each_key` yields in
-  flash-ring order (`fs.rs:381-384`), which is *a* fixed order per device state,
+  flash-ring order (`fs.rs:442-445`), which is *a* fixed order per device state,
   not a free choice. Both findings below need only that some reachable ring
   order puts one delete before another.
 - **`DeviceUnlock` is ungated and needs no device lock.** The real vendor
-  `UNLOCK` (`vendor.rs:589-618`) requires the seed to be stored *wrapped* — only
+  `UNLOCK` (`vendor.rs:588-617`) requires the seed to be stored *wrapped* — only
   a soft-locked device has an `EF_KEY_DEV_ENC` to open — and the host to present
   the 32-byte lock key. The model requires only a live flash seed. It also omits
-  `AUT_DISABLE` (`config.rs:433-434`), which only ever *clears* the RAM copy.
+  `AUT_DISABLE` (`config.rs:434-435`), which only ever *clears* the RAM copy.
   Both widen where `ram` can be TRUE, never where it must be FALSE, and it is
   the RAM copy **surviving** that the invariant is about.
 - **`ResetAborts` fires at any of the wipe's three positions** and models every
@@ -3197,10 +3199,10 @@ than a settled abstraction.
 - **A registration with a PIN set and no token — CLOSED, and what is left of it
   is one conjunct.** CTAP 2.1 §6.1.2 steps 7/10 serve a NON-discoverable
   credential on presence alone even where a PIN is set
-  (`makecredential.rs:633-635`), and `Next` carries it now:
+  (`makecredential.rs:635-637`), and `Next` carries it now:
   `RegisterNdStart` / `RegisterNdTouched` / `RegisterNdRefused`, guarded by
   `McTokenlessGuard(FALSE)`. It writes nothing, because
-  `makecredential.rs:916-917` stores only under `req.rk`, so it carries no `rp`
+  `makecredential.rs:918-919` stores only under `req.rk`, so it carries no `rp`
   either. What stays narrow is the `~tok.live` conjunct in that guard: above
   `state.rs:651` the same touch SPENDS a live token without binding it, and tier
   A has no word for that edge — its `UseMc` admits an authorized event only
@@ -3245,7 +3247,7 @@ than a settled abstraction.
   `oathCode` exemption fires exactly when `~oathCodeSet` — the very state the
   removal produces. The repair is therefore a recorder at the STEP, not a change
   to the exemption: `OathRemoveCode` carries the gate
-  (`crates/rsk-oath/src/lib.rs:369-371`) as a Guard/Policy pair and
+  (`crates/rsk-oath/src/lib.rs:370-372`) as a Guard/Policy pair and
   `AccessCodeRemovalNeedsTheCode` is its own invariant. Measured exactly as the
   diagnosis predicted: the action adds no new kind of state, while
   `BugRemoveCodeUnvalidated` falls RED in 71 — a violation no state
@@ -3411,7 +3413,7 @@ than a settled abstraction.
 `Liveness.cfg` checks `EveryOpQuiesces`, `EveryWaitReleases` and
 `EveryWalkCloses` against it. The fairness is the load-bearing part, because an
 assumption the implementation does not honour makes its property meaningless:
-the synchronous worker (`worker.rs:411-424`) never parks a sequence, the
+the synchronous worker (`worker.rs:454-480`) never parks a sequence, the
 presence wait times out on its own budget (`crates/rsk-device/src/presence.rs:215-216`), and
 `expire_stale_sequences` (`state.rs:733-739`) retires an idle cursor. Nothing
 else is fair — not a press, a release, a host cancel, a power cut, a warm reset
@@ -3432,10 +3434,10 @@ All four conjuncts read against the code:
 
 | Conjunct | Shape | What owes it in the firmware | Verdict |
 |---|---|---|---|
-| `WF_vars(OpAdvances)` | **18 actions** | the synchronous worker: one `Exchange` at a time, under a lock, dispatch runs to completion (`worker.rs:411-424`) | sound **because** every disjunct is gated on `op.kind` while `Idle` gates every `*Start` — now asserted, not argued |
+| `WF_vars(OpAdvances)` | **18 actions** | the synchronous worker: one `Exchange` at a time, under a lock, dispatch runs to completion (`worker.rs:454-480`) | sound **because** every disjunct is gated on `op.kind` while `Idle` gates every `*Start` — now asserted, not argued |
 | `WF_vars(TouchTimeout)` | one action | the wait's own timeout (`crates/rsk-device/src/presence.rs:215-216`) | sound |
 | `WF_vars(WalkExpires)` | one action | `expire_stale_sequences` (`state.rs:733-739`) | sound |
-| `WF_vars(LocalCeremonyEnds)` | one action | the ceremony's own dispatch puts `WAIT_SCOPE` back (`worker.rs:525-527`) | sound — the E160 repair |
+| `WF_vars(LocalCeremonyEnds)` | one action | the ceremony's own dispatch puts `WAIT_SCOPE` back (`worker.rs:598-600`) | sound — the E160 repair |
 
 `OpAdvancesIsOneActivity == ENABLED OpAdvances => ~Idle` is the first row's
 argument as an invariant: if no disjunct can be enabled while the device is
@@ -3479,7 +3481,7 @@ establishes the verdict again.
 <!-- run-count-liveness-row:start -->
 <!-- Generated by scripts/run_count_gate.py --write; do not edit. -->
 `./run-tlc.sh all` runs `Liveness.cfg` at the heap `floors.txt` gives it, and
-it is **GREEN over 14 514 424 distinct states in 2798 s**, in the same matrix
+it is **GREEN over 14 514 424 distinct states in 3172 s**, in the same matrix
 run as everything else in the Results table.
 <!-- run-count-liveness-row:end -->
 
@@ -3637,8 +3639,8 @@ shipped 128 continuations. Unlike the store's shrink this one was not a choice
 between fast and slow: at the shipped width CBMC **ran out of memory**, so
 bounding the posed pre-state while keeping the 7609-byte buffer was a dead end
 rather than a slower road. The definition stays an EXPRESSION, so
-`scripts/docs_constants.py` indexes no literal and the 7609 in `docs/protocol.md`,
-`docs/interop.md` and the frame diagram is untouched — the coupling the store
+`scripts/docs_constants.py` indexes no literal. `docs/protocol.md` and the frame
+diagram retain the shipped 7609-byte limit. This is the coupling the store
 pilot walked into an hour earlier. `rsk-device`'s only harnesses are the presence
 arbitration and `firmware` does not build under Kani, so the shrink reaches
 nothing else. What it stops covering is carried by a compile-time assertion about

@@ -9,6 +9,11 @@ the `Fs` primitives that write them. **RS-Key is not formally verified**: this i
 one half of one model bridged to the code that maintains it, and the statuses
 below are what that buys and no more.
 
+Storage v2 adds authenticated authority and an automatic boot migration and authenticated recovery lifecycle below
+this cache contract. This pilot does not prove the MAC construction, replicated
+journal, import or root transition. Those mechanisms have concrete native and
+real-NOR fuzz controls; the model still assumes its backend append contract.
+
 ## Why only half
 
 `RSKeyStore` has seven variables. Five of them — `val`, `meta`, `dead`,
@@ -253,8 +258,8 @@ and no meta-only file. It is reachable on hardware — `rsk-store`'s `read` and
 `size` set `last_err` straight from `sequential-storage`'s `fetch_item`, so
 `last_error()` is a flash read error and not a modelling device. And the tree
 already treats the consequence as a defect **in one place**: `rsk-piv`'s
-`files.rs:405-414` rewrites the management key's head unconditionally, because
-after a `force_delete` "a stale AES-256 head left over a re-minted 24-byte
+`crates/rsk-piv/src/files.rs:423-432` rewrites the management key's head
+unconditionally, because after a `force_delete` "a stale AES-256 head left over a re-minted 24-byte
 DEFAULT_MGM wedges the slot on the length compare". PIV's other `meta_add_slot`
 sites have no such repair.
 

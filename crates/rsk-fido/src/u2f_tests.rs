@@ -14,6 +14,9 @@ use rsk_fs::storage::ram::RamStorage;
 #[path = "u2f_bounds_tests.rs"]
 mod bounds;
 
+#[path = "u2f_independence_tests.rs"]
+mod independence;
+
 struct SeqRng(u64);
 impl Rng for SeqRng {
     fn fill(&mut self, buf: &mut [u8]) {
@@ -1328,3 +1331,9 @@ fn direct_u2f_calls_refuse_inconsistent_apdu_lengths_before_loading_a_key() {
     assert_eq!(fs.write_gen(), 0);
     assert_eq!(rng.0, 1);
 }
+
+#[path = "u2f_restart_tests.rs"]
+mod restarts;
+
+#[path = "u2f_primitive_tests.rs"]
+pub(super) mod primitives;
