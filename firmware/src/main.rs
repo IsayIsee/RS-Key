@@ -1363,7 +1363,7 @@ async fn main(spawner: Spawner) {
     // as a plain GPIO — this build has no brightness menu, so no PWM is wired.
     #[cfg(feature = "display-keys")]
     let display_ui: &'static display_keys::SharedPanel = {
-        use embassy_rp::gpio::{Level, Output};
+        use embassy_rp::gpio::{AnyPin, Level, Output};
 
         let Pio {
             mut common, sm0, ..
@@ -1381,22 +1381,13 @@ async fn main(spawner: Spawner) {
         // every other driver's pins by the compile-time asserts above, and the
         // display-keys compile-error requires LED_KIND=none (so the LED block,
         // which shares PIO0/DMA_CH0, is compiled out).
-        let cs = Output::new(
-            unsafe { embassy_rp::gpio::AnyPin::steal(BUILD_DISPLAY_CS) },
-            Level::High,
-        );
-        let dc = Output::new(
-            unsafe { embassy_rp::gpio::AnyPin::steal(BUILD_DISPLAY_DC) },
-            Level::Low,
-        );
-        let rst = Output::new(
-            unsafe { embassy_rp::gpio::AnyPin::steal(BUILD_DISPLAY_RST) },
-            Level::High,
-        );
-        let bl = Output::new(
-            unsafe { embassy_rp::gpio::AnyPin::steal(BUILD_DISPLAY_BL_PIN) },
-            Level::High,
-        );
+        // `AnyPin` imported rather than qualified so these steals name a
+        // different site than the touch build's block for the same pads: two
+        // byte-identical sites cannot be keyed apart (platform_gate `~n` rule).
+        let cs = Output::new(unsafe { AnyPin::steal(BUILD_DISPLAY_CS) }, Level::High);
+        let dc = Output::new(unsafe { AnyPin::steal(BUILD_DISPLAY_DC) }, Level::Low);
+        let rst = Output::new(unsafe { AnyPin::steal(BUILD_DISPLAY_RST) }, Level::High);
+        let bl = Output::new(unsafe { AnyPin::steal(BUILD_DISPLAY_BL_PIN) }, Level::High);
         let mut damage_key_bytes = [0u8; 16];
         rsk_sdk::Rng::fill(&mut *rng_ref.borrow_mut(), &mut damage_key_bytes);
         let damage_key = [

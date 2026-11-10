@@ -37,9 +37,10 @@ pub use rsk_display::{DeviceInfo, DeviceKeys, UI_YIELD_FLOOR_MS, piv_ref_title};
 
 /// CST328 7-bit I2C address — the touch controller on the V1 revision of the
 /// Waveshare board.
-#[cfg(not(display_tp = "cst3530"))]
+#[cfg(display_tp = "cst328")]
 const CST328_ADDR: u16 = 0x1A;
 /// CST816D 7-bit I2C address (the CST816 family shares it).
+#[cfg(display_tp = "cst816d")]
 const CST816_ADDR: u16 = 0x15;
 
 /// CST3530 7-bit I2C address — the touch controller Waveshare swapped in on the

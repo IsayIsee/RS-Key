@@ -382,8 +382,8 @@ covers = ["unsafe:firmware/src/main.rs#block:heap-init-core-ptr-addr_of_mut-heap
 [[assumption]]
 id = "PLAT-UNSAFE-004"
 class = "build-configuration"
-statement = "Each of the eight build-selected GPIOs handed to `AnyPin::steal` has exactly one owner at runtime: no two of them name the same pad, none of them is a pad another driver claims, and the LED data pin a host can re-aim cannot be pointed at any of them."
-discharge = "The compile-time asserts in firmware/build.rs and the boot-time filter in firmware/src/main.rs, read TOGETHER with the presence button's own steal in firmware/src/presence.rs and against the five board files under firmware/boards. The asserts reject a build that collides LED_POWER_PIN, USR_LED_PIN, WAKE_PIN or the four panel control lines with each other, with the LED data pin, or with the hard-wired SPI1 and I2C1 lines; the filter drops a host-written data pin naming one of them back to the build default. What is owed is the PAIRWISE table: that the assert set covers every pair of the eight rather than the pairs somebody thought of. One uncovered pair refutes it."
+statement = "Each of the ten build-selected GPIOs handed to `AnyPin::steal` has exactly one owner at runtime: no two of them name the same pad, none of them is a pad another driver claims, and the LED data pin a host can re-aim cannot be pointed at any of them. Thirteen call sites cover those ten pads, because the touch and touchless panel builds each steal their own CS/DC/RST."
+discharge = "The range checks in firmware/build.rs and the collision asserts in firmware/src/main.rs, read TOGETHER with the presence button's own steal in firmware/src/presence.rs and against the eight board files under firmware/boards. The asserts reject a build that collides LED_POWER_PIN, USR_LED_PIN, WAKE_PIN or the six panel control lines with each other, with the LED data pin, or with the hard-wired PIO and I2C lines (the one repeat allowed is LCD_RST/Touch_RST on a `tp_rst_shared` board); the filter drops a host-written data pin naming one of them back to the build default. What is owed is the PAIRWISE table: that the assert set covers every pair of the ten rather than the pairs somebody thought of. One uncovered pair refutes it."
 discharge_owner = "contributor"
 status = "pending"
 failure_direction = "memory-safety and availability: two owners driving one pad is aliased ownership of a peripheral, and the loser is a button, an LED rail or a panel control line"
@@ -397,6 +397,11 @@ covers = [
   "unsafe:firmware/src/main.rs#block:embassy_rp-gpio-anypin-steal-build_display_dc",
   "unsafe:firmware/src/main.rs#block:embassy_rp-gpio-anypin-steal-build_display_rst",
   "unsafe:firmware/src/main.rs#block:embassy_rp-gpio-anypin-steal-build_display_tp_rst",
+  "unsafe:firmware/src/main.rs#block:embassy_rp-gpio-anypin-steal-build_display_touch_irq",
+  "unsafe:firmware/src/main.rs#block:anypin-steal-build_display_cs",
+  "unsafe:firmware/src/main.rs#block:anypin-steal-build_display_dc",
+  "unsafe:firmware/src/main.rs#block:anypin-steal-build_display_rst",
+  "unsafe:firmware/src/main.rs#block:anypin-steal-build_display_bl_pin",
 ]
 
 [[assumption]]
@@ -516,6 +521,17 @@ covers = [
   "unsafe:firmware/src/main.rs#extern:static-_stack_end-u8",
   "unsafe:firmware/src/main.rs#extern:static-__kvmain_start-u32-static-__kvmain_end-u32",
 ]
+
+[[assumption]]
+id = "PLAT-UNSAFE-013"
+class = "toolchain"
+statement = "The keygen tick's `SCREEN_PTR` raw pointer always denotes the `&'static SharedPanel` registered once during single-threaded boot, and every read of it happens on the worker thread whose executor is held, so the reconstructed reference never dangles or aliases a live borrow."
+discharge = "Read firmware/src/display_keys.rs: `register_screen` stores `KEY_UI.init(...)`'s `&'static` once, `screen()` loads it with Acquire only from the keygen hook, and nothing resets or re-stores it. What is owed is the executor half — that no second reader and no concurrent panel borrow can run beside that hook; a second reader, or the keygen tick moved off the worker thread, refutes it."
+discharge_owner = "contributor"
+status = "pending"
+failure_direction = "memory-safety: a reference reconstructed from a stale or aliased pointer is undefined behaviour inside the routine that is at that moment generating private key material"
+refines = ["PLAT-TOOLCHAIN-002"]
+covers = ["unsafe:firmware/src/display_keys.rs#block:ptr-as-const-sharedpanel"]
 
 [[assumption]]
 id = "PLAT-CRYPTO-001"
@@ -1145,7 +1161,7 @@ supports = ["SEC-FIDO-002"]
 id = "PLAT-PRES-002"
 class = "model-abstraction"
 statement = "No API in the tree can originate a cancel from `SCOPE_CCID` or from an on-panel flow, so a CCID or panel ceremony is uncancellable by ABSENCE of a producer rather than by a guard anything checks."
-discharge = "A whole-tree measurement, and it is a grep rather than a proof: `git grep -n 'cancel_requested.store(true'` is exactly two sites, `crates/rsk-device/src/presence.rs:120` (`request_cancel`, gated on `SCOPE_FIDO`) and `:131` (`cancel_otp_wait`, gated on `SCOPE_OTP`), and the only other writer is `set_cancel_requested`, whose six production call sites (`crates/rsk-device/src/presence.rs:196, :233` and `crates/rsk-display/src/pin.rs:317, :441` + `crates/rsk-display/src/presence.rs:47, :58`) all pass a literal `false`, the two `cfg(feature = \"display\")` forwarders at `firmware/src/presence.rs:293` and `firmware/src/display.rs:404` reaching only those; the one site that passes `true` is `crates/rsk-device/src/presence_kani.rs:158`, a harness. The Kani cancel harness rests on this: `board.attempted[SCOPE_CCID]` stays false because the harness raises only the two cancels that exist, so 'a CCID wait cannot be cancelled at all' is the harness's construction and not its conclusion. A third writer added anywhere in the tree falsifies it with every harness still green."
+discharge = "A whole-tree measurement, and it is a grep rather than a proof: `git grep -n 'cancel_requested.store(true'` is exactly two sites, `crates/rsk-device/src/presence.rs:120` (`request_cancel`, gated on `SCOPE_FIDO`) and `:131` (`cancel_otp_wait`, gated on `SCOPE_OTP`), and the only other writer is `set_cancel_requested`, whose six production call sites (`crates/rsk-device/src/presence.rs:196, :233` and `crates/rsk-display/src/pin.rs:317, :441` + `crates/rsk-display/src/presence.rs:47, :58`) all pass a literal `false`, the two `cfg(feature = \"display\")` forwarders at `firmware/src/presence.rs:293` and `firmware/src/display.rs:405` reaching only those; the one site that passes `true` is `crates/rsk-device/src/presence_kani.rs:158`, a harness. The Kani cancel harness rests on this: `board.attempted[SCOPE_CCID]` stays false because the harness raises only the two cancels that exist, so 'a CCID wait cannot be cancelled at all' is the harness's construction and not its conclusion. A third writer added anywhere in the tree falsifies it with every harness still green."
 discharge_owner = "contributor"
 status = "pending"
 failure_direction = "security: a new cancel producer is invisible to the harness that reads as covering CCID, and the negative obligation for two of the four owners rests on it"

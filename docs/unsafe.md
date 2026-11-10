@@ -7,13 +7,15 @@ contained. Adding a new `unsafe` requires updating this page. (Safe Rust rules
 out memory-corruption bugs in this code. It is not a security audit; see the
 [threat model](threat-model.md).)
 
-**Runtime sites: 22.** Twelve in the firmware proper (`main.rs` + `presence.rs`):
-the interrupt-handler pair (2), the `Send` impl, the heap init, and the eight
-GPIO-pin `steal`s (the presence button, the LED power-enable rail, the nuisance
-USR LED, the display build's wake button, and — display builds only — the panel's
-CS/DC/RST/TP_RST control lines). Three for the per-core prime sieves and one
-stack limit per core, three in the RSA assembly FFI, two in the standalone
-flash-wipe tool.
+**Runtime sites: 28.** Eighteen in the firmware proper (`main.rs` + `presence.rs`):
+the interrupt-handler pair (2), the `Send` impl, the heap init, the thirteen
+GPIO-pin `steal` call sites over ten pads (the presence button, the LED
+power-enable rail, the nuisance USR LED, the display build's wake button, the
+panel's CS/DC/RST/TP_RST/BL/Touch_INT control lines, and the touchless builder's
+own CS/DC/RST/BL), and core 0's stack limit. One in the touchless display's
+keygen screen handle, three for the per-core prime sieves and one for core 1's
+stack limit, three in the RSA assembly FFI, two in the standalone flash-wipe
+tool.
 
 ```mermaid
 flowchart TB
@@ -21,8 +23,11 @@ flowchart TB
       a["interrupt executor (×2)"]
       b["Send for SendUsb"]
       c["heap init"]
-      d["GPIO pin steal ×8 (presence, LED power, USR LED, display wake + CS/DC/RST/TP_RST)"]
+      d["GPIO pin steal ×13 over 10 pads (presence, LED power, USR LED, wake, panel CS/DC/RST/TP_RST/BL/Touch_INT, touchless CS/DC/RST)"]
       d2["core0 stack limit (MSPLIM)"]
+    end
+    subgraph dk["firmware/src/display_keys.rs"]
+      h["keygen screen handle (×1)"]
     end
     subgraph kg["firmware/src/core1.rs"]
       e["per-core prime sieves (×3)"]
@@ -85,13 +90,13 @@ static buffer used by nothing else.
 *Safe alternative:* none; every embedded allocator initializes this way.
 *Containment:* one call, before any allocation can happen.
 
-### 5–12. GPIO pin type-erasure (presence button, LED power rail, USR-LED-off, display wake + control pins, ×8) — `PLAT-UNSAFE-004`
+### 5–17. GPIO pin type-erasure (presence button, LED power rail, USR-LED-off, display wake + control pins, ×13 over 10 pads) — `PLAT-UNSAFE-004`
 
 ```rust
 let any = unsafe { AnyPin::steal(pin) };
 ```
 
-Eight build-configurable GPIOs are chosen by *number* at build time rather than as
+Ten build-configurable GPIOs are chosen by *number* at build time rather than as
 a concrete `PIN_n` type, so each must be converted to embassy's type-erased
 `AnyPin`: the optional `PRESENCE_PIN=<gpio>` presence button
 (`ButtonPresence::new_gpio`, `presence.rs`), the optional `LED_POWER_PIN`
@@ -99,8 +104,13 @@ enable pin driven high to power a gated LED rail (the LED block in `main.rs`),
 the optional `USR_LED_PIN` driven to a nuisance onboard LED's OFF level and held
 (the boot block in `main.rs`), and — display builds only — the optional
 `WAKE_PIN` button that wakes the panel from display sleep **plus the panel's
-CS/DC/RST/TP_RST control lines**, all by board-config number, in the panel block
-of `main.rs`. `AnyPin::steal` is `unsafe` because the caller must
+CS/DC/RST/TP_RST/BL/Touch_INT control lines**, all by board-config number, in the
+panel blocks of `main.rs`. Thirteen sites cover the ten pads because the two
+panel builders each steal their own CS/DC/RST (and the touchless builder its BL
+too): the touch build's block on the `display` path names the type by full path,
+while the touchless `display-keys` builder imports `AnyPin` and calls it
+unqualified, so its sites are distinguishable from the touch build's blocks for
+the same pads (the `platform_gate` tied-key rule). `AnyPin::steal` is `unsafe` because the caller must
 guarantee unique ownership of that hardware pin — a `match` over `p.PIN_0..=PIN_29`
 (as the LED *data* pin uses) is impossible here, since it would double-move the
 peripheral set the LED block already claims.
@@ -108,7 +118,7 @@ peripheral set the LED block already claims.
 constructors require a statically known pin type.
 *Containment:* each is gated by pin-range validation and the single-owner
 invariant from `main` — none of the presence pin, the LED-power pin, the
-USR-LED pin, the wake pin, nor the four panel control pins is ever handed to
+USR-LED pin, the wake pin, nor the six panel control pins is ever handed to
 another driver. Two checks hold that jointly: the LED *data* pin is resolved at
 runtime from the host-writable phy record, and the filter chain in `main` drops a
 value that names the presence pin, `LED_POWER_PIN` or `USR_LED_PIN` back to the
@@ -117,38 +127,14 @@ On top of that, compile-time `assert!`s reject a
 build that collides `LED_POWER_PIN` or `USR_LED_PIN` with the LED data pin or a GPIO
 `PRESENCE_PIN` (and refuse `USR_LED_PIN` outright on a display build, whose panel
 owns those pads), rejects a `WAKE_PIN` in the LCD/touch range (`10..=18`),
-**and rejects any of CS/DC/RST/TP_RST/BL colliding with each other, with the
+**and rejects any of CS/DC/RST/TP_RST/BL/Touch_INT colliding with each other, with the
 hard-wired PIO serial output (PIN_10/11) or I2C1 (PIN_6/7) lines, an enabled `WAKE_PIN`,
 or `LED_PIN`/`LED_POWER_PIN` when their LED driver is built** — a collision
 silently drives one pad from two owners at runtime, so it is checked at build time.
 
-## Firmware touchless display (`firmware/src/display_keys.rs`)
-
-### The keygen screen handle
-
-```rust
-static SCREEN_PTR: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
-// …
-let ptr = SCREEN_PTR.load(Ordering::Acquire);
-Some(unsafe { &*(ptr as *const SharedPanel) })
-```
-
-The touchless build's ambient status task and a confirm wait share the panel
-through `&'static RefCell` passed by value, but the RSA-keygen busy page is
-driven from `handler.rs`'s `rsa_search` hook, which has no panel reference —
-and a `&'static RefCell` cannot itself live in a `Sync` static (the cell is
-deliberately `!Sync`), so the reference travels as a raw pointer instead.
-`main` stores it once during single-threaded boot (`register_screen`, the
-`KEY_UI.init` value outlives `main`); the worker thread's keygen tick reads it
-back while the thread executor is held — the same thread-exclusivity every
-`RefCell` in this firmware relies on, so the pointer never crosses executors.
-*Safe alternative:* none that avoids a `Sync` cell for the `!Sync` `RefCell`
-(or a trait-object hook carrying the reference into `rsa_search`).
-*Containment:* one pointer, one reader thread, one write during boot.
-
 ## Firmware dual-core keygen (`firmware/src/core1.rs`)
 
-### 13–15. The per-core prime sieves — `PLAT-UNSAFE-005`
+### 18–20. The per-core prime sieves — `PLAT-UNSAFE-005`
 
 ```rust
 static mut CORE0_SIEVE: IncrementalSieve = IncrementalSieve::new();
@@ -180,7 +166,7 @@ on core0; the partition (which core touches which sieve) is structural, and the 
 a candidate, scrubbed at the top of every keygen). A wrong residue can only let
 a composite through to the strong-MR/Lucas test, which still rejects it.
 
-### 16–17. The per-core stack limits (`main.rs`, `core1.rs`) — `PLAT-UNSAFE-006`
+### 21–22. The per-core stack limits (`main.rs`, `core1.rs`) — `PLAT-UNSAFE-006`
 
 ```rust
 unsafe { cortex_m::register::msplim::write(&raw const _stack_end as u32) }; // core0, entering `main`
@@ -215,7 +201,7 @@ issued by the routine that is at that moment generating and storing a key.
 
 ## RSA assembly FFI (`crates/rsk-rsa/src/lib.rs`)
 
-### 18–20. The modexp / CRT-sign calls — `PLAT-UNSAFE-007`
+### 23–25. The modexp / CRT-sign calls — `PLAT-UNSAFE-007`
 
 On-card RSA key generation needs hundreds of modular exponentiations over
 1024–2048-bit candidates. The pure-Rust path was ~7× too slow on the
@@ -234,7 +220,7 @@ all host tests exercise the same API safely.
 
 ## Flash wiper (`rsk-wipe/src/main.rs`)
 
-### 21–22. Raw flash erase/program in a critical section — `PLAT-UNSAFE-008`
+### 26–27. Raw flash erase/program in a critical section — `PLAT-UNSAFE-008`
 
 The wiper's entire job is to erase the flash the firmware lives on, from a
 RAM-resident image. It calls the ROM flash-erase/program routines inside
@@ -244,6 +230,30 @@ nothing else running.
 inherently unsafe and is the tool's purpose.
 *Containment:* rsk-wipe is a separate opt-in UF2 you flash deliberately; it
 never ships inside the firmware.
+
+## Firmware touchless display (`firmware/src/display_keys.rs`)
+
+### 28. The keygen screen handle — `PLAT-UNSAFE-013`
+
+```rust
+static SCREEN_PTR: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+// …
+let ptr = SCREEN_PTR.load(Ordering::Acquire);
+Some(unsafe { &*(ptr as *const SharedPanel) })
+```
+
+The touchless build's ambient status task and a confirm wait share the panel
+through `&'static RefCell` passed by value, but the RSA-keygen busy page is
+driven from `handler.rs`'s `rsa_search` hook, which has no panel reference —
+and a `&'static RefCell` cannot itself live in a `Sync` static (the cell is
+deliberately `!Sync`), so the reference travels as a raw pointer instead.
+`main` stores it once during single-threaded boot (`register_screen`, the
+`KEY_UI.init` value outlives `main`); the worker thread's keygen tick reads it
+back while the thread executor is held — the same thread-exclusivity every
+`RefCell` in this firmware relies on, so the pointer never crosses executors.
+*Safe alternative:* none that avoids a `Sync` cell for the `!Sync` `RefCell`
+(or a trait-object hook carrying the reference into `rsa_search`).
+*Containment:* one pointer, one reader thread, one write during boot.
 
 ## Build-time (not runtime)
 

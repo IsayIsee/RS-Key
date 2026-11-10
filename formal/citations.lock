@@ -500,7 +500,7 @@ assurance/platform.toml	crates/rsk-store/src/tests.rs	244-264	#[test]	}
 assurance/platform.toml	crates/rsk-store/src/tests.rs	395-404	#[test]	assert!(!complete);
 assurance/platform.toml	crates/rsk-usb/src/ccid.rs	408-408	match select(fut.as_mut(), Timer::after_millis(WTX_INTERVAL_MS)).await {	match select(fut.as_mut(), Timer::after_millis(WTX_INTERVAL_MS)).await {
 assurance/platform.toml	crates/rsk-usb/src/ctaphid.rs	775-775	Timer::after_millis(KEEPALIVE_MS),	Timer::after_millis(KEEPALIVE_MS),
-assurance/platform.toml	firmware/src/display.rs	404-404	crate::presence::set_cancel_requested(requested);	crate::presence::set_cancel_requested(requested);
+assurance/platform.toml	firmware/src/display.rs	405-405	crate::presence::set_cancel_requested(requested);	crate::presence::set_cancel_requested(requested);
 assurance/platform.toml	firmware/src/handler.rs	44-44	/// reseed. What makes that draw finish is `sample_count = 1000` (`main.rs`), spacing	/// reseed. What makes that draw finish is `sample_count = 1000` (`main.rs`), spacing
 assurance/platform.toml	firmware/src/handler.rs	57-57	const RESEED_INTERVAL: usize = 1 << 16; // 64 KiB	const RESEED_INTERVAL: usize = 1 << 16; // 64 KiB
 assurance/platform.toml	firmware/src/handler.rs	61-61	/// 16 B nonce, SP 800-90A 10.1.2.3), drawn through the `Trng` the caller	/// 16 B nonce, SP 800-90A 10.1.2.3), drawn through the `Trng` the caller
@@ -1179,8 +1179,8 @@ scripts/test_run_tlc.py	scripts/verdict_gate.py	619-634	if row["invariant"] is n
 scripts/test_security_trace.py	tools/emu/src/device.rs	754-755	crate::security_trace::POWER_CYCLE,	0,
 scripts/test_token_refinement_gate.py	crates/rsk-device/src/ctap.rs	122-122	*st = rsk_fido::FidoState::new();	*st = rsk_fido::FidoState::new();
 scripts/test_token_refinement_gate.py	crates/rsk-fido/src/credential.rs	919-919	let fid = EF_RP + i;	let fid = EF_RP + i;
-scripts/test_token_refinement_gate.py	firmware/src/main.rs	1500-1500	let fido_state_ref = FIDO_STATE.init(RefCell::new(rsk_fido::FidoState::new()));	let fido_state_ref = FIDO_STATE.init(RefCell::new(rsk_fido::FidoState::new()));
+scripts/test_token_refinement_gate.py	firmware/src/main.rs	1491-1491	let fido_state_ref = FIDO_STATE.init(RefCell::new(rsk_fido::FidoState::new()));	let fido_state_ref = FIDO_STATE.init(RefCell::new(rsk_fido::FidoState::new()));
 scripts/token_refinement_gate.py	crates/rsk-device/src/ctap.rs	122-122	*st = rsk_fido::FidoState::new();	*st = rsk_fido::FidoState::new();
-scripts/token_refinement_gate.py	firmware/src/main.rs	1500-1500	let fido_state_ref = FIDO_STATE.init(RefCell::new(rsk_fido::FidoState::new()));	let fido_state_ref = FIDO_STATE.init(RefCell::new(rsk_fido::FidoState::new()));
+scripts/token_refinement_gate.py	firmware/src/main.rs	1491-1491	let fido_state_ref = FIDO_STATE.init(RefCell::new(rsk_fido::FidoState::new()));	let fido_state_ref = FIDO_STATE.init(RefCell::new(rsk_fido::FidoState::new()));
 scripts/trace_map.py	crates/rsk-sdk/src/applet.rs	387-387	let reselect = self.current == Some(i);	let reselect = self.current == Some(i);
 tools/emu/src/hid.rs	crates/rsk-usb/src/ctaphid.rs	621-634	async fn on_frame(&mut self, f: &[u8; HID_RPT_SIZE]) {	}
