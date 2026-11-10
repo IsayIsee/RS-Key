@@ -296,20 +296,6 @@ const BUILD_DISPLAY_TP_RST_SHARED: bool = env_u16(env!("PK_DISPLAY_TP_RST_SHARED
 /// 1 = ST7789T3 (the 2"). Both live in [`display_panel`].
 #[cfg(any(feature = "display", feature = "display-keys"))]
 const BUILD_DISPLAY_PANEL_INIT: u8 = env_u16(env!("PK_DISPLAY_PANEL_INIT")) as u8;
-/// The touch controller: the CST328 the 2.8" carries, or the CST816D on the 2".
-/// Their register layouts share nothing — 16-bit addresses against single-byte
-/// ones — so the driver dispatches on this.
-#[cfg(feature = "display")]
-const TOUCH_CST328: u8 = 0;
-#[cfg(feature = "display")]
-const TOUCH_CST816D: u8 = 1;
-#[cfg(feature = "display")]
-const BUILD_DISPLAY_TOUCH_IC: u8 = env_u16(env!("PK_DISPLAY_TOUCH_IC")) as u8;
-// The board file's `touch_ic` reaches the driver as `PK_DISPLAY_TOUCH_IC`, which the dispatch
-// in `display::read_report` compares against these two names — pinned here so the encoding
-// is stated once and neither name is left unreferenced by the arm that names only one.
-#[cfg(feature = "display")]
-const _: () = assert!(TOUCH_CST328 == 0 && TOUCH_CST816D == 1);
 /// The calibrated touch range — the raw coordinates at the glass's edges — or
 /// `None` when the controller already reports panel pixels (the 2.8"'s CST328
 /// is configured at the panel resolution). Build.rs bakes 0xFFFF for "unset".
@@ -330,9 +316,9 @@ const BUILD_DISPLAY_TOUCH_RANGE: Option<rsk_ui::touch::TouchRange> = {
 // A CST816D reports in its own frame rather than the panel's, so a board that
 // selects one without the calibrated range would map every tap through the
 // identity and land it in the wrong place. The two are required together.
-#[cfg(feature = "display")]
+#[cfg(all(feature = "display", display_tp = "cst816d"))]
 const _: () = assert!(
-    BUILD_DISPLAY_TOUCH_IC != TOUCH_CST816D || BUILD_DISPLAY_TOUCH_RANGE.is_some(),
+    BUILD_DISPLAY_TOUCH_RANGE.is_some(),
     "a cst816d board must declare touch_x_min/touch_x_max/touch_y_min/touch_y_max"
 );
 /// The controller's Touch_INT pad, or `u8::MAX` for a board that wires none — which is
@@ -881,7 +867,7 @@ async fn main(spawner: Spawner) {
     // 0x09DB: PIV serves a synthesized Card Capability Container (`5FC107`,
     // mandatory per SP 800-73-4 pt1 §3.1.1) where it previously answered 6A82 —
     // the object a Windows key-container open reads.
-    let device_release: u16 = 0x09DB;
+    let device_release: u16 = 0x09DC;
     config.device_release = device_release;
 
     let mut builder = Builder::new(

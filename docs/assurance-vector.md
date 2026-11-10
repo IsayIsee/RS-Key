@@ -148,6 +148,7 @@ The same 40 P0-family rows, counted the other way round: per column rather than 
 | `firmware-display-keys` | package | yes | 0 | 40 |
 | `firmware-display-keys-strong-pin` | package | yes | 0 | 40 |
 | `firmware-display-keys-always-uv` | package | yes | 0 | 40 |
+| `firmware-display-v2` | package | no | 0 | 40 |
 | `firmware-2mb` | package | no | 9 | 31 |
 | `firmware-16mb` | package | no | 9 | 31 |
 | `firmware-strict-config` | package | no | 3 | 37 |

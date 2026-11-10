@@ -92,6 +92,7 @@ let
       presencePin ? envOr "PRESENCE_PIN" null, # BOOTSEL or GPIO 0..=29
       fakeMkek ? envOr "FAKE_MKEK" null, # 64 hex — TEST builds only
       fakeDevk ? envOr "FAKE_DEVK" null, # 64 hex — TEST builds only
+      tpChip ? envOr "DISPLAY_TP_CHIP" null, # cst328 (V1 board) | cst3530 (V2 board)
     }:
     let
       # Non-null knobs become build-time env vars build.rs reads; each is part
@@ -110,6 +111,7 @@ let
         PRESENCE_PIN = if presencePin == null then null else toString presencePin;
         FAKE_MKEK = fakeMkek;
         FAKE_DEVK = fakeDevk;
+        DISPLAY_TP_CHIP = tpChip;
       };
     in
     pkgs.stdenv.mkDerivation (
@@ -387,6 +389,20 @@ in
       cargoFlags = [
         "--features"
         "display-keys,always-uv"
+      ];
+    };
+    # The same trusted-display build for the **V2 revision** of that board, whose
+    # touch controller is a CST3530 rather than the V1's CST328. Only the touch
+    # driver changes: with the wrong one the panel draws and nothing responds, so
+    # the two can not share an image.
+    firmware-display-v2 = mkFirmware {
+      name = "firmware-display-v2";
+      flashSize = "16M";
+      ledKind = "none";
+      tpChip = "cst3530";
+      cargoFlags = [
+        "--features"
+        "display"
       ];
     };
     # Default (feature-less, RS-Key identity) images for boards whose physical

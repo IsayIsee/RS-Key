@@ -72,6 +72,7 @@ struct BoardConfig {
     display_bl_pwm_slice: Option<u8>,
     display_bl_pwm_channel: Option<u8>,
     display_tp_rst: Option<u8>,
+    display_tp_chip: Option<String>,
     display_wake_pin: Option<u8>,
     display_wake_active_high: Option<bool>,
     display_i2c_freq_hz: Option<u32>,
@@ -87,7 +88,6 @@ struct BoardConfig {
     display_i2c_scl: Option<u8>,
     display_tp_rst_shared: Option<bool>,
     display_panel_init: Option<u8>,
-    display_touch_ic: Option<String>,
     display_touch_x_min: Option<u16>,
     display_touch_x_max: Option<u16>,
     display_touch_y_min: Option<u16>,
@@ -134,6 +134,7 @@ fn parse_toml(raw: &str) -> BoardConfig {
         display_bl_pwm_slice: None,
         display_bl_pwm_channel: None,
         display_tp_rst: None,
+        display_tp_chip: None,
         display_wake_pin: None,
         display_wake_active_high: None,
         display_i2c_freq_hz: None,
@@ -149,7 +150,6 @@ fn parse_toml(raw: &str) -> BoardConfig {
         display_i2c_scl: None,
         display_tp_rst_shared: None,
         display_panel_init: None,
-        display_touch_ic: None,
         display_touch_x_min: None,
         display_touch_x_max: None,
         display_touch_y_min: None,
@@ -251,6 +251,7 @@ fn parse_toml(raw: &str) -> BoardConfig {
                 });
             }
             ("display", "tp_rst") => c.display_tp_rst = Some(u8(v)),
+            ("display", "tp_chip") => c.display_tp_chip = Some(u(v).to_string()),
             // `"none"` = no wake button (touch-only wake). A number selects a GPIO;
             // the key being absent leaves `WAKE_PIN` at its GPIO25 default.
             ("display", "wake_pin") => match u(v) {
@@ -299,11 +300,6 @@ fn parse_toml(raw: &str) -> BoardConfig {
             // The touch controller: `cst328` (the 2.8") or `cst816d` (the 2").
             // The two share no register layout — 16-bit addresses against
             // single-byte ones — so the firmware picks a driver with this.
-            ("display", "touch_ic") => match u(v) {
-                "cst328" => c.display_touch_ic = Some("cst328".into()),
-                "cst816d" => c.display_touch_ic = Some("cst816d".into()),
-                other => panic!("touch_ic: {other:?} (expected cst328 or cst816d)"),
-            },
             // The calibrated touch range: the raw coordinates the controller
             // reports at the glass's edges. Omitted on a board whose controller
             // is configured at the panel resolution (the 2.8"'s CST328).
@@ -671,13 +667,6 @@ fn main() {
         );
         disp!("PK_DISPLAY_TOUCH_IRQ", v);
     }
-    disp!(
-        "PK_DISPLAY_TOUCH_IC",
-        match disp_cfg.and_then(|b| b.display_touch_ic.as_deref()) {
-            Some("cst816d") => 1,
-            _ => 0,
-        }
-    );
     // The calibrated touch range, all four together or none at all: boards that
     // do not declare one leave 0xFFFF, the sentinel `main.rs` reads as "the
     // controller already reports panel pixels".
@@ -752,6 +741,24 @@ fn main() {
             println!("cargo:rustc-env=PK_DISPLAY_WIN_Y={v}");
         }
     }
+    // Which capacitive-touch controller the panel carries: the 2.8" ships a
+    // CST328 (V1) or a CST3530 (V2), this fork's 2" a CST816D. Their register
+    // maps share nothing, and the wrong driver is no touch at all — a
+    // compile-time choice, not a runtime probe.
+    {
+        let chip = env::var("DISPLAY_TP_CHIP")
+            .ok()
+            .or_else(|| disp_cfg.and_then(|b| b.display_tp_chip.clone()))
+            .unwrap_or_else(|| "cst328".to_string());
+        match chip.as_str() {
+            "cst328" | "cst816d" | "cst3530" => {}
+            other => panic!("DISPLAY_TP_CHIP: {other:?} (want cst328, cst816d or cst3530)"),
+        }
+        println!("cargo:rustc-cfg=display_tp=\"{chip}\"");
+        println!(
+            "cargo:rustc-check-cfg=cfg(display_tp, values(\"cst328\", \"cst816d\", \"cst3530\"))"
+        );
+    }
 
     // Display knobs flow from `board.toml`/env var into PK_DISPLAY_*; any change
     // lets `env!("PK_DISPLAY_*")` go stale and bake the wrong pins into the
@@ -774,7 +781,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_I2C_SCL");
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_TP_RST_SHARED");
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_PANEL_INIT");
-    println!("cargo:rerun-if-env-changed=PK_DISPLAY_TOUCH_IC");
+    println!("cargo:rerun-if-env-changed=DISPLAY_TP_CHIP");
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_TOUCH_X_MIN");
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_TOUCH_X_MAX");
     println!("cargo:rerun-if-env-changed=PK_DISPLAY_TOUCH_Y_MIN");
